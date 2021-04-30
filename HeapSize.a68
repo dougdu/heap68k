@@ -1,0 +1,27 @@
+*********************************************************
+* _HeapSize
+*
+*     Retrieves the size of a memory block allocated
+*     from a heap by the HeapAlloc or HeapReAlloc
+*     function.
+*
+*     Entry:  A0 = Handle of heap
+*	      D0 = flags
+*	      A1 = pointer to the memory block whose
+*                  size the function will obtain.
+*
+*     Exit:   D0 = the requested size of the allocated
+*                  memory block, in bytes or -1 on
+*                  failure.
+*********************************************************
+
+	include	heap.inc
+
+	public	_HeapSize
+
+	.code
+
+_HeapSize:
+	rts
+
+        end

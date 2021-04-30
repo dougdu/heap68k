@@ -1,0 +1,194 @@
+*********************************************************
+* _HeapAlloc
+*
+*     Allocates a block of memory from a heap.
+*
+*     Entry:  A0 = Handle of heap to allocate from
+*	      D0 = flags
+* 	      D1 = Number of bytes to allocate
+*
+*     Exit:   A0 = address of first byte of allocated
+*                  block, or zero if allocation failed.
+*	      D0 = error code: 0 = block allocated
+*                              1 = insufficient free space
+*                              2 = heap is corrupt
+*                              3 = handle is invalid
+*			       4 = Allocated block on free chain
+*********************************************************
+
+	include heap.inc
+
+	public	_HeapAlloc
+	extern 	_HeapUnlinkFromFreeList
+
+	extern 	__rterr_HeapAllocFailure, __rt_FatalError
+
+	.code
+
+_HeapAlloc:
+	movem.l a1-a4/d1-d3,-(sp)       	; Save work registers
+	;bsr 	__rt_HeapValidate
+	;bsr 	_HeapValidateHandle		; Validate the heap handle
+	;bne   	_haInvalidHandle		; Nope abort
+
+	tst.l 	hhFreeHead(a0) 			; Is the free list empty?
+	beq 	_haNoMem			; Yes, abort
+	movea.l hhFreeHead(a0),a1 		; Get pointer to the head of the free list
+
+	; Compute actual size of the block we need
+	move.l 	d1,d2 				; D2 = working copy of request size
+
+	; Is HEAP_TAIL_CHECKING_ENABLED set for the heap?
+	btst.b 	#HEAP_TAIL_CHECKING_ENABLED_BIT,hhFlags+3(a0)
+	beq.s 	_haTailCheckingNotEnabled
+	addq.l 	#4,d2				; Reserve space for the tail marker
+
+_haTailCheckingNotEnabled:
+        add.l  	#BLK_HDR_SIZE-1,d2		; Force the requested block size to
+        andi.b  #NOT(BLK_HDR_SIZE-1),d2		; be aligned on a block header boundary
+        add.l   #BLK_HDR_SIZE,d2        	; Add the size of a block header
+        ble     _haNoMem                	; Error if negative
+
+	; Search the free block chain looking for large enough block
+
+_haSearchFreeBlockChain:
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1) 	; Is the block marked as allocated?
+	beq 	_haFreeBlockChainCorrupt 	; Allocated block found, bad news!
+
+	move.l  bhSize(a1),d3                 	; Is the block big enough?
+	sub.l 	d2,d3 				; D3 = bytes left over
+	blt.s 	_haBlockTooSmall		; Not big enough, keep searching
+	beq.s 	_haExactFit			; Exact size needed, reuse block
+	cmp.l 	#BLK_HDR_SIZE,d3 		; If the remaining bytes only have
+	ble.s 	_haExactFit			; room for a header, then reuse block
+	bra.s   _haSplitBlock           	; Go split into 2 blocks
+
+_haBlockTooSmall:
+	; Here if the block is too small, advance to the next free block
+	tst.l 	bhFreeNext(a1)			; Is there another free block?
+	beq 	_haNoMem			; Nope, abort
+	movea.l  bhFreeNext(a1),a1		; Yes, grab the next free block
+	bra.s 	_haSearchFreeBlockChain		; and keep searching
+
+_haExactFit:
+	; Here if the found free block is the exact size needed. We can
+	; just unlink the block from the free list and mark it as allocated.
+	jsr 	_HeapUnlinkFromFreeList		; Unlink the block from the free list
+	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
+	move.l 	d1,bhRequestSize(a1)		; Set requested size
+	bra.s 	_haProcessFlags			; Go zero block and/or add debug marker
+
+_haSplitBlock:
+	; Split the existing free block into two blocks.  One
+	; allocated and one free.
+
+	; First update the block chain linkage.
+	movea.l bhPrev(a1),a2 			; A2 --> Previous block
+	movea.l bhNext(a1),a3 			; A3 --> Next block
+	movea.l a1,a4 				; Compute start of new block
+	adda.l 	d2,a4
+
+	move.l 	a3,bhNext(a4)			; Set new block forward link
+	move.l	a1,bhPrev(a4)			; Set new block back link
+	move.l 	a4,bhNext(a1)			; Set old block forward link
+
+	tst.l 	bhNext(a4)			; Does the new block have a forward block?
+	beq.s 	_haNoFwdBlock			; Nope
+	move.l 	a4,bhPrev(a3)			; Yes, update it's back link
+
+_haNoFwdBlock:
+
+	; Second update the free block chain linkage
+	movea.l bhFreePrev(a1),a2		; A2 --> Previous Free block
+	movea.l bhFreeNext(a1),a3 		; A3 --> Next Free block
+
+	move.l 	a3,bhFreeNext(a4)		; Set new Free block forward link
+	move.l	a2,bhFreePrev(a4)		; Set new Free block back link
+
+	tst.l 	bhFreePrev(a1)			; Is there a previous free block?
+	beq.s 	_haNoBackFreeBlock		; Nope
+	move.l 	a4,bhFreeNext(a2) 		; Yes, update it's forward link
+	bra.s 	_haChkFwdFreeBlk		; And move to the next step
+
+_haNoBackFreeBlock:
+	; There is no backwards free block so make this block the head
+	move.l 	a4,hhFreeHead(a0)		; Update free list head pointer
+
+_haChkFwdFreeBlk:
+	tst.l 	bhFreeNext(a4)			; Is there a next free block?
+	beq.s 	_haNoFwdFreeBlock		; Nope
+	move.l 	a4,bhFreePrev(a3)		; Yes, update it's back link
+
+_haNoFwdFreeBlock:
+
+	; Third update the values in the block headers
+
+	; Allocated block header
+	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
+	move.l 	d1,bhRequestSize(a1)		; Set requested size
+	move.l 	d2,bhSize(a1)			; Set actual block size
+
+	; Free block header
+	move.l 	#BLOCK_MAGIC,bhMagic(a4)	; Init the magic word
+	move.l 	#FLG_FREE,bhFlags(a4)		; Set the free block flag
+	move.l 	d3,bhSize(a4)			; Set actual block size
+	subi.l 	#BLK_HDR_SIZE,d3 		; Free block requested size
+	move.l 	d3,bhRequestSize(a4)		; is the size of data area
+
+_haProcessFlags:
+	; If the HEAP_ZERO_MEMORY flag passed in then zero out the block
+	btst 	#HEAP_ZERO_MEMORY_BIT,d0 	; Caller requested block to be zeroed?
+	bne.s 	_haZeroBlock			; Yes, go zero the block
+
+	; Is the heap configured to zero every allocation?
+	btst.b 	#HEAP_ZERO_MEMORY_BIT,hhFlags+3(a0)
+	beq.s 	_haNoZeroBlock			; Nope skip
+
+_haZeroBlock:
+	lea.l 	bhData(a1),a2			; A2 --> Allocated memory
+	move.l 	bhSize(a1),d0 			; Get size of the block in bytes
+	sub.l 	#BLK_HDR_SIZE,d0 		; Adjust for block header
+	beq.s 	_haNoZeroBlock			; Don't zero a block with no bytes
+	lsr.l 	#2,d0 				; Fill using long words
+	subq.l 	#1,d0 				; Adjust for dbra
+_haZeroBlockLoop:
+	clr.l 	(a2)+				; Zero a long word
+	;move.l 	#$e5e5e5e5,(a2)+
+	dbra 	d0,_haZeroBlockLoop		; Loop until cleared
+
+_haNoZeroBlock:
+
+	; Do we need to initialize the tail checking bytes?
+
+	btst.b 	#HEAP_TAIL_CHECKING_ENABLED_BIT,hhFlags+3(a0)
+	beq.s 	_haNoTailChecking
+	move.l 	#HEAP_TAIL,-4(a1,d2.L)
+
+_haNoTailChecking:
+	lea.l 	bhData(a1),a0		; Put memory pointer in a0
+        clr.l   d0                      ; No errors
+        bra.s   _haExit
+
+_haNoMem:
+	moveq   #1,d0                   ; Not enough free space for request
+
+_haErrorExit:
+	suba.l  a0,a0                   ; Return NULL pointer on error
+
+_haExit:
+	movem.l (sp)+,a1-a4/d1-d3       ; Restore registers
+        rts
+
+_haBadBlockSize:
+	pea	__rterr_HeapAllocFailure ; Print "Heap validation failure"
+	jmp 	__rt_FatalError
+
+_haInvalidHandle:
+	moveq 	#3,d0			; Flag that the handle is invalid
+	bra.s 	_haErrorExit
+
+_haFreeBlockChainCorrupt:
+	moveq 	#4,d0			; Flag that the free block chain is corrupt
+	bra.s 	_haErrorExit
+
+	end

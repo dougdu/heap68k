@@ -1,0 +1,142 @@
+*********************************************************
+* _HeapValidate
+*
+*     Validates the specified heap. The function scans
+*     all the memory blocks in the heap and verifies that
+*     the heap control structures maintained by the heap
+*     manager are in a consistent state. You can also use
+*     the HeapValidate function to validate a single memory
+*     block within a specified heap without checking the
+*     validity of the entire heap.
+*
+*     Entry:  A0 = Handle of heap
+*	      D0 = flags
+*	      A1 = pointer to the memory block to validate,
+*                  if the value is NULL then the entire
+*                  heap is validated.
+*
+*     Exit:   D0 = Status code
+*			0 = Heap is valid.
+*                  	1 = Heap handle is invalid.
+*********************************************************
+
+	include heap.inc
+
+	public	_HeapValidate
+	extern 	_HeapValidateHandle
+	extern	__rterr_HeapValidationFailure, __rt_FatalError
+
+	.code
+
+_HeapValidate:
+	movem.l a0-a3/d0-d1,-(sp)		; Save registers
+
+	jsr 	_HeapValidateHandle		; Validate the heap handle
+	bne  	_hvInvalidHeapHandle		; Nope abort
+
+	; First validate the heap block chain
+	movea.l	hhHeapHead(a0),a2 		; A2 --> Start of block chain
+	suba.l 	a3,a3 				; A3 --> Previous block in block chain
+
+_hvBlockChainVerifyLoop:
+	; Validate that the block is valid
+	move.l 	a2,d0 				; Get block pointer in D0
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the block pointer bit pattern is ok
+	bne.s	_hvInvalidBlockInChain		; Nope, abort
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a2)	; Block magic number present?
+	bne.s	_hvInvalidBlockInChain		; Nope, abort
+
+	; Validate the block size and linkage
+	cmpa.l 	bhPrev(a2),a3			; Does the back link point to the previous block?
+	bne.s 	_hvInvalidPrevLink
+
+	move.l 	a2,d0 				; Compute expected forward link from block size
+	add.l 	bhSize(a2),d0
+	move.l 	bhNext(a2),d1
+	beq.s 	_hvEndofBlockChain
+	cmp.l 	d0,d1 				; Does forward link match computed forward link?
+	bne.s 	_hvInvalidNextLink
+
+	; This block looks ok, move to next
+	movea.l a2,a3 				; Update previous block
+	movea.l d1,a2				; Follow next link
+	bra.s	_hvBlockChainVerifyLoop		; Loop until we reach the end of the chain
+
+_hvEndofBlockChain:
+	; Here when we find a NULL bhNext pointer (A2 = block address)
+	move.l 	a0,d1 				; Compute the end of heap address
+	add.l 	hhSize(a0),d1
+	subi.l 	#BLK_HDR_SIZE,d1 		; D1 = first byte of the end of heap marker
+	movea.l d1,a3 				; a3 --> End of heap marker
+	cmpi.l 	#HEAP_END,(a3)			; Heap end magic number?
+	bne.s	_hvInvalidHeapEndMagic		; Nope, abort
+	cmp.l 	d0,d1				; Computed end match actual?
+	bne.s	_hvInvalidHeapEnd		; Nope, error
+
+	; Verify the free block chain
+
+	tst.l 	hhFreeHead(a0)			; Is the heap exhausted?
+	beq.s 	_hvEndofFreeChain		; Yes, no free chain to validate
+						; TODO: if the head is NULL then walk
+						; the block chain and make sure all blocks
+						; are marked as allocated and that the
+						; bhFreePrev and bhFreeNext pointers are null.
+
+	movea.l hhFreeHead(a0),a2		; A2 --> Head of the free list
+	suba.l 	a3,a3				; A3 --> previous free block
+
+_hvFreeChainVerifyLoop:
+	cmpa.l 	bhFreePrev(a2),a3 		; Does the back link match?
+	bne.s 	_hvInvalidPrevFreeLink
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Is the block marked as free?
+	beq.s 	_hvBlockNotFree
+	move.l 	bhFreeNext(a2),d1 		; Get pointer to next free block
+	beq.s 	_hvEndofFreeChain
+	movea.l a2,a3				; A3 = new previous block
+	movea.l d1,a2				; A2 = next block
+	bra	_hvFreeChainVerifyLoop  	; Loop until done.
+
+_hvEndofFreeChain:
+	clr.l 	d0				; Flag no errors
+
+_hvExit:
+	movem.l (sp)+,a0-a3/d0-d1		; Restore registers
+	rts
+
+_hvInvalidHeapHandle:
+	moveq 	#1,d0
+	bra 	_hvExit
+
+_hvInvalidBlockInChain:
+	moveq 	#2,d0
+	bra 	_hvExit
+
+_hvInvalidPrevLink:
+	moveq 	#3,d0
+	bra 	_hvExit
+
+_hvInvalidNextLink:
+	moveq 	#4,d0
+	bra 	_hvExit
+
+_hvInvalidHeapEndMagic:
+	moveq 	#5,d0
+	bra 	_hvExit
+
+_hvInvalidHeapEnd:
+	moveq 	#6,d0
+	bra 	_hvExit
+
+_hvInvalidPrevFreeLink:
+	moveq 	#7,d0
+	bra 	_hvExit
+
+_hvBlockNotFree:
+	moveq 	#8,d0
+	bra 	_hvExit
+
+_hv_HeapValidationFailure:
+	pea	__rterr_HeapValidationFailure	; Print "Heap validation failure"
+	jmp	__rt_FatalError
+
+	end

@@ -1,0 +1,27 @@
+*********************************************************
+* _HeapCompact
+*
+*     Returns the size of the largest free block in the
+*     specified heap. If the Disable heap coalesce on free
+*     global flag is set, this function also coalesces
+*     adjacent free blocks of memory in the heap.
+*
+*     HeapAlloc or HeapReAlloc function.
+*
+*     Entry:  A0 = Handle of heap
+*	      D0 = flags
+*
+*     Exit:   D0 = error code: 0 = Handle Valid
+*                              1 = Handle Invalid
+*********************************************************
+
+	include heap.inc
+
+	public	_HeapCompact
+
+	.code
+
+_HeapCompact:
+	rts
+
+        end

@@ -1,0 +1,19 @@
+CR 	equ	$0D
+LF 	equ 	$0A
+
+	public	__rterr_HeapValidationFailure, __rterr_HeapAllocFailure
+	public 	__MachineHeapHandle
+
+        .data
+
+__rterr_HeapValidationFailure:
+	dc.b 	"Heap validation failure",CR,LF,0
+__rterr_HeapAllocFailure:
+	dc.b 	"HeapAlloc failure",CR,LF,0
+
+        .bss
+
+__MachineHeapHandle:
+	ds.l	1			; Heap handle of the machine heap
+
+        end

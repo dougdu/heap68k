@@ -1,0 +1,62 @@
+*********************************************************
+* _HeapWalk
+*
+*     Enumerates the memory blocks in the specified heap.
+*
+*     To initiate a heap enumeration, set the A1 register
+*     NULL. To continue a particular heap enumeration,
+*     call the HeapWalk function repeatedly, with no
+*     changes to A0 or A1 registers.
+*
+*     Entry:  A0 = Handle of heap
+*             A1 --> HEAP_ENTRY
+*
+*     Exit:   D0 = error code: 0 = Success
+*                              1 = End of heap
+*			       2 = Invalid Heap handle
+*********************************************************
+
+	include heap.inc
+
+	public	_HeapWalk
+	extern	_HeapValidateHandle
+
+	.code
+
+_HeapWalk:
+	jsr 	_HeapValidateHandle		; Validate the heap handle
+	bne  	_hwInvalidHeapHandle		; Nope abort
+
+	move.l 	a1,d0 				; Is the block pointer NULL?
+	bne.s 	_hwFollowBlockLink		; No, follow the next link
+	movea.l hhHeapHead(a0),a1 		; Get the head of the block list
+	bra.s 	_hwSuccess 			; No, go return it
+
+_hwFollowBlockLink:
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the block pointer bit pattern is ok
+	bne.s	_hwInvalidBlock			; Nope, abort
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a1)	; Block magic number present?
+	bne.s	_hwInvalidBlock			; Nope, abort
+	movea.l bhNext(a1),a1 			; Follow next link
+
+_hwSuccess:
+	move.l 	a1,d0 				; End of the heap?
+	beq.s 	_hwEndOfHeap			; Yes, return status
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block free?
+	bne.s 	_hwFollowBlockLink		; Yes, move to next block
+	clr.l 	d0 				; No, signal success
+	rts
+
+_hwEndOfHeap:
+	moveq	#1,d0				; End of heap
+	rts
+
+_hwInvalidHeapHandle:
+	moveq	#2,d0				; Invalid Heap Handle
+	rts
+
+_hwInvalidBlock:
+	moveq	#3,d0				; Invalid block pointer
+	rts
+
+	end

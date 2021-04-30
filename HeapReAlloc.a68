@@ -1,0 +1,26 @@
+*********************************************************
+* _HeapReAlloc
+*
+*     Reallocates a block of memory from a heap. This
+*     function enables you to resize a memory block and
+*     change other memory block properties.
+*
+*     Entry:  A0 = Handle of heap
+*	      D0 = flags
+*	      A1 = Pointer to block to reallocate
+*             D1 = New size of memory block in bytes
+*
+*     Exit:   D0 = error code: 0 = Handle Valid
+*                              1 = Handle Invalid
+*********************************************************
+
+	include heap.inc
+
+	public	_HeapReAlloc
+
+	.code
+
+_HeapReAlloc:
+	rts
+
+        end

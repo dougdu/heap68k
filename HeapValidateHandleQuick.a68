@@ -1,0 +1,47 @@
+********************************************************
+* _HeapValidateHandleQuick
+*
+* A heap handle is a pointer to a heap header. This
+* function validates that the supplied pointer looks
+* like it could be pointing to a valid heap. It does
+* minimal validations to speed heap operations.
+*
+*	Offset     	Value
+* 	------     	-----
+*	hhMagic	        Heap Header magic number
+*	hhFlags	        Heap configuration flags
+*	hhRequestSize	Requested heap size
+*	hhSize	        Total actual size of the heap including the headers
+*	hhHeapHead      Pointer to the first block in the heap block list
+*	hhFreeHead      Pointer to the head of the free block list
+*
+*     Entry:  A0 = Handle of heap
+*
+*     Exit:   Z flag set if valid
+*********************************************************
+
+	include heap.inc
+
+	public 	_HeapValidateHandleQuick
+
+	.code
+
+_HeapValidateHandleQuick:
+	movem.l d0,-(sp)			; Save register
+
+	; First validate that the supplied heap pointer looks like
+	; a heap pointer in that the address is a multiple of
+	; BLK_HDR_SIZE and that the upper byte is zero.
+	move.l	a0,d0 				; Verify handle point bit pattern is ok
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0
+        bne.s   hvhqExit      			; Nope, bail
+
+	; Validate the contents of the header
+
+	cmpi.l 	#HEAP_MAGIC,hhMagic(a0)		; Validate the magic number
+
+hvhqExit:
+	movem.l (sp)+,d0			; Restore register
+	rts
+
+	end

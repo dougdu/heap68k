@@ -1,0 +1,23 @@
+*********************************************************
+* _HeapDestroy
+*
+*     Destroys the specified heap object. It releases a
+*     private heap object, and it invalidates the handle
+*     to the heap.
+*
+*     Entry:  A0 = Handle of the Heap
+*
+*     Exit:   D0 = Status code
+*		  	0 = Success
+*********************************************************
+
+	include heap.inc
+
+	public 	_HeapDestroy
+
+	.code
+
+_HeapDestroy:
+	rts
+
+        end

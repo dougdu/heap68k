@@ -1,0 +1,25 @@
+*********************************************************
+* _HeapCreate
+*
+*     Creates a private heap object that can be used by
+*     the caller. The function allocates physical storage
+*     for a specified initial portion of this block.
+*
+*     Entry:  D0 = Initial Heap Size
+*             D1 = Maximum size of heap
+*
+*     Exit:   A0 = Handle of Heap or 0 if error
+*	      D0 = Status code
+*		  	0 = Success
+*********************************************************
+
+	include heap.inc
+
+	public	_HeapCreate
+
+	.code
+
+_HeapCreate:
+	rts
+
+        end

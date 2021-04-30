@@ -1,0 +1,70 @@
+*********************************************************
+* _HeapValidateHandle
+*
+* A heap handle is a pointer to a heap header. This
+* function validates that the supplied pointer looks
+* like it could be pointing to a valid heap.
+*
+*	Offset     	Value
+* 	------     	-----
+*	hhMagic	        Heap Header magic number
+*	hhFlags	        Heap configuration flags
+*	hhRequestSize	Requested heap size
+*	hhSize	        Total actual size of the heap including the headers
+*	hhHeapHead      Pointer to the first block in the heap block list
+*	hhFreeHead      Pointer to the head of the free block list
+*
+*     Entry:  A0 = Handle of heap
+*
+*     Exit:   Z flag set if valid
+*********************************************************
+
+	include heap.inc
+
+	public 	_HeapValidateHandle
+
+	.code
+
+_HeapValidateHandle:
+	movem.l d0-d1/a1,-(sp)			; Save registers
+
+	; First validate that the supplied heap pointer looks like
+	; a heap pointer in that the address is a multiple of
+	; BLK_HDR_SIZE and that the upper byte is zero.
+	move.l	a0,d0 				; Verify handle point bit pattern is ok
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0
+        bne.s   hvhExit      			; Nope, bail
+
+	; Validate the contents of the header
+
+	cmpi.l 	#HEAP_MAGIC,hhMagic(a0)		; Validate the magic number
+	bne.s 	hvhExit				; Nope bail
+
+	; Verify that hhRequestSize relates to hhSize properly
+	move.l 	hhRequestSize(a0),d1		; Make working copy of requested heap size
+	add.l   #BLK_HDR_SIZE-1,d1		; Align the initial block on a block boundary
+	andi.b  #NOT(BLK_HDR_SIZE-1),d1
+	add.l 	#BLK_HDR_SIZE,d1 		; Add in the size of block's header
+	move.l 	#HEAP_HDR_SIZE,d0		; Get size of heap header struct
+	add.l 	#BLK_HDR_SIZE-1,d0		; Align on BLK_HDR_SIZE boundary
+	andi.b 	#NOT(BLK_HDR_SIZE-1),d0
+	add.l 	#HEAP_END_SIZE,d0		; Add in end marker block size
+	add.l 	d1,d0 				; add in size of free memory block
+	cmp.l 	hhSize(a0),d0 			; Does the values match?
+	bne.s 	hvhExit				; Nope, bail
+
+	; Verify that the linked list head pointers point to valid blocks
+
+	move.l 	hhHeapHead(a0),a1 		; Pointer to first block in the heap
+	cmp.l 	#BLOCK_MAGIC,bhMagic(a1)	; Is the magic number there?
+	bne.s 	hvhExit				; Nope, bail
+
+	move.l 	hhFreeHead(a0),a1 		; Pointer to first free block in the heap
+	beq.s 	hvhExit 			; Ok if NULL
+	cmp.l 	#BLOCK_MAGIC,bhMagic(a1)	; Is the magic number there?
+
+hvhExit:
+	movem.l (sp)+,d0-d1/a1			; Restore registers
+	rts
+
+	end
