@@ -145,9 +145,7 @@ _haChkFwdFreeBlk:
 	move.l 	a4,bhFreePrev(a3)		; Yes, update it's back link
 
 _haNoFwdFreeBlock:
-
 	; Third update the values in the block headers
-
 	; Allocated block header
 	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
 	move.l 	d1,bhRequestSize(a1)		; Set requested size
@@ -162,7 +160,6 @@ _haNoFwdFreeBlock:
 
 _haProcessFlags:
 	; If the HEAP_ZERO_MEMORY flag passed in then zero out the block
-
 	btst.b 	#FLG_HEAP_ZERO_MEMORY,lFlags+3(a6) ; Caller requested block to be zeroed?
 	bne.s 	_haZeroBlock			; Yes, go zero the block
 

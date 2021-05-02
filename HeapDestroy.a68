@@ -1,15 +1,26 @@
-*********************************************************
-* _HeapDestroy
+************************************************************************
+*  _HeapDestroy
+************************************************************************
 *
-*     Destroys the specified heap object. It releases a
-*     private heap object, and it invalidates the handle
-*     to the heap.
+*  Destroys the specified heap object and it invalidates the handle
+*  to the heap.
 *
-*     Entry:  A0 = Handle of the Heap
+************************************************************************
+*  PARAMETERS
+************************************************************************
 *
-*     Exit:   D0 = Status code
-*		  	0 = Success
-*********************************************************
+*  hHeap : A handle to the heap to be destroyed. This handle is
+*          returned by the HeapCreate function. Do not use the
+*          handle to the machine heap returned by the
+*	   _MachineHeapInitialize function.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds,
+*
+************************************************************************
 
 	include heap.inc
 
@@ -17,7 +28,13 @@
 
 	.code
 
+; Parameter offsets
+hHeap	equ 	8
+
 _HeapDestroy:
+	link 	a6,#0
+
+	unlk 	a6
 	rts
 
         end
