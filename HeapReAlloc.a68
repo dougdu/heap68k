@@ -20,6 +20,12 @@
 
 	.code
 
+; Parameter offsets
+hHeap 	equ 	8
+lFlags	equ	12
+pMem 	equ 	16
+lSize 	equ 	20
+
 _HeapReAlloc:
 	rts
 

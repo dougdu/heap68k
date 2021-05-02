@@ -1,23 +1,25 @@
-*********************************************************
-* _HeapValidateHandle
+************************************************************************
+*  _HeapValidateHandle
+************************************************************************
 *
-* A heap handle is a pointer to a heap header. This
-* function validates that the supplied pointer looks
-* like it could be pointing to a valid heap.
+*  A heap handle is a pointer to a heap header structure. This API
+*  validates that the supplied pointer looks like it could be pointing
+*  to a valid heap.
 *
-*	Offset     	Value
-* 	------     	-----
-*	hhMagic	        Heap Header magic number
-*	hhFlags	        Heap configuration flags
-*	hhRequestSize	Requested heap size
-*	hhSize	        Total actual size of the heap including the headers
-*	hhHeapHead      Pointer to the first block in the heap block list
-*	hhFreeHead      Pointer to the head of the free block list
+************************************************************************
+*  PARAMETERS
+************************************************************************
 *
-*     Entry:  A0 = Handle of heap
+*  hHeap : The heap handle to validate.
 *
-*     Exit:   Z flag set if valid
-*********************************************************
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  The function preserves all registers, if the Z flag is set then
+*  validation succeeded, if not then it failed.
+*
+************************************************************************
 
 	include heap.inc
 
@@ -25,8 +27,14 @@
 
 	.code
 
+; Parameter offsets
+hHeap 	equ 	8
+
 _HeapValidateHandle:
-	movem.l d0-d1/a1,-(sp)			; Save registers
+	link 	a6,#0
+	movem.l d0-d1/a0-a1,-(sp)		; Save registers
+
+	movea.l hHeap(a6),a0 			; A0 = Heap handle
 
 	; First validate that the supplied heap pointer looks like
 	; a heap pointer in that the address is a multiple of
@@ -64,7 +72,8 @@ _HeapValidateHandle:
 	cmp.l 	#BLOCK_MAGIC,bhMagic(a1)	; Is the magic number there?
 
 hvhExit:
-	movem.l (sp)+,d0-d1/a1			; Restore registers
+	unlk 	a6
+	movem.l (sp)+,d0-d1/a0-a1		; Restore registers
 	rts
 
 	end

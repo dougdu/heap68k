@@ -1,76 +1,152 @@
-* HEAP_ZERO_MEMORY 0x00000001
-*	If the reallocation request is for a larger size, the additional
-* 	region of memory beyond the original size be initialized to zero.
-*	The contents of the memory block up to its original size are
-*	unaffected.
+	.nolist
+************************************************************************
 *
-* HEAP_REALLOC_IN_PLACE_ONLY 0x00000002
-* 	There can be no movement when reallocating a memory block.
-* 	If this value is not specified, the function may move the
-*	block to a new location. If this value is specified and the
-*	block cannot be resized without moving, the function fails,
-* 	leaving the original memory block unchanged.
+*  heap.inc : Definitions for the Heap API
 *
-* HEAP_TAIL_CHECKING_ENABLED      0x00000004
-*	This flag adds a short pattern to the end of each allocation. The
-*	heap manager detects the pattern when the block is freed and, if
-*	the block was modified, the heap manager breaks into the debugger.
+************************************************************************
+
+************************************************************************
+* Heap special values
+************************************************************************
+HEAP_MAGIC      equ 	'HEAP'			; Heap header magic number markin start of heap.
+BLOCK_MAGIC     equ     'BLKH'			; Block header magic number marking start of a block.
+HEAP_TAIL       equ 	$abababab		; Guard bytes used with FLG_HEAP_ENABLE_TAIL_CHECK.
+HEAP_END        equ     'PAEH'			; Heap magic number signaling end of the heap.
+CDCDCDCD 	equ 	$cdcdcdcd 		; Debug fill pattern for allocated blocks.
+BAADFOOD        equ     $baadf00d		; Debug fill pattern for freed blocks.
+
+************************************************************************
+* Heap Header structure definition
+************************************************************************
+hhMagic	        equ	$00             	; Heap Header magic number.
+hhFlags	        equ	$04             	; Heap configuration flags (loword).
+hhId 		equ 	$04 			; Heap ID (hiword)
+hhRequestSize   equ     $08             	; Requested heap size
+hhSize	        equ	$0C             	; Total actual size of the heap including the headers
+hhHeapHead      equ	$10             	; Pointer to the first block in the heap block list
+hhFreeHead      equ     $14             	; Pointer to the head of the free block list
+hhReserved1	equ 	$18			; Reserved for future use
+hhReserved2 	equ 	$1C			; Reserved for future use
+HEAP_HDR_SIZE   equ     $20             	; Size of the heap header in bytes
+hhHeapData 	equ 	$20			; Offset to the start of the heap data area
+
+************************************************************************
+* Heap Header Flag Definitions
+************************************************************************
 *
-* HEAP_FREE_CHECKING_ENABLED      0x00000008
-*       The Enable heap free checking flag validates each heap allocation
-*  	when it is freed.
+*    FLG_HEAP_ZERO_MEMORY : The allocated memory will be initialized
+*	to zero.
 *
-* HEAP_DISABLE_COALESCE_ON_FREE   0x00000010
-*	The Disable heap coalesce on free flag leaves adjacent blocks
-*	of heap memory separate when they are freed.
+*    FLG_HEAP_REALLOC_IN_PLACE_ONLY : There can be no movement when
+*	reallocating a memory block.
 *
-HEAP_ZERO_MEMORY_BIT 		  equ 	0
-HEAP_REALLOC_IN_PLACE_ONLY_BIT	  equ 	1
-HEAP_TAIL_CHECKING_ENABLED_BIT	  equ	2
-HEAP_FREE_CHECKING_ENABLE_BIT	  equ	3
-HEAP_DISABLE_COALESCE_ON_FREE_BIT equ	4
+*    FLG_HEAP_ENABLE_DEBUG_FILL : Fill blocks on allocation and when
+*	freed with filler patterns to help debug references to both
+*  	uninitialized memory and already freed memory. The flag
+*	FLG_HEAP_ZERO_MEMORY is ignored when this is enabled.
+*
+*    FLG_HEAP_ENABLE_TAIL_CHECK : Checks for buffer overruns when a
+*	block is freed. This flag adds a short pattern to the end of
+*	each allocation. The heap manager detects the pattern when
+*	the block is freed and, if the pattern was modified, the heap
+*	manager will return an error or TRAP into the debugger.
+*
+*    FLG_HEAP_ENABLE_FREE_CHECK : Enable heap free checking.  Validates
+*	the heap when a block is freed.
+*
+*    FLG_HEAP_VALIDATE_PARAMETERS : Enable heap parameter checking.
+*	Verifies some aspects of the heap whenever a heap API is called.
+*
+*    FLG_HEAP_VALIDATE_ALL : Enable heap validation on call. Validates
+*	the entire heap each time a heap API is called. To avoid the
+*	high overhead resulting from this flag, use the _HeapValidate
+*	API at critical junctures, such as when the heap is destroyed.
+*	However, this flag is useful for detecting random corruption
+*	in a pool.
+*
+*    FLG_HEAP_ENABLE_TAGGING : Enable heap tagging. Assigns unique tags
+*	to heap allocations. You can display the tag by using the !heap
+*	debugger extension with the -t parameter.
+*
+*    FLG_HEAP_DISABLE_COALESCING : Leaves adjacent blocks of heap memory
+*	separate when they are freed. By default, the system combines
+*	("coalesces") newly freed adjacent blocks into a single block.
+*	Combining the blocks takes time, but reduces fragmentation that
+*	might force the heap to allocate additional memory when it can't
+*	find contiguous memory. This flag is used to test optimizing
+*	strategies. It is not used for debugging.
+*
+*    FLG_HEAP_TRAP_ON_ERROR : If a heap validation error occurs TRAP
+*	rather than return an error code.
+*
+************************************************************************
+FLG_HEAP_ZERO_MEMORY 		equ 	0	; The allocated memory will be initialized to zero.
+FLG_HEAP_REALLOC_IN_PLACE_ONLY	equ 	1	; There can be no movement when reallocating a memory block.
+FLG_HEAP_ENABLE_DEBUG_FILL	equ 	2	; Enable filling blocks with debug data on allocation and free.
+FLG_HEAP_ENABLE_TAIL_CHECK	equ	3	; Enable heap tail checking.
+FLG_HEAP_ENABLE_FREE_CHECK	equ 	4	; Enable full heap validation on HeapFree only.
+FLG_HEAP_VALIDATE_PARAMETERS	equ	5	; Enable limited heap validation on all API calls.
+FLG_HEAP_VALIDATE_ALL		equ 	6	; Enable full heap validation on all API calls.
+FLG_HEAP_ENABLE_TAGGING		equ 	7	; Enable heap tagging.
+FLG_HEAP_DISABLE_COALESCING	equ 	8	; Disable heap coalesce on free.
+FLG_HEAP_TRAP_ON_ERROR		equ 	9 	; TRAP rather than return error code on corruption.
 
-HEAP_ZERO_MEMORY 		equ 	1 shl HEAP_ZERO_MEMORY_BIT
-HEAP_REALLOC_IN_PLACE_ONLY 	equ 	1 shl HEAP_REALLOC_IN_PLACE_ONLY_BIT
-HEAP_TAIL_CHECKING_ENABLED      equ 	1 shl HEAP_TAIL_CHECKING_ENABLED_BIT
-HEAP_FREE_CHECKING_ENABLED      equ 	1 shl HEAP_FREE_CHECKING_ENABLE_BIT
-HEAP_DISABLE_COALESCE_ON_FREE   equ	1 shl HEAP_DISABLE_COALESCE_ON_FREE_BIT
+HEAP_ZERO_MEMORY 		equ 	1 shl FLG_HEAP_ZERO_MEMORY
+HEAP_REALLOC_IN_PLACE_ONLY 	equ 	1 shl FLG_HEAP_REALLOC_IN_PLACE_ONLY
+HEAP_ENABLE_DEBUG_FILL		equ 	1 shl FLG_HEAP_ENABLE_DEBUG_FILL
+HEAP_TAIL_CHECKING_ENABLED      equ 	1 shl FLG_HEAP_ENABLE_TAIL_CHECK
+HEAP_FREE_CHECKING_ENABLED      equ 	1 shl FLG_HEAP_ENABLE_FREE_CHECK
+HEAP_VALIDATE_PARAMETERS	equ 	1 shl FLG_HEAP_VALIDATE_PARAMETERS
+HEAP_VALIDATE_ALL_ENABLED	equ	1 shl FLG_HEAP_VALIDATE_ALL
+HEAP_ALLOCATION_TAGGING_ENABLED	equ	1 shl FLG_HEAP_ENABLE_TAGGING
+HEAP_DISABLE_COALESCE_ON_FREE   equ	1 shl FLG_HEAP_DISABLE_COALESCING
+HEAP_TRAP_ON_ERROR 		equ	1 shl FLG_HEAP_TRAP_ON_ERROR
 
-HEAP_MAGIC      equ 	'HEAP'
-BLOCK_MAGIC     equ     'BLKH'
-HEAP_TAIL       equ 	$cdcdcdcd
-HEAP_END        equ     'PAEH'
-BAADFOOD        equ     $baadf00d
+************************************************************************
+* Heap Allocation Block Header structure definition
+************************************************************************
+bhMagic         equ     $00             	; Heap Block magic number
+bhFlags         equ     $04             	; Block status flags (loword)
+bhId 		equ 	$04 			; Heap ID the block is a member of (hiword)
+bhRequestSize   equ     $08             	; Requested allocation size
+bhSize          equ     $0C             	; Actual size of block including headers
+bhPrev          equ     $10             	; Pointer to the previous block
+bhNext	        equ 	$14             	; Pointer to the next block
+bhFreePrev      equ     $18             	; Pointer to previous free block
+bhFreeNext      equ     $1C             	; Pointer to the next free block
+bhData	        equ	$20             	; Offset to the start of block data
+BLK_HDR_SIZE    equ     $20             	; Size of the block header in bytes
 
-* HEAP_HEADER
-hhMagic	        equ	$00             ; Heap Header magic number
-hhFlags	        equ	$04             ; Heap configuration flags
-hhRequestSize   equ     $08             ; Requested heap size
-hhSize	        equ	$0C             ; Total actual size of the heap including the headers
-hhHeapHead      equ	$10             ; Pointer to the first block in the heap block list
-hhFreeHead      equ     $14             ; Pointer to the head of the free block list
-HEAP_HDR_SIZE   equ     $18             ; Size of the heap header in bytes
-
-* BLOCK_HEADER
-bhMagic         equ     $00             ; Heap Block magic number
-bhFlags         equ     $04             ; Block status flags
-bhRequestSize   equ     $08             ; Requested allocation size
-bhSize          equ     $0C             ; Actual size of block including headers
-bhPrev          equ     $10             ; Pointer to the previous block
-bhNext	        equ 	$14             ; Pointer to the next block
-bhFreePrev      equ     $18             ; Pointer to previous free block
-bhFreeNext      equ     $1C             ; Pointer to the next free block
-bhData	        equ	$20             ; Offset to the start of block data
-BLK_HDR_SIZE    equ     $20             ; Size of the block header in bytes
-
-* The least significant two bits of bhNext offset are used as flags
-FLG_FREE_BIT    equ     0               ; Bit # of free flag
-FLG_GARBAGE_BIT equ     1               ; Bit # of garbage bit
+************************************************************************
+* Heap Allocation Block Header Flag Definitions
+************************************************************************
+FLG_FREE_BIT    equ     0               	; Bit # of free flag
+FLG_GARBAGE_BIT equ     1               	; Bit # of garbage bit
 FLG_FREE        equ     1 shl FLG_FREE_BIT      ; Set if the block is free
-FLG_GARBAGE     equ     1 shl FLG_GARBAGE_BIT   ; Set during garbage collection
+FLG_GARBAGE     equ     1 shl FLG_GARBAGE_BIT	; Set during garbage collection
 
-* HEAP_END
-heMagic         equ     $00             ; Offset to the MAGIC Number
-HEAP_END_SIZE   equ     BLK_HDR_SIZE    ; Size of the heap end marker in bytes.
+************************************************************************
+* Heap End Marker structure definition
+************************************************************************
+heMagic         equ     $00             	; Offset to the MAGIC Number
+HEAP_END_SIZE   equ     BLK_HDR_SIZE    	; Size of the heap end marker in bytes.
 
-MACHINE_HEAP_SIZE equ	32768 * 2       ; Size of the machine heap
+************************************************************************
+* Heap Error codes
+************************************************************************
+HEAP_ERROR_SUCCESS 			equ 	$00	; Last heap operation was successful
+HEAP_ERROR_INVALID_PARAM		equ 	$01 	; Bad parameter
+HEAP_ERROR_INVALID_HANDLE		equ 	$02	; Heap handle is invalid
+HEAP_ERROR_INVALID_BLOCK		equ 	$03 	; Memory point is not a heap block
+HEAP_ERROR_INVALID_PREV_LINK		equ	$04 	; Block chain back link is invalid
+HEAP_ERROR_INVALID_NEXT_LINK		equ 	$05 	; Block chain forward link is invalid
+HEAP_ERROR_INVALID_FPREV_LINK 		equ 	$06 	; Block in free chain has an invalid back link
+HEAP_ERROR_BLOCK_NOT_FREE 		equ 	$07 	; Block in free chain not marked as free
+HEAP_ERROR_HEAPEND_BAD_MAGIC		equ 	$08	; End of heap magic number is corrupt
+HEAP_ERROR_INVALID_HEAPEND		equ 	$09	; Heap end found in the worng position
+HEAP_ERROR_HANDLE_BLOCK_MISMATCH	equ 	$0A 	; Heap block is valid but not owned by heap
+HEAP_ERROR_OUT_OF_MEMORY		equ 	$0B	; Insufficient free space to satisfy request
+HEAP_ERROR_NOT_INITIALIZED 		equ 	$0C	; Machine heap not initialized
+HEAP_ERROR_INITIALIZED			equ 	$0D 	; Machine heap is already initialized
+
+	.list

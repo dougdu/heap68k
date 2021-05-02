@@ -1,81 +1,189 @@
-*********************************************************
-* _MachineHeapInitialize
+************************************************************************
+*  _MachineHeapInitialize
+************************************************************************
 *
-*     Entry:  D0 = flags
-*	      D1 = machine heap size
+*  Creates the machine heap object that can be used by applications
+*  both for allocations and used by the heap APIs to create private
+*  heaps.  The
 *
-*     Exit:   None
-*********************************************************
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  lOptions : The heap options. These options affect subsequent access
+*	      to the machine heap through calls to the heap functions.
+*	      This parameter can be 0 or one or more of the following
+*	      values.
+*
+*    	FLG_HEAP_ZERO_MEMORY : The allocated memory will be
+*		initialized to zero.
+*
+*    	FLG_HEAP_REALLOC_IN_PLACE_ONLY : There can be no movement
+*		when reallocating a memory block.
+*
+*    	FLG_HEAP_ENABLE_DEBUG_FILL : Fill blocks on allocation
+*		and when freed with filler patterns to help debug
+*		references to both uninitialized memory and already
+*		freed memory. The flag FLG_HEAP_ZERO_MEMORY is
+*		ignored when this is enabled.
+*
+*    	FLG_HEAP_ENABLE_TAIL_CHECK : Checks for buffer overruns
+*		when a block is freed. This flag adds a short
+*		pattern to the end of each allocation. The heap
+*		manager detects the pattern when the block is
+*		freed and, if the pattern was modified, the heap
+*		manager will return an error or TRAP into the
+*		debugger.
+*
+*    	FLG_HEAP_ENABLE_FREE_CHECK : Enable heap free checking.
+*		Validates the heap when a block is freed.
+*
+*    	FLG_HEAP_VALIDATE_PARAMETERS : Enable heap parameter
+*		checking. Verifies some aspects of the heap
+*		whenever a heap API is called.
+*
+*    	FLG_HEAP_VALIDATE_ALL : Enable heap validation on call.
+*		Validates the entire heap each time a heap API
+*		is called. To avoid the high overhead resulting
+*		from this flag, use the _HeapValidate API at
+*		critical junctures, such as when the heap is
+*		destroyed. However, this flag is useful for
+*		detecting random corruption in a pool.
+*
+*    	FLG_HEAP_ENABLE_TAGGING : Enable heap tagging. Assigns
+*		unique tags to heap allocations. You can display
+*		the tag by using the !heap debugger extension with
+*		the -t parameter.
+*
+*    	FLG_HEAP_DISABLE_COALESCING : Leaves adjacent blocks of
+*		heap memory separate when they are freed. By default,
+*		the system combines ("coalesces") newly freed adjacent
+*		blocks into a single block. Combining the blocks takes
+*		time, but reduces fragmentation that might force the
+*		heap to allocate additional memory when it can't find
+*		contiguous memory. This flag is used to test optimizing
+*		strategies. It is not used for debugging.
+*
+*    	FLG_HEAP_TRAP_ON_ERROR : If a heap validation error occurs TRAP
+*		rather than return an error code.
+*
+*  lStart : Address after which the heap can start
+*
+*  lSize : The size of the machine heap, in bytes.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is a handle to the newly
+*  created heap. If the function fails, the return value is NULL. To
+*  get extended error information, call HeapGetError.
+*
+************************************************************************
 
-	include heap.inc
+	include	heap.inc
 
 	public 	_MachineHeapInitialize
-	extern	__MachineHeapHandle
+	extern 	__MachineHeapHandle, __HeapError, __HeapId
 
 	.code
 
+; Parameter offsets
+lOptions	equ 	8
+lStart 		equ 	12
+lSize		equ	16
+
 _MachineHeapInitialize:
-	movem.l d0-d4/a0-a1,-(sp)		; Save registers
-	move.l	#__rt_heap,d2			; Get pointer past end of program
-	add.l 	#BLK_HDR_SIZE-1,d2		; Align on Heap block size boundary
-	andi.b 	#NOT(BLK_HDR_SIZE-1),d2
-	movea.l d2,a0				; A0 --> Start of machine heap
+	link 	a6,#0
+	movem.l d1-d2/a0-a1,-(sp)		; Save registers
+
+	clr.l	__HeapError			; Clear Heap Error
+
+	tst.l 	__MachineHeapHandle		; Already initialized?
+	bne 	mhi_AlreadyInitialized		; Yup, report an error
 
 	; Compute the actual size of the initial (FREE) block
-	move.l 	d1,d4				; Make working copy of requested heap size
-        add.l   #BLK_HDR_SIZE-1,d4		; Align the initial block on a block boundary
-        andi.b  #NOT(BLK_HDR_SIZE-1),d4
-	add.l 	#BLK_HDR_SIZE,d4 		; Add in the size of block's header
+	move.l 	lSize(a6),d1 			; Get requested size
+        add.l   #BLK_HDR_SIZE-1,d1		; Align the initial block on a block boundary
+        andi.b  #NOT(BLK_HDR_SIZE-1),d1
+	add.l 	#BLK_HDR_SIZE,d1 		; Add in the size of block's header
+	move.l 	d1,d2 				; Save copy of aligned free block size
 
-	; Compute the size of the entire machine heap
-	move.l 	#HEAP_HDR_SIZE,d2 		; Reserve space for header
-	add.l 	#BLK_HDR_SIZE-1,d2		; Pad to be a multiple of the heap block size
-	andi.b 	#NOT(BLK_HDR_SIZE-1),d2		; D2 = Aligned size of heap header
-	move.l 	d2,d3				; D3 = Computed size of entire heap including headers
-	add.l 	#HEAP_END_SIZE,d3 		; add in heap end block
-	add.l 	d4,d3 				; add in size of free memory
+	; Compute the size of the entire heap (data + headers)
+	addi.l 	#HEAP_HDR_SIZE,d1 		; Add in the size of heap header
+	addi.l 	#HEAP_END_SIZE,d1 		; Add in the size of the end of heap header
+
+	; Compute the start address of the machine heap
+	move.l 	lStart(a6),d0			; Get the supplied start of free RAM
+        add.l   #BLK_HDR_SIZE-1,d0		; Align on a block boundary
+        andi.b  #NOT(BLK_HDR_SIZE-1),d0
+	movea.l d0,a0 				; A0 --> start of heap
+
+	; Initialize the end of heap marker
+	lea.l 	-HEAP_END_SIZE(a0,d1.l),a1 	; A1 --> end of heap marker
+	move.l 	#HEAP_END_SIZE,d0 		; Size of end of heap marker in bytes
+	lsr.l 	#2,d0 				; Convert to a count of long words
+	subq.l 	#1,d0 				; adjust for dbra
+
+mhi_EndMarkerInitLoop:
+	move.l 	#HEAP_END,(a1)+			; Put magic word in to detect buffer overruns
+	dbra 	d0,mhi_EndMarkerInitLoop	; Fill the end marker with the magic number
 
 	; Initialize the heap header
 	move.l 	#HEAP_MAGIC,hhMagic(a0)		; Initialize MAGIC number
-	move.l	d0,hhFlags(a0)			; Save requested heap flags
-	move.l 	d1,hhRequestSize(a0)		; Save requested heap size
-	move.l 	d3,hhSize(a0)			; Save the machine heap size
-	lea.l 	hhHeap(a0,d2.l),a1		; A1 --> Initial free block
-	move.l 	a1,hhHeapHead(a0)		; Initialize the pointer to the head of the block list.
-	move.l 	a1,hhFreeHead(a0)		; Head of the free block list is the same to start.
+	move.l	lOptions(a6),hhFlags(a0)	; Save requested heap flags
+	move.l 	__HeapId,d0 			; Get heap Id
+	or.l 	d0,hhFlags(a0) 			; Mask in heap Id with flags
+	move.l 	lSize(a6),hhRequestSize(a0)	; Save requested heap size
+	move.l 	d1,hhSize(a0)			; Save the machine heap size
+	lea.l 	hhHeapData(a0),a1		; A1 --> Initial free block
+	move.l 	a1,hhHeapHead(a0)		; Initialize head of the block list.
+	move.l 	a1,hhFreeHead(a0)		; Initialize head of the free block list.
 
-	; Initialize the block header
+	; Initialize the initial free block block header
 	move.l 	#BLOCK_MAGIC,bhMagic(a1)	; Set the block header magic number
 	move.l 	#FLG_FREE,bhFlags(a1)		; Initialize the block to free
-	move.l 	d1,bhRequestSize(a1)		; Save the requested size of the heap
-	move.l  d4,bhSize(a1)			; Save aligned block size
+	move.l 	__HeapId,d0 			; Get heap Id
+	or.l 	d0,bhFlags(a1) 			; Mask in heap Id with flags
+	move.l 	lSize(a6),bhRequestSize(a1)	; Save the requested size of the heap
+	move.l  d2,bhSize(a1)			; Save aligned block size
 	clr.l 	bhPrev(a1)			; pointer to the previous block = NULL
 	clr.l 	bhNext(a1)			; pointer to the next block = NULL
 	clr.l 	bhFreePrev(a1)			; pointer to the previous free block = NULL
 	clr.l 	bhFreeNext(a1)			; pointer to the next free block = NULL
 
-	; Fill free memory with marker word "baadf00d"
-	lea.l 	bhData(a1),a2			; Start of data area
-	move.l 	bhRequestSize(a1),d1 		; Number of bytes to initialize
-	lsr.l 	#2,d1				; Fill using long words
-	subq.l 	#1,d1 				; Adjust for dbra
-_mhiBaadfoodLoop:
-	move.l 	#BAADFOOD,(a2)+
-	dbra 	d1,_mhiBaadfoodLoop		; Loop until filled
+	; Bump heap id
+	addi.w 	#1,__HeapId			; Heap Id = # heaps
 
-	; Initialize the end of heap marker
-	lea.l 	-HEAP_END_SIZE(a0,d3.l),a1 	; A1 --> end of heap marker
-	move.l 	#HEAP_END_SIZE,d1 		; Size of end of heap marker in bytes
-	lsr.l 	#2,d1 				; Convert to a count of long words
-	subq.l 	#1,d1 				; adjust for dbra
+	; Fill initial free block memory with debug pattern?
+	move.l 	hhFlags(a0),d0 			; Get heap flags
+	btst.l 	#FLG_HEAP_ENABLE_DEBUG_FILL,d0 	; Should we fill the free space with debug pattern?
+	beq.s 	mhi_Exit			; Nope, all done with heap creation
 
-_mhiEndMarkerInitLoop:
-	move.l 	#HEAP_END,(a1)+			; Put magic word in to detect buffer overruns
-	dbra 	d1,_mhiEndMarkerInitLoop	; Fill the end marker with the magic number
+	move.l 	bhSize(a1),d0 			; Computer size of block in long words
+	subi.l 	#BLK_HDR_SIZE,d0 		; Block size - block header size
+	lsr.l 	#2,d0				; Adjust to count of long words
+	subq.l 	#1,d0 				; Adjust for dbra
+	lea.l 	bhData(a1),a1			; A1 -> Start of data area
 
-	move.l  a0,__MachineHeapHandle		; Save the handle to the machine heap
+mhi_BaadfoodLoop:
+	move.l 	#BAADFOOD,(a1)+
+	dbra 	d0,mhi_BaadfoodLoop		; Loop until filled
 
-	movem.l (sp)+,d0-d4/a0-a1		; Restore registers
+mhi_Exit:
+	move.l 	a0,__MachineHeapHandle		; Update machine heap handle
+	move.l 	a0,d0 				; Return heap handle in D0
+
+mhi_ErrorExit:
+	movem.l (sp)+,d1-d2/a0-a1		; Restore registers
+	unlk	a6
 	rts
 
-	end
+mhi_AlreadyInitialized:
+	move.l 	#HEAP_ERROR_INITIALIZED,__HeapError ; Init error code
+
+mhi_Error:
+	clr.l 	d0				; NULL heap handle
+	bra.s 	mhi_Exit			; Return failure
+
+        end

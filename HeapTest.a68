@@ -1,0 +1,56 @@
+	include	heap.inc
+
+	extern	_MachineHeapInitialize
+	extern 	_HeapCreate, _HeapDestroy
+	extern 	_HeapAlloc, _HeapFree
+
+	.code
+
+
+lowtpa	equ	$00
+hightpa	equ	$04
+csstart	equ	$08
+cslen 	equ   	$0C
+dsstart	equ 	$10
+dslen 	equ 	$14
+bsstart	equ	$18
+bslen	equ	$1C
+freelen equ	$20
+cmdtail	equ 	$80
+
+STKSIZE	equ	$200
+
+start:	; Get the pointer to the base page
+	move.l 	(sp)+,a0 		; A0 --> Base page
+
+	; Initialize stack
+	move.l 	hightpa(a0),d1
+	movea.l d1,a7 			; USP --> hightpa
+
+	; Compute heap start
+	move.l 	bsstart(a0),d2 		; A1 --> Start of bss segment
+	add.l 	bslen(a0),d2 		; D2 = Heap start after BSS segment
+
+	; Compute heap size
+	sub.l 	d2,d1 			; hightpa - heapstart
+	subi.l 	#STKSIZE,d1 		; reserve room for stack
+	subi.l 	#32,d1 			; Some slop for block aligning
+
+	; Initialize the machine heap
+	move.l 	d1,-(sp)		; Push heap size
+	move.l 	d2,-(sp)		; Push start address
+	clr.l 	-(sp)			; No options
+	jsr 	_MachineHeapInitialize	; Create the Machine heap
+	adda.l 	#12,a0
+
+
+ttHeapCreate:
+	move.l 	#$20,-(sp)
+	move.l 	#HEAP_ENABLE_DEBUG_FILL,-(sp)
+	jsr 	_HeapCreate
+	adda.l 	#8,sp
+
+
+done: 	jmp 	done
+
+	end

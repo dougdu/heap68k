@@ -1,19 +1,22 @@
-CR 	equ	$0D
-LF 	equ 	$0A
+************************************************************************
+*  HeapData
+************************************************************************
+*
+*  Global data used to manage the heaps.
+*
+************************************************************************
 
-	public	__rterr_HeapValidationFailure, __rterr_HeapAllocFailure
-	public 	__MachineHeapHandle
+	public 	__HeapId, __MachineHeapHandle, __HeapError
 
         .data
 
-__rterr_HeapValidationFailure:
-	dc.b 	"Heap validation failure",CR,LF,0
-__rterr_HeapAllocFailure:
-	dc.b 	"HeapAlloc failure",CR,LF,0
+	.even
+
+__HeapId:		dc.w 	0	; Next heap ID
+			dc.w 	0 	; Heap ID can be accessed as a long
+__MachineHeapHandle:	dc.l 	0	; Handle of the machine heap
+__HeapError:		dc.l 	0 	; Last error set by heap functions
 
         .bss
-
-__MachineHeapHandle:
-	ds.l	1			; Heap handle of the machine heap
 
         end

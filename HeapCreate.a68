@@ -1,25 +1,208 @@
-*********************************************************
-* _HeapCreate
+************************************************************************
+*  _HeapCreate
+************************************************************************
 *
-*     Creates a private heap object that can be used by
-*     the caller. The function allocates physical storage
-*     for a specified initial portion of this block.
+*  Creates a private heap object that can be used by the caller. The
+*  function allocates physical storage for a specified initial portion
+*  of this block.
 *
-*     Entry:  D0 = Initial Heap Size
-*             D1 = Maximum size of heap
+************************************************************************
+*  PARAMETERS
+************************************************************************
 *
-*     Exit:   A0 = Handle of Heap or 0 if error
-*	      D0 = Status code
-*		  	0 = Success
-*********************************************************
+*  lOptions : The heap allocation options. These options affect
+*             subsequent access to the new heap through calls to
+*             the heap functions. This parameter can be 0 or one
+*             or more of the following values.
+*
+*    	FLG_HEAP_ZERO_MEMORY : The allocated memory will be
+*		initialized to zero.
+*
+*    	FLG_HEAP_REALLOC_IN_PLACE_ONLY : There can be no movement
+*		when reallocating a memory block.
+*
+*    	FLG_HEAP_ENABLE_DEBUG_FILL : Fill blocks on allocation
+*		and when freed with filler patterns to help debug
+*		references to both uninitialized memory and already
+*		freed memory. The flag FLG_HEAP_ZERO_MEMORY is
+*		ignored when this is enabled.
+*
+*    	FLG_HEAP_ENABLE_TAIL_CHECK : Checks for buffer overruns
+*		when a block is freed. This flag adds a short
+*		pattern to the end of each allocation. The heap
+*		manager detects the pattern when the block is
+*		freed and, if the pattern was modified, the heap
+*		manager will return an error or TRAP into the
+*		debugger.
+*
+*    	FLG_HEAP_ENABLE_FREE_CHECK : Enable heap free checking.
+*		Validates the heap when a block is freed.
+*
+*    	FLG_HEAP_VALIDATE_PARAMETERS : Enable heap parameter
+*		checking. Verifies some aspects of the heap
+*		whenever a heap API is called.
+*
+*    	FLG_HEAP_VALIDATE_ALL : Enable heap validation on call.
+*		Validates the entire heap each time a heap API
+*		is called. To avoid the high overhead resulting
+*		from this flag, use the _HeapValidate API at
+*		critical junctures, such as when the heap is
+*		destroyed. However, this flag is useful for
+*		detecting random corruption in a pool.
+*
+*    	FLG_HEAP_ENABLE_TAGGING : Enable heap tagging. Assigns
+*		unique tags to heap allocations. You can display
+*		the tag by using the !heap debugger extension with
+*		the -t parameter.
+*
+*    	FLG_HEAP_DISABLE_COALESCING : Leaves adjacent blocks of
+*		heap memory separate when they are freed. By default,
+*		the system combines ("coalesces") newly freed adjacent
+*		blocks into a single block. Combining the blocks takes
+*		time, but reduces fragmentation that might force the
+*		heap to allocate additional memory when it can't find
+*		contiguous memory. This flag is used to test optimizing
+*		strategies. It is not used for debugging.
+*
+*    	FLG_HEAP_TRAP_ON_ERROR : If a heap validation error occurs TRAP
+*		rather than return an error code.
+*
+*  lSize : The size of the heap, in bytes.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is a handle to the newly
+*  created heap. If the function fails, the return value is NULL. To
+*  get extended error information, call HeapGetError.
+*
+************************************************************************
 
 	include heap.inc
 
 	public	_HeapCreate
+	extern 	_HeapValidateHandle, _HeapValidate, _HeapAlloc
+	extern 	__MachineHeapHandle, __HeapError, __HeapId
 
 	.code
 
+; Parameter offsets
+lOptions	equ 	8
+lSize		equ	12
+
 _HeapCreate:
+	link 	a6,#0
+	movem.l d1-d2/a0-a1,-(sp)		; Save registers
+
+	clr.l	__HeapError			; Clear Heap Error
+
+	move.l 	__MachineHeapHandle,d0		; Get machine heap handle
+	beq 	hc_NotInitialized		; Abort, if NULL
+	movea.l d0,a0 				; A0 --> Machine heap header
+	move.l 	hhFlags(a0),d0 			; Get heap flags
+	btst.l 	#FLG_HEAP_VALIDATE_PARAMETERS,d0 ; Limited heap validation ?
+	beq.s 	hc_CheckNextflg			; Nope, skip
+	move.l 	a0,-(sp)			; Push machine heap handle
+	jsr 	_HeapValidateHandle		; Validate handle
+	adda.l 	#4,sp
+	bne 	hc_Error			; Validation failed, abort
+
+hc_CheckNextflg:
+	btst.l 	#FLG_HEAP_VALIDATE_ALL,d0 	; Full heap validation ?
+	beq.s 	hc_NoValidation
+	clr.l 	-(sp)				; Validate entire heap
+	move.l 	a0,-(sp)			; Push machine heap handle
+	jsr 	_HeapValidate			; Go do validation
+	adda.l 	#8,sp
+	bne 	hc_Error			; Go if validation failed
+
+hc_NoValidation:
+	; Compute the actual size of the initial (FREE) block
+	move.l 	lSize(a6),d1 			; Get requested size
+        add.l   #BLK_HDR_SIZE-1,d1		; Align the initial block on a block boundary
+        andi.b  #NOT(BLK_HDR_SIZE-1),d1
+	add.l 	#BLK_HDR_SIZE,d1 		; Add in the size of block's header
+	move.l 	d1,d2 				; Save copy of aligned free block size
+
+	; Compute the size of the entire heap (data + headers)
+	addi.l 	#HEAP_HDR_SIZE,d1 		; Add in the size of heap header
+	addi.l 	#HEAP_END_SIZE,d1 		; Add in the size of the end of heap header
+
+	; Allocate a block from the machine heap big enough for the private heap
+	move.l 	d1,-(sp)			; Push count of bytes
+	clr.l 	-(sp)				; Don't zero the memory
+	move.l 	a0,-(sp)			; Push machine heap handle
+	jsr 	_HeapAlloc 			; Allocate memory for the heap
+	adda.l 	#12,sp
+	tst.l 	d0				; Did HeapAlloc fail?
+	beq 	hc_ErrorExit			; Yes, abort
+	movea.l d0,a0 				; A0 --> start of heap
+
+	; Initialize the end of heap marker
+	lea.l 	-HEAP_END_SIZE(a0,d1.l),a1 	; A1 --> end of heap marker
+	move.l 	#HEAP_END_SIZE,d0 		; Size of end of heap marker in bytes
+	lsr.l 	#2,d0 				; Convert to a count of long words
+	subq.l 	#1,d0 				; adjust for dbra
+
+hc_EndMarkerInitLoop:
+	move.l 	#HEAP_END,(a1)+			; Put magic word in to detect buffer overruns
+	dbra 	d0,hc_EndMarkerInitLoop		; Fill the end marker with the magic number
+
+	; Initialize the heap header
+	move.l 	#HEAP_MAGIC,hhMagic(a0)		; Initialize MAGIC number
+	move.l	lOptions(a6),hhFlags(a0)	; Save requested heap flags
+	move.l 	__HeapId,d0 			; Get heap Id
+	or.l 	d0,hhFlags(a0) 			; Mask in heap Id with flags
+	move.l 	lSize(a6),hhRequestSize(a0)	; Save requested heap size
+	move.l 	d1,hhSize(a0)			; Save the actual heap size
+	lea.l 	hhHeapData(a0),a1		; A1 --> Initial free block
+	move.l 	a1,hhHeapHead(a0)		; Initialize head of the block list.
+	move.l 	a1,hhFreeHead(a0)		; Initialize head of the free block list.
+
+	; Initialize the initial free block block header
+	move.l 	#BLOCK_MAGIC,bhMagic(a1)	; Set the block header magic number
+	move.l 	#FLG_FREE,bhFlags(a1)		; Initialize the block to free
+	move.l 	__HeapId,d0 			; Get heap Id
+	or.l 	d0,bhFlags(a1) 			; Mask in heap Id with flags
+	move.l 	lSize(a6),bhRequestSize(a1)	; Save the requested size of the heap
+	move.l  d2,bhSize(a1)			; Save aligned block size
+	clr.l 	bhPrev(a1)			; pointer to the previous block = NULL
+	clr.l 	bhNext(a1)			; pointer to the next block = NULL
+	clr.l 	bhFreePrev(a1)			; pointer to the previous free block = NULL
+	clr.l 	bhFreeNext(a1)			; pointer to the next free block = NULL
+
+	; Bump heap id
+	addi.w 	#1,__HeapId			; Heap Id = # heaps
+
+	; Fill initial free block memory with debug pattern?
+	move.l 	hhFlags(a0),d0 			; Get heap flags
+	btst.l 	#FLG_HEAP_ENABLE_DEBUG_FILL,d0 	; Should we fill the free space with debug pattern?
+	beq.s 	hc_Exit				; Nope, all done with heap creation
+
+	move.l 	bhSize(a1),d0 			; Computer size of block in long words
+	subi.l 	#BLK_HDR_SIZE,d0 		; Block size - block header size
+	lsr.l 	#2,d0				; Adjust to count of long words
+	subq.l 	#1,d0 				; Adjust for dbra
+	lea.l 	bhData(a1),a1			; A1 -> Start of data area
+
+hc_BaadfoodLoop:
+	move.l 	#BAADFOOD,(a1)+
+	dbra 	d0,hc_BaadfoodLoop		; Loop until filled
+
+hc_Exit:
+	move.l 	a0,d0 				; Return heap handle in D0
+
+hc_ErrorExit:
+	movem.l (sp)+,d1-d2/a0-a1		; Restore registers
+	unlk	a6
 	rts
+
+hc_NotInitialized:
+	move.l 	#HEAP_ERROR_NOT_INITIALIZED,__HeapError ; Init error code
+
+hc_Error:
+	clr.l 	d0				; NULL heap handle
+	bra.s 	hc_Exit				; Return failure
 
         end

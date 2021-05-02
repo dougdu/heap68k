@@ -1,20 +1,27 @@
-*********************************************************
-* _HeapFree
+************************************************************************
+*  _HeapFree
+************************************************************************
 *
-*     Frees a memory block allocated from a heap by the
-*     HeapAlloc or HeapReAlloc function.
+*  Frees a memory block allocated from a heap by the HeapAlloc or
+*  HeapReAlloc function.
 *
-*     Entry:  A0 = Handle of heap
-*	      D0 = flags
-*	      D1 = A pointer to the memory block to be
-*                  freed. This pointer is returned by
-*                  the HeapAlloc or HeapReAlloc function.
-*                  This pointer can be NULL.
+************************************************************************
+*  PARAMETERS
+************************************************************************
 *
-*     Exit:   D0 = error code: 0 = Success
-*                              1 = Handle Invalid
-*                              2 = Block invalid
-*********************************************************
+*  hHeap  : The heap handle of the memory block was allocated from.
+*
+*  pMem   : A pointer to the memory block to be freed. This pointer
+*           is returned by the HeapAlloc or HeapReAlloc function.
+*           This pointer can be NULL.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  Heap error code.
+*
+************************************************************************
 
 	include heap.inc
 
@@ -22,13 +29,23 @@
 
 	.code
 
+; Parameter offsets
+hHeap	equ	8
+pMem 	equ	12
+
 _HeapFree:
+	link 	a1,#0				; Initialize stack frame
  	movem.l d1-d5/a0-a5,-(sp)          	; Save work registers
-	;bsr 	__rt_HeapValidate
-	;bsr 	_HeapValidateHandle		; Validate the heap handle
+
+	clr.l	__HeapError			; Clear Heap Error
+
+	movea.l hHeap(a6),a0 			; A0 --> Heap header
+	;jsr 	__rt_HeapValidate
+	;jsr 	_HeapValidateHandle		; Validate the heap handle
 	;bne  	_hfInvalidHandle		; Nope abort
 
 	; Abort if the supplied block pointer is NULL
+	move.l 	pMem(a6),d1
         tst.l   d1                      	; Look at block address
         beq  	_hfNullPtr                 	; Return if zero
 
@@ -282,6 +299,7 @@ _hfNullPtr:
 
 _hfExit:
 	movem.l (sp)+,d1-d5/a0-a5          	; Restore registers
+	unlk	a6
         rts
 
 _hfInvalidHandle:

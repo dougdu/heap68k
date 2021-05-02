@@ -23,6 +23,11 @@
 
 	.code
 
+; Parameter offsets
+hHeap 	equ	8
+pEntry	equ	12
+
+
 _HeapWalk:
 	jsr 	_HeapValidateHandle		; Validate the heap handle
 	bne  	_hwInvalidHeapHandle		; Nope abort

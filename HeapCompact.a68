@@ -1,27 +1,105 @@
-*********************************************************
-* _HeapCompact
+************************************************************************
+*  _HeapCompact
+************************************************************************
 *
-*     Returns the size of the largest free block in the
-*     specified heap. If the Disable heap coalesce on free
-*     global flag is set, this function also coalesces
-*     adjacent free blocks of memory in the heap.
+*  Returns the size of the largest free block in the specified
+*  heap. If the Disable heap coalesce on free global flag is set,
+*  this function also coalesces adjacent free blocks of memory
+*  in the heap.
 *
-*     HeapAlloc or HeapReAlloc function.
+************************************************************************
+*  PARAMETERS
+************************************************************************
 *
-*     Entry:  A0 = Handle of heap
-*	      D0 = flags
+*  hHeap  : The heap handle of the heap to compact.
 *
-*     Exit:   D0 = error code: 0 = Handle Valid
-*                              1 = Handle Invalid
-*********************************************************
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is the size of the
+*  largest free block in the heap, in bytes.  If the function fails,
+*  the return value is zero. To get extended error information,
+*  call GetHeapError. In the unlikely case that there is absolutely
+*  no space available in the heap, the function return value is zero,
+*  and GetHeapError returns the value HEAP_ERROR_SUCCESS.
+*
+************************************************************************
 
 	include heap.inc
 
 	public	_HeapCompact
+	extern 	_HeapValidateHandle, _HeapValidate
+	extern	__HeapError
 
 	.code
 
+; Parameter offsets
+hHeap	equ 	8
+
 _HeapCompact:
+	link 	a6,#0				; Initialize stack frame
+	movem.l a0,-(sp)			; Save registers
+
+	clr.l	__HeapError			; Clear Heap Error
+
+	movea.l hHeap(a6),a0 			; A0 --> Heap Header
+	move.l 	hhFlags(a0),d1 			; Get heap flags
+	btst.l 	#FLG_HEAP_VALIDATE_PARAMETERS,d1 ; Limited heap validation ?
+	beq.s 	heapCompactCheckNextflg		; Nope, skip
+	move.l 	a0,-(sp)			; Push machine heap handle
+	jsr 	_HeapValidateHandle		; Validate handle
+	adda.l 	#4,sp
+	bne 	heapCompactError		; Validation failed, abort
+
+heapCompactCheckNextflg:
+	btst.l 	#FLG_HEAP_VALIDATE_ALL,d1 	; Full heap validation ?
+	beq.s 	heapCompactNoValidation
+	clr.l 	-(sp)				; Validate entire heap
+	move.l 	a0,-(sp)			; Push machine heap handle
+	jsr 	_HeapValidate			; Go do validation
+	adda.l 	#8,sp
+	bne 	heapCompactError		; Go if validation failed
+
+heapCompactNoValidation:
+	btst.l 	#FLG_HEAP_DISABLE_COALESCING,d0 ; Coalescing disabled?
+;	beq.s	heapCompactNoCoalesce 		; Nope, heap should be good
+
+	; Here we need to walk the free list and coalesce
+	; all the adjacent free blocks.
+
+
+	; TODO: Implement coalescing of free list
+
+
+heapCompactNoCoalesce:
+	movea.l hhFreeHead(a0),a1 		; A1 --> start of free block chain
+	clr.l 	d0 				; D0 = largest free block
+
+heapCompactFindLargestFreeBlockLoop:
+	cmpa.l 	#0,a1 				; End of the free block chain?
+	beq.s	heapCompactExitFindLoop		; Yes, return largest free block found
+	move.l 	bhSize(a1),d1 			; D1 = size of free block
+	cmp.l 	d1,d0				; New block larger than currently cached size?
+	ble.s 	heapCompactNotLarger		; Nope, move on to next block
+	move.l 	d1,d0 				; Update largest block size
+
+heapCompactNotLarger:
+	movea.l bhFreeNext(a1),a1 		; Follow forward link and loop
+	bra.s 	heapCompactFindLargestFreeBlockLoop
+
+heapCompactExitFindLoop:
+	tst.l 	d0 				; Is final size 0?
+	beq.s 	heapCompactExit			; Yes, return it
+	subi.l 	#BLK_HDR_SIZE,d0		; Nope, only return the data portion
+
+heapCompactExit:
+	movem.l (sp)+,a0			; Restore registers
+	unlk	a6
 	rts
 
-        end
+heapCompactError:
+	clr.l 	d0
+	bra.s 	heapCompactExit
+
+	end

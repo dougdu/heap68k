@@ -1,35 +1,60 @@
-*********************************************************
-* _HeapAlloc
+************************************************************************
+*  _HeapAlloc
+************************************************************************
 *
-*     Allocates a block of memory from a heap.
+*  Allocates a block of memory from a heap.
 *
-*     Entry:  A0 = Handle of heap to allocate from
-*	      D0 = flags
-* 	      D1 = Number of bytes to allocate
+************************************************************************
+*  PARAMETERS
+************************************************************************
 *
-*     Exit:   A0 = address of first byte of allocated
-*                  block, or zero if allocation failed.
-*	      D0 = error code: 0 = block allocated
-*                              1 = insufficient free space
-*                              2 = heap is corrupt
-*                              3 = handle is invalid
-*			       4 = Allocated block on free chain
-*********************************************************
+*  hHeap : A handle to the heap from which the memory will be
+*	   allocated. This handle is returned by the HeapCreate
+*	   or GetMachineHeap function.
+*
+*  lFlags : The heap allocation options. Specifying any of these
+*           values will override the corresponding value specified
+*	    when the heap was created with HeapCreate. This parameter
+*           can be one or more of the following values.
+*
+*	HEAP_ZERO_MEMORY - The allocated memory will be initialized
+*		to zero. Otherwise, the memory is not initialized to
+*		zero.
+*
+*  lBytes : The number of bytes to be allocated.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  Pointer the allocated memory block or NULL if an error occurred.
+*
+************************************************************************
 
 	include heap.inc
 
 	public	_HeapAlloc
-	extern 	_HeapUnlinkFromFreeList
-
-	extern 	__rterr_HeapAllocFailure, __rt_FatalError
+	extern 	_HeapUnlinkFromFreeList, __HeapError
 
 	.code
 
+; Parameter offsets
+hHeap 	equ 	8
+lFlags	equ	12
+lBytes	equ	16
+
 _HeapAlloc:
-	movem.l a1-a4/d1-d3,-(sp)       	; Save work registers
-	;bsr 	__rt_HeapValidate
-	;bsr 	_HeapValidateHandle		; Validate the heap handle
-	;bne   	_haInvalidHandle		; Nope abort
+	link 	a6,#0
+	movem.l a0-a4/d1-d3,-(sp)       	; Save work registers
+
+	clr.l 	__HeapError 			; Clear heap error
+
+	movea.l hHeap(a6),a0 			; Get heap handle
+	move.l 	lBytes(a6),d1 			; Get count of bytes to allocate
+
+	;jsr 	__rt_HeapValidate
+	;jsr 	_HeapValidateHandle		; Validate the heap handle
+	;bne   	_haErrorExit			; Nope abort
 
 	tst.l 	hhFreeHead(a0) 			; Is the free list empty?
 	beq 	_haNoMem			; Yes, abort
@@ -39,7 +64,7 @@ _HeapAlloc:
 	move.l 	d1,d2 				; D2 = working copy of request size
 
 	; Is HEAP_TAIL_CHECKING_ENABLED set for the heap?
-	btst.b 	#HEAP_TAIL_CHECKING_ENABLED_BIT,hhFlags+3(a0)
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
 	beq.s 	_haTailCheckingNotEnabled
 	addq.l 	#4,d2				; Reserve space for the tail marker
 
@@ -137,11 +162,12 @@ _haNoFwdFreeBlock:
 
 _haProcessFlags:
 	; If the HEAP_ZERO_MEMORY flag passed in then zero out the block
-	btst 	#HEAP_ZERO_MEMORY_BIT,d0 	; Caller requested block to be zeroed?
+
+	btst.b 	#FLG_HEAP_ZERO_MEMORY,lFlags+3(a6) ; Caller requested block to be zeroed?
 	bne.s 	_haZeroBlock			; Yes, go zero the block
 
 	; Is the heap configured to zero every allocation?
-	btst.b 	#HEAP_ZERO_MEMORY_BIT,hhFlags+3(a0)
+	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
 	beq.s 	_haNoZeroBlock			; Nope skip
 
 _haZeroBlock:
@@ -153,42 +179,34 @@ _haZeroBlock:
 	subq.l 	#1,d0 				; Adjust for dbra
 _haZeroBlockLoop:
 	clr.l 	(a2)+				; Zero a long word
-	;move.l 	#$e5e5e5e5,(a2)+
 	dbra 	d0,_haZeroBlockLoop		; Loop until cleared
 
 _haNoZeroBlock:
 
 	; Do we need to initialize the tail checking bytes?
-
-	btst.b 	#HEAP_TAIL_CHECKING_ENABLED_BIT,hhFlags+3(a0)
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
 	beq.s 	_haNoTailChecking
 	move.l 	#HEAP_TAIL,-4(a1,d2.L)
 
 _haNoTailChecking:
 	lea.l 	bhData(a1),a0		; Put memory pointer in a0
-        clr.l   d0                      ; No errors
         bra.s   _haExit
 
 _haNoMem:
-	moveq   #1,d0                   ; Not enough free space for request
+	move.l	#HEAP_ERROR_OUT_OF_MEMORY,d0 ; Not enough free space for request
 
 _haErrorExit:
+	move.l 	d0,__HeapError		; Store the error code
 	suba.l  a0,a0                   ; Return NULL pointer on error
 
 _haExit:
-	movem.l (sp)+,a1-a4/d1-d3       ; Restore registers
+	move.l	a0,d0 			; Return pointer in D0
+	movem.l (sp)+,a0-a4/d1-d3       ; Restore registers
+	unlk 	a6
         rts
 
-_haBadBlockSize:
-	pea	__rterr_HeapAllocFailure ; Print "Heap validation failure"
-	jmp 	__rt_FatalError
-
-_haInvalidHandle:
-	moveq 	#3,d0			; Flag that the handle is invalid
-	bra.s 	_haErrorExit
-
 _haFreeBlockChainCorrupt:
-	moveq 	#4,d0			; Flag that the free block chain is corrupt
+	move.l	#HEAP_ERROR_BLOCK_NOT_FREE,d0 ; Flag that the free block chain is corrupt
 	bra.s 	_haErrorExit
 
 	end
