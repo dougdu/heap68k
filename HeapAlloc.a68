@@ -34,7 +34,8 @@
 	include heap.inc
 
 	public	_HeapAlloc
-	extern 	_HeapUnlinkFromFreeList, __HeapError
+	extern	__HeapAutoValidateFlagCheck, _HeapUnlinkFromFreeList
+	extern	__HeapError
 
 	.code
 
@@ -47,15 +48,17 @@ _HeapAlloc:
 	link 	a6,#0
 	movem.l a0-a4/d1-d3,-(sp)       	; Save work registers
 
-	clr.l 	__HeapError 			; Clear heap error
-
 	movea.l hHeap(a6),a0 			; Get heap handle
+
+	; Run any configured heap validations
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne 	_haErrorExit1			; Validation failed
+
+	; Begin allocation
 	move.l 	lBytes(a6),d1 			; Get count of bytes to allocate
-
-	;jsr 	__rt_HeapValidate
-	;jsr 	_HeapValidateHandle		; Validate the heap handle
-	;bne   	_haErrorExit			; Nope abort
-
 	tst.l 	hhFreeHead(a0) 			; Is the free list empty?
 	beq 	_haNoMem			; Yes, abort
 	movea.l hhFreeHead(a0),a1 		; Get pointer to the head of the free list
@@ -194,6 +197,8 @@ _haNoMem:
 
 _haErrorExit:
 	move.l 	d0,__HeapError		; Store the error code
+
+_haErrorExit1:
 	suba.l  a0,a0                   ; Return NULL pointer on error
 
 _haExit:

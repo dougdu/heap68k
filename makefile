@@ -23,10 +23,10 @@ SIM68KDIR =F:\git\worm68k\68KTools\sim68k
 	$(ASM) /ScAS68 $(AFLAGS) $(AINC) /c $<
 
 # targets
-HEAPOBJS = HeapAlloc.obj HeapCompact.obj HeapCreate.obj HeapDestroy.obj \
-           HeapFree.obj HeapInitialize.obj HeapReAlloc.obj HeapSize.obj \
-	   HeapUnlinkFromFreeList.obj HeapValidate.obj HeapValidateHandle.obj \
-	   HeapWalk.obj HeapData.obj
+HEAPOBJS = HeapAlloc.obj HeapAutoValidateFlagCheck.obj HeapCompact.obj \
+	   HeapCreate.obj HeapDestroy.obj HeapFree.obj HeapInitialize.obj \
+	   HeapReAlloc.obj HeapSize.obj HeapUnlinkFromFreeList.obj \
+	   HeapValidate.obj HeapValidateHandle.obj HeapWalk.obj HeapData.obj
 
 all: libheap.a heaptest.68k
 
@@ -38,6 +38,7 @@ heaptest.68k:  heaptest.obj libheap.a
 	copy $@ $(SIM68KDIR)
 
 HeapAlloc.obj: HeapAlloc.a68 heap.inc
+HeapAutoValidateFlagCheck.obj: HeapAutoValidateFlagCheck.a68 heap.inc
 HeapCompact.obj: HeapCompact.a68 heap.inc
 HeapCreate.obj: HeapCreate.a68 heap.inc
 HeapData.obj: HeapData.a68 heap.inc

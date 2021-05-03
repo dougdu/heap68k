@@ -1,27 +1,71 @@
-*********************************************************
-* _HeapSize
+************************************************************************
+*  _HeapSize
+************************************************************************
 *
-*     Retrieves the size of a memory block allocated
-*     from a heap by the HeapAlloc or HeapReAlloc
-*     function.
+*  Retrieves the size of a memory block allocated from a heap by
+*  the HeapAlloc or HeapReAlloc function.
 *
-*     Entry:  A0 = Handle of heap
-*	      D0 = flags
-*	      A1 = pointer to the memory block whose
-*                  size the function will obtain.
+************************************************************************
+*  PARAMETERS
+************************************************************************
 *
-*     Exit:   D0 = the requested size of the allocated
-*                  memory block, in bytes or -1 on
-*                  failure.
-*********************************************************
+*  hHeap : A handle to the heap in which the memory block resides.
+*	   This handle is returned by either the HeapCreate or
+*	   GetMachineHeap function.
+*
+*  pMem : A pointer to the memory block whose size the function
+*         will obtain. This is a pointer returned by the HeapAlloc
+*         or HeapReAlloc function. The memory block must be from
+*         the heap specified by the hHeap parameter.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is the requested size
+*  of the allocated memory block, in bytes. If the function fails,
+*  the return value is -1.
+*
+************************************************************************
 
 	include	heap.inc
 
 	public	_HeapSize
+	extern 	__HeapAutoValidateFlagCheck
 
 	.code
 
+; Parameter offsets
+hHeap	equ	8
+pMem	equ	12
+
 _HeapSize:
+	link	a6,#0				; Setup stack frame
+	movem.l a0-a1,-(sp)			; Save registers
+
+	movea.l hHeap(a6),a0 			; A0 --> Heap header
+
+	; Run any configured heap validations
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne.s 	_hsError			; Validation failed
+
+	movea.l	pMem(a6),a1 			; A1 --> memory block
+	suba.l 	#BLK_HDR_SIZE,a1 		; A1 --> block header
+
+	; TODO: do some heap/block validation here
+
+	move.l 	bhRequestSize(a1),d0 		; Get the request size of the block
+
+_hsExit:
+	movem.l (sp)+,a0-a1			; Restore registers
+	unlk 	a6
 	rts
+
+_hsError:
+	move.l	#-1,d0				; Flag that an error occurred.
+	bra.s 	_hsExit
 
         end

@@ -82,7 +82,7 @@
 	include heap.inc
 
 	public	_HeapCreate
-	extern 	_HeapValidateHandle, _HeapValidate, _HeapAlloc
+	extern 	__HeapAutoValidateFlagCheck, _HeapAlloc
 	extern 	__MachineHeapHandle, __HeapError, __HeapId
 
 	.code
@@ -95,29 +95,18 @@ _HeapCreate:
 	link 	a6,#0
 	movem.l d1-d2/a0-a1,-(sp)		; Save registers
 
-	clr.l	__HeapError			; Clear Heap Error
+	; All private heaps are created from the machine heap
+	movea.l __MachineHeapHandle,a0		; Get machine heap handle
+	cmpa.l	#0,a0				; Machine heap initialized?
+	beq 	_hcNotInitialized		; Nope, abort
 
-	move.l 	__MachineHeapHandle,d0		; Get machine heap handle
-	beq 	hc_NotInitialized		; Abort, if NULL
-	movea.l d0,a0 				; A0 --> Machine heap header
-	move.l 	hhFlags(a0),d0 			; Get heap flags
-	btst.l 	#FLG_HEAP_VALIDATE_PARAMETERS,d0 ; Limited heap validation ?
-	beq.s 	hc_CheckNextflg			; Nope, skip
-	move.l 	a0,-(sp)			; Push machine heap handle
-	jsr 	_HeapValidateHandle		; Validate handle
-	adda.l 	#4,sp
-	bne 	hc_Error			; Validation failed, abort
-
-hc_CheckNextflg:
-	btst.l 	#FLG_HEAP_VALIDATE_ALL,d0 	; Full heap validation ?
-	beq.s 	hc_NoValidation
-	clr.l 	-(sp)				; Validate entire heap
-	move.l 	a0,-(sp)			; Push machine heap handle
-	jsr 	_HeapValidate			; Go do validation
+	; Run any configured heap validations
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
 	adda.l 	#8,sp
-	bne 	hc_Error			; Go if validation failed
+	bne 	_hcError			; Validation failed
 
-hc_NoValidation:
 	; Compute the actual size of the initial (FREE) block
 	move.l 	lSize(a6),d1 			; Get requested size
         add.l   #BLK_HDR_SIZE-1,d1		; Align the initial block on a block boundary
@@ -136,7 +125,7 @@ hc_NoValidation:
 	jsr 	_HeapAlloc 			; Allocate memory for the heap
 	adda.l 	#12,sp
 	tst.l 	d0				; Did HeapAlloc fail?
-	beq 	hc_ErrorExit			; Yes, abort
+	beq 	_hcErrorExit			; Yes, abort
 	movea.l d0,a0 				; A0 --> start of heap
 
 	; Initialize the end of heap marker
@@ -145,9 +134,9 @@ hc_NoValidation:
 	lsr.l 	#2,d0 				; Convert to a count of long words
 	subq.l 	#1,d0 				; adjust for dbra
 
-hc_EndMarkerInitLoop:
+_hcEndMarkerInitLoop:
 	move.l 	#HEAP_END,(a1)+			; Put magic word in to detect buffer overruns
-	dbra 	d0,hc_EndMarkerInitLoop		; Fill the end marker with the magic number
+	dbra 	d0,_hcEndMarkerInitLoop		; Fill the end marker with the magic number
 
 	; Initialize the heap header
 	move.l 	#HEAP_MAGIC,hhMagic(a0)		; Initialize MAGIC number
@@ -178,7 +167,7 @@ hc_EndMarkerInitLoop:
 	; Fill initial free block memory with debug pattern?
 	move.l 	hhFlags(a0),d0 			; Get heap flags
 	btst.l 	#FLG_HEAP_ENABLE_DEBUG_FILL,d0 	; Should we fill the free space with debug pattern?
-	beq.s 	hc_Exit				; Nope, all done with heap creation
+	beq.s 	_hcExit				; Nope, all done with heap creation
 
 	move.l 	bhSize(a1),d0 			; Computer size of block in long words
 	subi.l 	#BLK_HDR_SIZE,d0 		; Block size - block header size
@@ -186,23 +175,23 @@ hc_EndMarkerInitLoop:
 	subq.l 	#1,d0 				; Adjust for dbra
 	lea.l 	bhData(a1),a1			; A1 -> Start of data area
 
-hc_BaadfoodLoop:
+_hcBaadfoodLoop:
 	move.l 	#BAADFOOD,(a1)+
-	dbra 	d0,hc_BaadfoodLoop		; Loop until filled
+	dbra 	d0,_hcBaadfoodLoop		; Loop until filled
 
-hc_Exit:
+_hcExit:
 	move.l 	a0,d0 				; Return heap handle in D0
 
-hc_ErrorExit:
+_hcErrorExit:
 	movem.l (sp)+,d1-d2/a0-a1		; Restore registers
 	unlk	a6
 	rts
 
-hc_NotInitialized:
+_hcNotInitialized:
 	move.l 	#HEAP_ERROR_NOT_INITIALIZED,__HeapError ; Init error code
 
-hc_Error:
+_hcError:
 	clr.l 	d0				; NULL heap handle
-	bra.s 	hc_Exit				; Return failure
+	bra.s 	_hcExit				; Return failure
 
         end
