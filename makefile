@@ -15,6 +15,8 @@ LD        =F:\git\worm68k\tools\ld.exe
 AR        =F:\git\worm68k\tools\ar.exe
 RANLIB	  =F:\git\worm68k\tools\ranlib.exe
 SIM68KDIR =F:\git\worm68k\68KTools\sim68k
+LIBDIR    =F:\git\worm68k\lib
+INCDIR    =F:\git\worm68k\include
 
 .a68.obj:
 	$(ASM) $(AFLAGS) $(AINC) /c $<
@@ -32,6 +34,8 @@ all: libheap.a heaptest.68k
 
 libheap.a: $(HEAPOBJS)
 	$(AR) -rscv libheap.a $**
+	copy Heap.inc $(INCDIR)
+	copy libheap.a $(LIBDIR)
 
 heaptest.68k:  heaptest.obj libheap.a
 	$(LD) -o $@ -Ttext 1700 heaptest.obj -L.\ -lheap
