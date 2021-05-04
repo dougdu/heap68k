@@ -34,14 +34,14 @@ start:	; Get the pointer to the base page
 	; Compute heap size
 	sub.l 	d2,d1 			; hightpa - heapstart
 	subi.l 	#STKSIZE,d1 		; reserve room for stack
-	subi.l 	#32,d1 			; Some slop for block aligning
+	subi.l 	#96,d1 			; Some slop for block aligning
 
 	; Initialize the machine heap
 	move.l 	d1,-(sp)		; Push heap size
 	move.l 	d2,-(sp)		; Push start address
 	clr.l 	-(sp)			; No options
 	jsr 	_MachineHeapInitialize	; Create the Machine heap
-	adda.l 	#12,a0
+	adda.l 	#12,sp
 
 ttHeapCreate:
 	move.l 	#$3000,-(sp)
