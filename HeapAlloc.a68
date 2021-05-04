@@ -153,6 +153,8 @@ _haNoFwdFreeBlock:
 	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
 	move.l 	d1,bhRequestSize(a1)		; Set requested size
 	move.l 	d2,bhSize(a1)			; Set actual block size
+	clr.l 	bhFreePrev(a1)			; Clear free block chain links
+	clr.l 	bhFreeNext(a1)			; Clear free block chain links
 
 	; Free block header
 	move.l 	#BLOCK_MAGIC,bhMagic(a4)	; Init the magic word
@@ -165,27 +167,32 @@ _haNoFwdFreeBlock:
 	move.l 	d3,bhRequestSize(a4)		; is the size of data area
 
 _haProcessFlags:
+	; HEAP_ENABLE_DEBUG_FILL flag takes precedence over HEAP_ZERO_MEMORY
+	move.l 	#CDCDCDCD,d1 			; Initialize fill pattern
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	bne.s 	_haFillBlock
+
 	; If the HEAP_ZERO_MEMORY flag passed in then zero out the block
+	clr.l 	d1 				; Initialize fill pattern
 	btst.b 	#FLG_HEAP_ZERO_MEMORY,lFlags+3(a6) ; Caller requested block to be zeroed?
-	bne.s 	_haZeroBlock			; Yes, go zero the block
+	bne.s 	_haFillBlock			; Yes, go zero the block
 
 	; Is the heap configured to zero every allocation?
 	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
-	beq.s 	_haNoZeroBlock			; Nope skip
+	beq.s 	_haNoFillBlock			; Nope skip
 
-_haZeroBlock:
+_haFillBlock:
 	lea.l 	bhData(a1),a2			; A2 --> Allocated memory
 	move.l 	bhSize(a1),d0 			; Get size of the block in bytes
 	sub.l 	#BLK_HDR_SIZE,d0 		; Adjust for block header
-	beq.s 	_haNoZeroBlock			; Don't zero a block with no bytes
+	beq.s 	_haNoFillBlock			; Don't zero a block with no bytes
 	lsr.l 	#2,d0 				; Fill using long words
 	subq.l 	#1,d0 				; Adjust for dbra
-_haZeroBlockLoop:
-	clr.l 	(a2)+				; Zero a long word
-	dbra 	d0,_haZeroBlockLoop		; Loop until cleared
+_haFillBlockLoop:
+	move.l 	d1,(a2)+			; Fill using a long word
+	dbra 	d0,_haFillBlockLoop		; Loop until block filled
 
-_haNoZeroBlock:
-
+_haNoFillBlock:
 	; Do we need to initialize the tail checking bytes?
 	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
 	beq.s 	_haNoTailChecking
