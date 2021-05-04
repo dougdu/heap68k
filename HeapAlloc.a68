@@ -104,7 +104,7 @@ _haExactFit:
 	jsr 	_HeapUnlinkFromFreeList		; Unlink the block from the free list
 	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
 	move.l 	d1,bhRequestSize(a1)		; Set requested size
-	bra.s 	_haProcessFlags			; Go zero block and/or add debug marker
+	bra 	_haProcessFlags			; Go zero block and/or add debug marker
 
 _haSplitBlock:
 	; Split the existing free block into two blocks.  One
@@ -157,6 +157,9 @@ _haNoFwdFreeBlock:
 	; Free block header
 	move.l 	#BLOCK_MAGIC,bhMagic(a4)	; Init the magic word
 	move.l 	#FLG_FREE,bhFlags(a4)		; Set the free block flag
+	move.l 	hhFlags(a0),d0 			; Get the heap id
+	andi.l 	#HEAP_ID_MASK,d0 		; Mask off non-id bits
+	or.l 	d0,bhFlags(a4)			; Set heap id on block
 	move.l 	d3,bhSize(a4)			; Set actual block size
 	subi.l 	#BLK_HDR_SIZE,d3 		; Free block requested size
 	move.l 	d3,bhRequestSize(a4)		; is the size of data area

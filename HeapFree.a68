@@ -35,7 +35,7 @@ hHeap	equ	8
 pMem 	equ	12
 
 _HeapFree:
-	link 	a1,#0				; Initialize stack frame
+	link 	a6,#0				; Initialize stack frame
  	movem.l d1-d5/a0-a5,-(sp)          	; Save work registers
 
 	movea.l hHeap(a6),a0 			; A0 --> Heap header
@@ -77,7 +77,7 @@ _HeapFree:
 	;btst.b 	#HEAP_FREE_CHECKING_ENABLE_BIT,hhFlags+3(a0)
 
 	; Does the heap have coalesce on free disabled?
-	btst.b 	#HEAP_DISABLE_COALESCE_ON_FREE_BIT,hhFlags+3(a0)
+	btst.b 	#FLG_HEAP_DISABLE_COALESCING,hhFlags+3(a0)
 	bne 	_hfFreeWithNoCoalesce		; Yes, just free the block
 
 	; Check to see if we can coalesce with adjacent blocks
@@ -286,7 +286,7 @@ _hfBlockFreed:
 
 	; Fill recently freed portion of the block's data area the
 	; debug freed memory marker.
-	btst.b 	#HEAP_ZERO_MEMORY,hhFlags+3(a0)
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
 	beq.s 	_hfNullPtr			; No, don't write the debug data
 
 _hfBaadfood:

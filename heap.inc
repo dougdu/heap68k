@@ -14,6 +14,7 @@ HEAP_TAIL       equ 	$abababab		; Guard bytes used with FLG_HEAP_ENABLE_TAIL_CHE
 HEAP_END        equ     'PAEH'			; Heap magic number signaling end of the heap.
 CDCDCDCD 	equ 	$cdcdcdcd 		; Debug fill pattern for allocated blocks.
 BAADFOOD        equ     $baadf00d		; Debug fill pattern for freed blocks.
+HEAP_ID_MASK	equ 	$ffff0000 		; Mask off flag bits leaving the heap id in upper word.
 
 ************************************************************************
 * Heap Header structure definition
