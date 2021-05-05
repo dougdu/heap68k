@@ -19,8 +19,10 @@
 *  RETURN VALUE
 ************************************************************************
 *
-*  Heap error code.
+*  If the function succeeds, the return value is nonzero.
 *
+*  If the function fails, the return value is zero. An application
+*  can call GetHeapError for extended error information.
 ************************************************************************
 
 	include heap.inc

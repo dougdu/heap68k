@@ -2,7 +2,7 @@
 *  _HeapDestroy
 ************************************************************************
 *
-*  Destroys the specified heap object and it invalidates the handle
+*  Destroys the specified heap object and invalidates the handle
 *  to the heap.
 *
 ************************************************************************
@@ -18,22 +18,85 @@
 *  RETURN VALUE
 ************************************************************************
 *
-*  If the function succeeds,
+*  If the function succeeds, the return value is nonzero.
 *
+*  If the function fails, the return value is zero. To get extended
+*  error information, call GetHeapError.
 ************************************************************************
 
 	include heap.inc
 
 	public 	_HeapDestroy
+	extern 	__HeapAutoValidateFlagCheck, _HeapFree
+	extern 	__MachineHeapHandle, __HeapError
 
 	.code
+
+hhllen	equ 	(BLK_HDR_SIZE shr 2)-1
 
 ; Parameter offsets
 hHeap	equ 	8
 
 _HeapDestroy:
-	link 	a6,#0
+	link 	a6,#0				; Set up stack frame
+	movem.l d1-d2/a0,-(sp)			; Save registers
 
+	; All private heaps are created from the machine heap
+	move.l 	__MachineHeapHandle,d0		; Get machine heap handle
+	bne.s 	_hdMachineHeapInitialized	; Continue if machine heap is initialized
+	move.l 	#HEAP_ERROR_NOT_INITIALIZED,d0	; Flag that the heap is uninitialized
+	bra.s 	_hdSetError			; Set error code and exit
+
+_hdMachineHeapInitialized:
+	; Run any configured heap validations on the machine heap
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	d0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne 	_hdError			; Validation failed
+
+	move.l 	hHeap(a6),d1			; Get handle to heap to destroy
+	bne.s 	_hdHeapHandleNotNull		; Trap NULL handle
+	move.l 	#HEAP_ERROR_INVALID_HANDLE,d0 	; Return invalid handle error
+	bra.s 	_hdSetError			; Set error code and exit
+
+_hdHeapHandleNotNull:
+	; Run any configured heap validations on the heap to be destroyed
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	d1,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne 	_hdError			; Validation failed
+
+	; A private heap is just a allocated block on the machine heap
+	; so if can be destroyed just by freeing it.
+
+	; Invalidate the heap header data to invalidate the handle
+	move.l 	#hhllen,d2			; # long words in a heap header - 1
+	movea.l d1,a0				; Point to start of heap header
+
+_hdInvalidateHandleLoop:
+	clr.l 	(a0)+				; Zero the heap header
+	dbra 	d2,_hdInvalidateHandleLoop
+
+	; Release the private heap memory back to the machine heap
+	move.l 	d1,-(sp)			; Push pointer to heap to destroy
+	move.l 	d0,-(sp)			; Push machine heap handle
+	jsr 	_HeapFree 			; Destroy the heap
+	adda.l	#8,sp
+
+	; Flag success by return a non-zero value
+	move.l 	#-1,d0				; Return TRUE
+	bra.s 	_hdExit
+
+_hdSetError:
+	move.l 	d0,__HeapError			; Save the error code
+
+_hdError:
+	clr.l 	d0 				; Return FALSE
+
+_hdExit:
+	movem.l (sp)+,d1-d2/a0			; Restore registers
 	unlk 	a6
 	rts
 

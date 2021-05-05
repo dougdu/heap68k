@@ -88,6 +88,12 @@ ttHeapCreate:
 	jsr 	_HeapFree
 	adda.l 	#8,sp
 
+destroy:
+	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
+	jsr 	_HeapDestroy
+	adda.l 	#4,sp
+	clr.l 	_PrivateHeap1
+
 done: 	jmp 	done
 
 	.bss
