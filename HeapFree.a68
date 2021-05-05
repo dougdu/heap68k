@@ -48,9 +48,8 @@ _HeapFree:
 	bne 	_hfExit				; Validation failed
 
 	; Abort if the supplied block pointer is NULL
-	move.l 	pMem(a6),d1
-        tst.l   d1                      	; Look at block address
-        beq  	_hfNullPtr                 	; Return if zero
+	move.l 	pMem(a6),d1			; Get pMem
+        beq  	_hfNullPtr                 	; Return if NULL
 
 	; Adjust pointer to start of block header
         sub.l  #BLK_HDR_SIZE,d1                 ; Point at block header
@@ -291,6 +290,7 @@ _hfBlockFreed:
 
 _hfBaadfood:
 	lsr.l 	#2,d5 				; Fill using long words
+	beq.s 	_hfNullPtr			; Don't fill if byte count is 0
 	subq.l 	#1,d5 				; Adjust for dbra
 
 _hfBaadfoodLoop:
