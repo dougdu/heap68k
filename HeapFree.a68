@@ -78,7 +78,7 @@ _HeapFree:
 	;btst.b 	#HEAP_TAIL_CHECKING_ENABLED,hhFlags+3(a0)
 
 	; Does the heap have coalesce on free disabled?
-	btst.b 	#FLG_HEAP_REALLOC_IN_PLACE_ONLY,hhFlags+3(a0)
+	btst.b 	#FLG_HEAP_DISABLE_COALESCING,hhFlags+3(a0)
 	bne 	_hfFreeWithNoCoalesce		; Yes, just free the block
 
 	; Attempt to coalesce with adjacent blocks

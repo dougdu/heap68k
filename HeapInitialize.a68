@@ -145,8 +145,9 @@ mhi_EndMarkerInitLoop:
 	move.l 	#FLG_FREE,bhFlags(a1)		; Initialize the block to free
 	move.l 	__HeapId,d0 			; Get heap Id
 	or.l 	d0,bhFlags(a1) 			; Mask in heap Id with flags
-	move.l 	lSize(a6),bhRequestSize(a1)	; Save the requested size of the heap
 	move.l  d2,bhSize(a1)			; Save aligned block size
+	subi.l 	#BLK_HDR_SIZE,d2		; Requested block size is size of data area
+	move.l 	d2,bhRequestSize(a1)		; Save the requested size of the heap
 	clr.l 	bhPrev(a1)			; pointer to the previous block = NULL
 	clr.l 	bhNext(a1)			; pointer to the next block = NULL
 	clr.l 	bhFreePrev(a1)			; pointer to the previous free block = NULL

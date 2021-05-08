@@ -1,0 +1,70 @@
+************************************************************************
+*  _HeapGetError
+************************************************************************
+*
+*  Returns the last heap API status code.  It can be one of the
+*  following.
+*
+*	HEAP_ERROR_SUCCESS : Last heap operation was successful.
+*
+*	HEAP_ERROR_INVALID_PARAM : Bad parameter.
+*
+*	HEAP_ERROR_INVALID_HANDLE : Heap handle is invalid.
+*
+* 	HEAP_ERROR_INVALID_BLOCK : Memory pointer is not a heap
+*		block.
+*
+*	HEAP_ERROR_INVALID_PREV_LINK : Block chain back link is
+*		invalid.
+*
+*	HEAP_ERROR_INVALID_NEXT_LINK : Block chain forward link
+*		is invalid.
+*
+*	HEAP_ERROR_INVALID_FPREV_LINK : A Block in the free chain
+*		has an invalid back link.
+*
+*	HEAP_ERROR_BLOCK_NOT_FREE : Block in free chain not marked
+*		as free.
+*
+*	HEAP_ERROR_HEAPEND_BAD_MAGIC : End of heap magic number
+*		is corrupt.
+*
+*	HEAP_ERROR_INVALID_HEAPEND : Heap end found in the wrong
+*		position.
+*
+*	HEAP_ERROR_HANDLE_BLOCK_MISMATCH : Heap block is valid but
+*		not owned by heap.
+*
+*	HEAP_ERROR_OUT_OF_MEMORY : Insufficient free space to satisfy
+*		the request.
+*
+*	HEAP_ERROR_NOT_INITIALIZED : Machine heap not initialized.
+*
+*	HEAP_ERROR_INITIALIZED : Machine heap is already initialized.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  None
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  The last heap API status code.
+*
+************************************************************************
+
+	public	_HeapGetError
+	extern 	__HeapError
+
+	.code
+
+_HeapGetError:
+	link 	a6,#0
+	move.l 	__HeapError,d0
+	unlk 	a6
+	rts
+
+	end

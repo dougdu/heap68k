@@ -3,7 +3,7 @@
 	extern	_MachineHeapInitialize
 	extern 	_HeapCreate, _HeapDestroy
 	extern 	_HeapAlloc, _HeapReAlloc, _HeapFree
-	extern 	_HeapCompact
+	extern 	_HeapCompact, _GetMachineHeap, _GetMachineHeaps
 
 	.code
 
@@ -21,7 +21,7 @@ cmdtail	equ 	$80
 
 STKSIZE	equ	$200
 
-;HEAP_FLAGS equ	(HEAP_REALLOC_IN_PLACE_ONLY or HEAP_ENABLE_DEBUG_FILL)
+;HEAP_FLAGS equ	(FLG_HEAP_DISABLE_COALESCING or HEAP_ENABLE_DEBUG_FILL)
 HEAP_FLAGS equ	HEAP_ENABLE_DEBUG_FILL
 
 start:	; Get the pointer to the base page
@@ -47,12 +47,84 @@ start:	; Get the pointer to the base page
 	jsr 	_MachineHeapInitialize	; Create the Machine heap
 	adda.l 	#12,sp
 
+
+	move.l 	#400,-(sp)
+	move.l 	#HEAP_FLAGS,-(sp)
+	jsr 	_HeapCreate
+	adda.l 	#8,sp
+	move.l 	d0,_PrivateHeap1	; Save heap handle
+
+	move.l 	#400,-(sp)
+	move.l 	#HEAP_FLAGS,-(sp)
+	jsr 	_HeapCreate
+	adda.l 	#8,sp
+	move.l 	d0,_PrivateHeap1	; Save heap handle
+
+	move.l 	#400,-(sp)
+	move.l 	#HEAP_FLAGS,-(sp)
+	jsr 	_HeapCreate
+	adda.l 	#8,sp
+	move.l 	d0,_PrivateHeap1	; Save heap handle
+
+	move.l 	#400,-(sp)
+	move.l 	#HEAP_FLAGS,-(sp)
+	jsr 	_HeapCreate
+	adda.l 	#8,sp
+	move.l 	d0,_PrivateHeap1	; Save heap handle
+
+
+
+test1:
+	move.l 	#0,-(sp)		; NULL
+	move.l 	#0,-(sp)		; 0
+	jsr 	_GetMachineHeaps
+	adda.l 	#8,sp
+	beq 	_ErrorEnd
+	move.l 	d0,NumberOfHeaps
+
+	lsl 	#2,d0 			; BytesToAllocate = NumberOfHeaps * 4
+	move.l 	d0,BytesToAllocate
+
+	jsr 	_GetMachineHeap
+	move.l 	d0,hDefaultHeap
+
+	move.l 	BytesToAllocate,-(sp)	; Allocate heap handle buffer
+	clr.l 	-(sp)			; No flags
+	move.l 	hDefaultHeap,-(sp)	; From machine heap
+	jsr 	_HeapAlloc
+	adda.l 	#12,sp
+	beq 	_ErrorEnd
+	move.l 	d0,aHeaps
+
+	move.l 	NumberOfHeaps,HeapsLength
+
+	move.l 	aHeaps,-(sp)		; aHeaps
+	move.l 	HeapsLength,-(sp)	; 0
+	jsr 	_GetMachineHeaps
+	adda.l 	#8,sp
+	beq 	_ErrorEnd
+	move.l 	d0,NumberOfHeaps
+
+	bra	done
+
+
+
+
+
+
+
+
 ttHeapCreate:
 	move.l 	#400,-(sp)
 	move.l 	#HEAP_FLAGS,-(sp)
 	jsr 	_HeapCreate
 	adda.l 	#8,sp
 	move.l 	d0,_PrivateHeap1	; Save heap handle
+
+
+
+
+
 
 ttalloc1:
 	move.l 	#10,-(sp)		; Allocate 10 bytes
@@ -124,7 +196,16 @@ destroy:
 
 done: 	jmp 	done
 
+_ErrorEnd: jmp _ErrorEnd
+
 	.bss
+
+NumberOfHeaps:	ds.l	1
+HeapsIndex:	ds.l	1
+HeapsLength: 	ds.l 	1
+aHeaps: 	ds.l 	1
+hDefaultHeap:	ds.l 	1
+BytesToAllocate: ds.l	1
 
 blk1:	ds.l 	1
 blk2:	ds.l 	1

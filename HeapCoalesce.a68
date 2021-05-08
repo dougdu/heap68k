@@ -39,8 +39,6 @@
 
 	.code
 
-clBlkHdrLen	equ 	BLK_HDR_SIZE shr 2	; Count of long words in a header
-
 ; Parameter offsets
 hHeap		equ	8			; Handle to the heap
 pBlock 		equ	12			; Pointer to block to coalesce
