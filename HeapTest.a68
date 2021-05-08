@@ -2,7 +2,8 @@
 
 	extern	_MachineHeapInitialize
 	extern 	_HeapCreate, _HeapDestroy
-	extern 	_HeapAlloc, _HeapFree
+	extern 	_HeapAlloc, _HeapReAlloc, _HeapFree
+	extern 	_HeapCompact
 
 	.code
 
@@ -19,6 +20,9 @@ freelen equ	$20
 cmdtail	equ 	$80
 
 STKSIZE	equ	$200
+
+;HEAP_FLAGS equ	(HEAP_REALLOC_IN_PLACE_ONLY or HEAP_ENABLE_DEBUG_FILL)
+HEAP_FLAGS equ	HEAP_ENABLE_DEBUG_FILL
 
 start:	; Get the pointer to the base page
 	move.l 	(sp)+,a0 		; A0 --> Base page
@@ -44,49 +48,73 @@ start:	; Get the pointer to the base page
 	adda.l 	#12,sp
 
 ttHeapCreate:
-	move.l 	#$3000,-(sp)
-	move.l 	#HEAP_ENABLE_DEBUG_FILL,-(sp)
+	move.l 	#400,-(sp)
+	move.l 	#HEAP_FLAGS,-(sp)
 	jsr 	_HeapCreate
 	adda.l 	#8,sp
 	move.l 	d0,_PrivateHeap1	; Save heap handle
 
-	move.l 	#310,-(sp)		; Allocate 50 bytes
+ttalloc1:
+	move.l 	#10,-(sp)		; Allocate 10 bytes
 	clr.l 	-(sp)			; No flags
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapAlloc
 	adda.l 	#12,sp
 	move.l 	d0,blk1
 
-	move.l 	#320,-(sp)		; Allocate 50 bytes
+ttalloc2:
+	move.l 	#10,-(sp)		; Allocate 10 bytes
 	clr.l 	-(sp)			; No flags
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapAlloc
 	adda.l 	#12,sp
 	move.l 	d0,blk2
 
-	move.l 	#330,-(sp)		; Allocate 50 bytes
+ttalloc3:
+	move.l 	#10,-(sp)		; Allocate 10 bytes
 	clr.l 	-(sp)			; No flags
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapAlloc
 	adda.l 	#12,sp
 	move.l 	d0,blk3
 
-	move.l 	#100,-(sp)		; Allocate 50 bytes
+ttalloc4:
+	move.l 	#10,-(sp)		; Allocate 10 bytes
 	clr.l 	-(sp)			; No flags
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapAlloc
 	adda.l 	#12,sp
 	move.l 	d0,blk4
 
+ttfree1:
 	move.l 	blk1,-(sp)		; Free block 1
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapFree
 	adda.l 	#8,sp
 
+ttfree2:
+	move.l 	blk2,-(sp)		; Free block 2
+	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
+	jsr 	_HeapFree
+	adda.l 	#8,sp
+
+ttfree3:
 	move.l 	blk3,-(sp)		; Free block 3
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapFree
 	adda.l 	#8,sp
+
+ttfree4:
+	move.l 	blk4,-(sp)		; Free block 3
+	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
+	jsr 	_HeapFree
+	adda.l 	#8,sp
+
+compact:
+	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
+	jsr 	_HeapCompact
+	adda.l 	#4,sp
+
 
 destroy:
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1

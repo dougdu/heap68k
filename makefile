@@ -25,10 +25,12 @@ INCDIR    =F:\git\worm68k\include
 	$(ASM) /ScAS68 $(AFLAGS) $(AINC) /c $<
 
 # targets
-HEAPOBJS = HeapAlloc.obj HeapAutoValidateFlagCheck.obj HeapCompact.obj \
+HEAPOBJS = HeapAlloc.obj HeapAutoValidateFlagCheck.obj HeapCoalesce.obj HeapCompact.obj \
 	   HeapCreate.obj HeapDestroy.obj HeapFree.obj HeapInitialize.obj \
-	   HeapReAlloc.obj HeapSize.obj HeapUnlinkFromFreeList.obj \
-	   HeapValidate.obj HeapValidateHandle.obj HeapWalk.obj HeapData.obj
+	   HeapReAlloc.obj HeapSize.obj HeapUnlinkFromBlockChain.obj \
+	   HeapUnlinkFromFreeBlockChain.obj HeapValidate.obj \
+	   HeapValidateHandle.obj HeapWalk.obj HeapData.obj \
+	   HeapDebugFillOnFree.obj HeapInvalidateBlockHeader.obj
 
 all: libheap.a heaptest.68k
 
@@ -43,15 +45,19 @@ heaptest.68k:  heaptest.obj libheap.a
 
 HeapAlloc.obj: HeapAlloc.a68 heap.inc
 HeapAutoValidateFlagCheck.obj: HeapAutoValidateFlagCheck.a68 heap.inc
+HeapCoalesce.obj: HeapCoalesce.a68 heap.inc
 HeapCompact.obj: HeapCompact.a68 heap.inc
 HeapCreate.obj: HeapCreate.a68 heap.inc
 HeapData.obj: HeapData.a68 heap.inc
+HeapDebugFillOnFree.obj: HeapDebugFillOnFree.a68 heap.inc
 HeapDestroy.obj: HeapDestroy.a68 heap.inc
 HeapFree.obj: HeapFree.a68 heap.inc
 HeapInitialize.obj: HeapInitialize.a68 heap.inc
+HeapInvalidateBlockHeader.obj: HeapInvalidateBlockHeader.a68 heap.inc
 HeapReAlloc.obj: HeapReAlloc.a68 heap.inc
 HeapSize.obj: HeapSize.a68 heap.inc
-HeapUnlinkFromFreeList.obj: HeapUnlinkFromFreeList.a68 heap.inc
+HeapUnlinkFromBlockChain.obj: HeapUnlinkFromBlockChain.a68 heap.inc
+HeapUnlinkFromFreeBlockChain.obj: HeapUnlinkFromFreeBlockChain.a68 heap.inc
 HeapValidate.obj: HeapValidate.a68 heap.inc
 HeapValidateHandle.obj: HeapValidateHandle.a68 heap.inc
 HeapWalk.obj: HeapWalk.a68 heap.inc

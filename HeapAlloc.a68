@@ -27,14 +27,17 @@
 *  RETURN VALUE
 ************************************************************************
 *
-*  Pointer the allocated memory block or NULL if an error occurred.
+*  If the function succeeds, the return value is a pointer to the
+*  allocated memory block.
+*
+*  If the function fails the return value is NULL
 *
 ************************************************************************
 
 	include heap.inc
 
 	public	_HeapAlloc
-	extern	__HeapAutoValidateFlagCheck, _HeapUnlinkFromFreeList
+	extern	__HeapAutoValidateFlagCheck, __HeapUnlinkFromFreeBlockChain
 	extern	__HeapError
 
 	.code
@@ -100,8 +103,11 @@ _haBlockTooSmall:
 
 _haExactFit:
 	; Here if the found free block is the exact size needed. We can
-	; just unlink the block from the free list and mark it as allocated.
-	jsr 	_HeapUnlinkFromFreeList		; Unlink the block from the free list
+	; just unlink the block from the free block chain and mark it as allocated.
+	move.l 	a1,-(sp)
+	move.l 	a0,-(sp)
+	jsr 	__HeapUnlinkFromFreeBlockChain	; Unlink the block from the free block chain
+	adda.l 	#8,sp
 	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
 	move.l 	d1,bhRequestSize(a1)		; Set requested size
 	bra 	_haProcessFlags			; Go zero block and/or add debug marker
