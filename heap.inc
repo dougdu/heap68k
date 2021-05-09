@@ -17,6 +17,11 @@ BAADFOOD        equ     $baadf00d		; Debug fill pattern for freed blocks.
 HEAP_ID_MASK	equ 	$ffff0000 		; Mask off flag bits leaving the heap id in upper word.
 
 ************************************************************************
+* Heap Constants
+************************************************************************
+HEAP_TAIL_SIZE 	equ 	$10 			; Number of bytes reserved for buffer overrun detection.
+
+************************************************************************
 * Heap Header structure definition
 ************************************************************************
 hhMagic	        equ	$00             	; Heap Header magic number.
@@ -138,7 +143,7 @@ HEAP_END_SIZE   equ     BLK_HDR_SIZE    	; Size of the heap end marker in bytes.
 HEAP_ERROR_SUCCESS 			equ 	$00	; Last heap operation was successful
 HEAP_ERROR_INVALID_PARAM		equ 	$01 	; Bad parameter
 HEAP_ERROR_INVALID_HANDLE		equ 	$02	; Heap handle is invalid
-HEAP_ERROR_INVALID_BLOCK		equ 	$03 	; Memory point is not a heap block
+HEAP_ERROR_INVALID_BLOCK		equ 	$03 	; Memory pointer is not a heap block
 HEAP_ERROR_INVALID_PREV_LINK		equ	$04 	; Block chain back link is invalid
 HEAP_ERROR_INVALID_NEXT_LINK		equ 	$05 	; Block chain forward link is invalid
 HEAP_ERROR_INVALID_FPREV_LINK 		equ 	$06 	; Block in free chain has an invalid back link
@@ -149,5 +154,11 @@ HEAP_ERROR_HANDLE_BLOCK_MISMATCH	equ 	$0A 	; Heap block is valid but not owned b
 HEAP_ERROR_OUT_OF_MEMORY		equ 	$0B	; Insufficient free space to satisfy request
 HEAP_ERROR_NOT_INITIALIZED 		equ 	$0C	; Machine heap not initialized
 HEAP_ERROR_INITIALIZED			equ 	$0D 	; Machine heap is already initialized
+HEAP_ERROR_NO_MORE_ITEMS		equ     $0E 	; No more enumerable blocks.
+HEAP_HEADER_BLOCK_HEADPTR_BAD		equ 	$0F 	; The block chain head pointer is invalid
+HEAP_HEADER_BLOCK_FREEPTR_BAD 		equ 	$10 	; The free block chain head pointer is invalid
+HEAP_HEADER_BAD_MAGIC			equ 	$11 	; The heap header magic number is invalid
+HEAP_HEADER_INVALID_SIZE		equ 	$12 	; Heap size not derived from reqested size
+HEAP_ERROR_TAIL_VALIDATION_FAILED 	equ 	$13 	; The debug tail data was corrupt
 
 	.list

@@ -4,6 +4,7 @@
 	extern 	_HeapCreate, _HeapDestroy
 	extern 	_HeapAlloc, _HeapReAlloc, _HeapFree
 	extern 	_HeapCompact, _GetMachineHeap, _GetMachineHeaps
+	extern  _HeapWalk, _HeapGetError
 
 	.code
 
@@ -22,7 +23,8 @@ cmdtail	equ 	$80
 STKSIZE	equ	$200
 
 ;HEAP_FLAGS equ	(FLG_HEAP_DISABLE_COALESCING or HEAP_ENABLE_DEBUG_FILL)
-HEAP_FLAGS equ	HEAP_ENABLE_DEBUG_FILL
+HEAP_FLAGS equ	(HEAP_ENABLE_DEBUG_FILL or HEAP_TAIL_CHECKING_ENABLED)
+;HEAP_FLAGS equ	(HEAP_ZERO_MEMORY or HEAP_TAIL_CHECKING_ENABLED)
 
 start:	; Get the pointer to the base page
 	move.l 	(sp)+,a0 		; A0 --> Base page
@@ -46,73 +48,7 @@ start:	; Get the pointer to the base page
 	clr.l 	-(sp)			; No options
 	jsr 	_MachineHeapInitialize	; Create the Machine heap
 	adda.l 	#12,sp
-
-
-	move.l 	#400,-(sp)
-	move.l 	#HEAP_FLAGS,-(sp)
-	jsr 	_HeapCreate
-	adda.l 	#8,sp
-	move.l 	d0,_PrivateHeap1	; Save heap handle
-
-	move.l 	#400,-(sp)
-	move.l 	#HEAP_FLAGS,-(sp)
-	jsr 	_HeapCreate
-	adda.l 	#8,sp
-	move.l 	d0,_PrivateHeap1	; Save heap handle
-
-	move.l 	#400,-(sp)
-	move.l 	#HEAP_FLAGS,-(sp)
-	jsr 	_HeapCreate
-	adda.l 	#8,sp
-	move.l 	d0,_PrivateHeap1	; Save heap handle
-
-	move.l 	#400,-(sp)
-	move.l 	#HEAP_FLAGS,-(sp)
-	jsr 	_HeapCreate
-	adda.l 	#8,sp
-	move.l 	d0,_PrivateHeap1	; Save heap handle
-
-
-
-test1:
-	move.l 	#0,-(sp)		; NULL
-	move.l 	#0,-(sp)		; 0
-	jsr 	_GetMachineHeaps
-	adda.l 	#8,sp
-	beq 	_ErrorEnd
-	move.l 	d0,NumberOfHeaps
-
-	lsl 	#2,d0 			; BytesToAllocate = NumberOfHeaps * 4
-	move.l 	d0,BytesToAllocate
-
-	jsr 	_GetMachineHeap
-	move.l 	d0,hDefaultHeap
-
-	move.l 	BytesToAllocate,-(sp)	; Allocate heap handle buffer
-	clr.l 	-(sp)			; No flags
-	move.l 	hDefaultHeap,-(sp)	; From machine heap
-	jsr 	_HeapAlloc
-	adda.l 	#12,sp
-	beq 	_ErrorEnd
-	move.l 	d0,aHeaps
-
-	move.l 	NumberOfHeaps,HeapsLength
-
-	move.l 	aHeaps,-(sp)		; aHeaps
-	move.l 	HeapsLength,-(sp)	; 0
-	jsr 	_GetMachineHeaps
-	adda.l 	#8,sp
-	beq 	_ErrorEnd
-	move.l 	d0,NumberOfHeaps
-
-	bra	done
-
-
-
-
-
-
-
+	move.l  d0,hDefaultHeap
 
 ttHeapCreate:
 	move.l 	#400,-(sp)
@@ -121,18 +57,26 @@ ttHeapCreate:
 	adda.l 	#8,sp
 	move.l 	d0,_PrivateHeap1	; Save heap handle
 
-
-
-
-
-
 ttalloc1:
-	move.l 	#10,-(sp)		; Allocate 10 bytes
+	move.l 	#$20,-(sp)		; Allocate 1 bytes
 	clr.l 	-(sp)			; No flags
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapAlloc
 	adda.l 	#12,sp
 	move.l 	d0,blk1
+
+	movea.l blk1,a0
+	move.l  #5,$20(a0)
+
+ttfree1:
+	move.l 	blk1,-(sp)		; Free block 1
+;	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
+	move.l 	hDefaultHeap,-(sp)	; From private heap 1
+	jsr 	_HeapFree
+	adda.l 	#8,sp
+
+	bra	done
+
 
 ttalloc2:
 	move.l 	#10,-(sp)		; Allocate 10 bytes
@@ -158,17 +102,43 @@ ttalloc4:
 	adda.l 	#12,sp
 	move.l 	d0,blk4
 
-ttfree1:
-	move.l 	blk1,-(sp)		; Free block 1
-	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
-	jsr 	_HeapFree
-	adda.l 	#8,sp
+;ttfree1:
+;	move.l 	blk1,-(sp)		; Free block 1
+;	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
+;	jsr 	_HeapFree
+;	adda.l 	#8,sp
 
 ttfree2:
 	move.l 	blk2,-(sp)		; Free block 2
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapFree
 	adda.l 	#8,sp
+
+HeapWalkTest:
+	move.l	#0,HeapEntry		; HeapEntry --> NULL
+
+HeapWalkLoop:
+	move.l 	#HeapEntry,-(sp)	; Push &HeapEntry
+	move.l 	_PrivateHeap1,-(sp)	; Push private heap 1
+	jsr 	_HeapWalk
+	adda.l 	#8,sp
+	tst.l 	d0 			; Success?
+	beq.s 	HeapWalkFailed
+
+HeapWalkSuccess:
+	bra.s 	HeapWalkLoop 		; Get next heap block
+
+
+HeapWalkFailed:
+	jsr 	_HeapGetError 		; Get heap API status
+	cmpi.l  #HEAP_ERROR_NO_MORE_ITEMS,d0 ; Just end of the heap?
+	beq.s 	HeapWalkTestPassed
+
+HeapWalkTestFailed:
+	bra 	_ErrorEnd
+
+HeapWalkTestPassed:
+	bra 	done
 
 ttfree3:
 	move.l 	blk3,-(sp)		; Free block 3
@@ -199,6 +169,8 @@ done: 	jmp 	done
 _ErrorEnd: jmp _ErrorEnd
 
 	.bss
+
+HeapEntry:	ds.l 	1
 
 NumberOfHeaps:	ds.l	1
 HeapsIndex:	ds.l	1

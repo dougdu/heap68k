@@ -146,8 +146,12 @@ __CoalesceWithNext:
 	beq.s 	_hclcwnNoPrevFreeBlock
 	movea.l bhFreePrev(a1),a2 		; A2 --> Previous free block
 	move.l 	a1,bhFreeNext(a2)		; Make it point forward to us
+	bra.s 	_hclcwnUpdateNextBlock 		; Go update the next block (if any)
 
 _hclcwnNoPrevFreeBlock:
+	move.l 	a1,hhFreeHead(a0)		; We are the new head
+
+_hclcwnUpdateNextBlock:
 	tst.l 	bhFreeNext(a1)			;  Update the next free block back link
 	beq.s 	_hclcwnNoNextFreeBlock
 	movea.l bhFreeNext(a1),a2 		; A2 --> Next free block

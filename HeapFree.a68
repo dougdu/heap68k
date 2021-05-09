@@ -71,12 +71,28 @@ _HeapFree:
 	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block already free?
 	bne 	_hfBlockInvalid			; Abort, if it is already free
 
-	; TODO: Need a way to validate that the block is part of the heap
-	; associated with the supplied heap handle.
+	; Validate that the block is part of the specified heap
+	move.l 	hhFlags(a0),d0 			; Get the Heap's Heap Id
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	bhFlags(a1),d1 			; Get the Block's Heap Id
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d0,d1 				; Do they match?
+	bne	_hfInvalidHeap			; Nope, abort
 
 	; Flags that need to be implemented:
-	;btst.b 	#HEAP_TAIL_CHECKING_ENABLED,hhFlags+3(a0)
+	btst.b 	#HEAP_TAIL_CHECKING_ENABLED,hhFlags+3(a0)
+	move.l 	bhRequestSize(a1),d0 		; Get the requested block size
+	lea 	bhData(a1,d0.l),a2		; A2 --> start of block tail
+	move.l 	bhSize(a1),d1 			; Compute tail size
+	subi.l 	#BLK_HDR_SIZE+1,d1		; +1 to adjust for dbra
+	sub.l 	d0,d1 				; D1 = tail size
 
+_hfTailCheckLoop:
+	cmpi.b 	#HEAP_TAIL,(a2)+		; Has the tail been corrupted?
+	bne	_hfBufferOverrun		; Yes, abort
+	dbra 	d1,_hfTailCheckLoop		; Loop until entire tail validated
+
+_hfNoTailCheck:
 	; Does the heap have coalesce on free disabled?
 	btst.b 	#FLG_HEAP_DISABLE_COALESCING,hhFlags+3(a0)
 	bne 	_hfFreeWithNoCoalesce		; Yes, just free the block
@@ -87,7 +103,7 @@ _HeapFree:
 	jsr 	__HeapCoalesce			; Go attempt to coalesce with surrounding blocks
 	adda.l 	#8,sp
 	tst.l 	d0				; Did we actually coalesce?
-	bne.s 	_hfExit				; Yes, return success
+	bne.s 	_hfSuccess			; Yes, return success
 
 _hfFreeWithNoCoalesce:
 	; Here we have nothing to coalesce with so just free the block
@@ -119,6 +135,14 @@ _hfBlockFreed:
 _hfSuccess:
 	move.l 	#-1,d0				; Flag as success
 	bra.s 	_hfExit
+
+_hfInvalidHeap:
+	move.l 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,__HeapError ; Heap Id's don't match
+	bra.s 	_hfErrorExit
+
+_hfBufferOverrun:
+	move.l 	#HEAP_ERROR_TAIL_VALIDATION_FAILED,__HeapError ; Debug block tail is corrupt
+	bra.s 	_hfErrorExit
 
 _hfBlockInvalid:
   	move.l  #HEAP_ERROR_INVALID_BLOCK,__HeapError ; Block pointer not valid
