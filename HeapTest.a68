@@ -4,7 +4,7 @@
 	extern 	_HeapCreate, _HeapDestroy
 	extern 	_HeapAlloc, _HeapReAlloc, _HeapFree
 	extern 	_HeapCompact, _GetMachineHeap, _GetMachineHeaps
-	extern  _HeapWalk, _HeapGetError
+	extern  _HeapWalk, _HeapGetError, _HeapSize
 
 	.code
 
@@ -65,8 +65,18 @@ ttalloc1:
 	adda.l 	#12,sp
 	move.l 	d0,blk1
 
-	movea.l blk1,a0
-	move.l  #5,$20(a0)
+
+	move.l 	blk1,-(sp)
+	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
+	jsr 	_HeapSize
+	adda.l 	#8,sp
+
+	bra	done
+
+
+
+;	movea.l blk1,a0
+;	move.l  #5,$20(a0)
 
 ttfree1:
 	move.l 	blk1,-(sp)		; Free block 1

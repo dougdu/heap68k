@@ -32,6 +32,7 @@
 
 	public	_HeapSize
 	extern 	__HeapAutoValidateFlagCheck
+	extern 	__HeapError
 
 	.code
 
@@ -41,7 +42,7 @@ pMem	equ	12
 
 _HeapSize:
 	link	a6,#0				; Setup stack frame
-	movem.l a0-a1,-(sp)			; Save registers
+	movem.l d1/a0-a1,-(sp)			; Save registers
 
 	movea.l hHeap(a6),a0 			; A0 --> Heap header
 
@@ -55,14 +56,40 @@ _HeapSize:
 	movea.l	pMem(a6),a1 			; A1 --> memory block
 	suba.l 	#BLK_HDR_SIZE,a1 		; A1 --> block header
 
-	; TODO: do some heap/block validation here
+	; Validate that the pointer is aligned as we expect
+	move.l	a1,d0 				; Verify block pointer bit pattern is ok
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0
+        bne   	_hsBlockInvalid         	; Abort, not a valid heap block
+
+	; Validate that the block header has the correct signature
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a1)	; Verify the magic number
+        bne   	_hsBlockInvalid         	; Abort, not a valid heap block
+
+	; Validate that the block is marked as allocated
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block free?
+	bne 	_hsBlockInvalid			; Abort, if it is free
+
+	; Validate that the block is part of the specified heap
+	move.l 	hhFlags(a0),d0 			; Get the Heap's Heap Id
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	bhFlags(a1),d1 			; Get the Block's Heap Id
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d0,d1 				; Do they match?
+	bne	_hsInvalidHeap			; Nope, abort
 
 	move.l 	bhRequestSize(a1),d0 		; Get the request size of the block
 
 _hsExit:
-	movem.l (sp)+,a0-a1			; Restore registers
+	movem.l (sp)+,d1/a0-a1			; Restore registers
 	unlk 	a6
 	rts
+
+_hsInvalidHeap:
+	move.l 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,__HeapError ; Heap Id's don't match
+	bra.s 	_hsError
+
+_hsBlockInvalid:
+  	move.l  #HEAP_ERROR_INVALID_BLOCK,__HeapError ; Block pointer not valid
 
 _hsError:
 	move.l	#-1,d0				; Flag that an error occurred.
