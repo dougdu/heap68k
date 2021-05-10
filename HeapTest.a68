@@ -23,8 +23,9 @@ cmdtail	equ 	$80
 STKSIZE	equ	$200
 
 ;HEAP_FLAGS equ	(FLG_HEAP_DISABLE_COALESCING or HEAP_ENABLE_DEBUG_FILL)
-HEAP_FLAGS equ	(HEAP_ENABLE_DEBUG_FILL or HEAP_TAIL_CHECKING_ENABLED)
+;HEAP_FLAGS equ	(HEAP_ENABLE_DEBUG_FILL or HEAP_TAIL_CHECKING_ENABLED)
 ;HEAP_FLAGS equ	(HEAP_ZERO_MEMORY or HEAP_TAIL_CHECKING_ENABLED)
+HEAP_FLAGS equ	HEAP_ENABLE_DEBUG_FILL
 
 start:	; Get the pointer to the base page
 	move.l 	(sp)+,a0 		; A0 --> Base page
@@ -58,18 +59,20 @@ ttHeapCreate:
 	move.l 	d0,_PrivateHeap1	; Save heap handle
 
 ttalloc1:
-	move.l 	#$20,-(sp)		; Allocate 1 bytes
+	move.l 	#$1,-(sp)		; Allocate 1 bytes
 	clr.l 	-(sp)			; No flags
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
 	jsr 	_HeapAlloc
 	adda.l 	#12,sp
 	move.l 	d0,blk1
 
-
+ttrealloc:
+	move.l 	#$40,-(sp)
 	move.l 	blk1,-(sp)
+	clr.l 	-(sp)			; Flags
 	move.l 	_PrivateHeap1,-(sp)	; From private heap 1
-	jsr 	_HeapSize
-	adda.l 	#8,sp
+	jsr 	_HeapReAlloc
+	adda.l 	#16,sp
 
 	bra	done
 

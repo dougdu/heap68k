@@ -19,7 +19,7 @@ HEAP_ID_MASK	equ 	$ffff0000 		; Mask off flag bits leaving the heap id in upper 
 ************************************************************************
 * Heap Constants
 ************************************************************************
-HEAP_TAIL_SIZE 	equ 	$10 			; Number of bytes reserved for buffer overrun detection.
+HEAP_TAIL_SIZE 	equ 	$20 			; Number of bytes reserved for buffer overrun detection.
 
 ************************************************************************
 * Heap Header structure definition
