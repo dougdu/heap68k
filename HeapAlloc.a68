@@ -27,14 +27,17 @@
 *  RETURN VALUE
 ************************************************************************
 *
-*  Pointer the allocated memory block or NULL if an error occurred.
+*  If the function succeeds, the return value is a pointer to the
+*  allocated memory block.
+*
+*  If the function fails the return value is NULL
 *
 ************************************************************************
 
 	include heap.inc
 
 	public	_HeapAlloc
-	extern	__HeapAutoValidateFlagCheck, _HeapUnlinkFromFreeList
+	extern	__HeapAutoValidateFlagCheck, __HeapUnlinkFromFreeBlockChain
 	extern	__HeapError
 
 	.code
@@ -69,7 +72,7 @@ _HeapAlloc:
 	; Is HEAP_TAIL_CHECKING_ENABLED set for the heap?
 	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
 	beq.s 	_haTailCheckingNotEnabled
-	addq.l 	#4,d2				; Reserve space for the tail marker
+	addi.l 	#HEAP_TAIL_SIZE,d2		; Reserve space for the tail marker
 
 _haTailCheckingNotEnabled:
         add.l  	#BLK_HDR_SIZE-1,d2		; Force the requested block size to
@@ -100,8 +103,11 @@ _haBlockTooSmall:
 
 _haExactFit:
 	; Here if the found free block is the exact size needed. We can
-	; just unlink the block from the free list and mark it as allocated.
-	jsr 	_HeapUnlinkFromFreeList		; Unlink the block from the free list
+	; just unlink the block from the free block chain and mark it as allocated.
+	move.l 	a1,-(sp)
+	move.l 	a0,-(sp)
+	jsr 	__HeapUnlinkFromFreeBlockChain	; Unlink the block from the free block chain
+	adda.l 	#8,sp
 	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
 	move.l 	d1,bhRequestSize(a1)		; Set requested size
 	bra 	_haProcessFlags			; Go zero block and/or add debug marker
@@ -167,58 +173,92 @@ _haNoFwdFreeBlock:
 	move.l 	d3,bhRequestSize(a4)		; is the size of data area
 
 _haProcessFlags:
-	; HEAP_ENABLE_DEBUG_FILL flag takes precedence over HEAP_ZERO_MEMORY
-	move.l 	#CDCDCDCD,d1 			; Initialize fill pattern
-	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
-	bne.s 	_haFillBlock
-
-	; If the HEAP_ZERO_MEMORY flag passed in then zero out the block
-	clr.l 	d1 				; Initialize fill pattern
-	btst.b 	#FLG_HEAP_ZERO_MEMORY,lFlags+3(a6) ; Caller requested block to be zeroed?
-	bne.s 	_haFillBlock			; Yes, go zero the block
-
-	; Is the heap configured to zero every allocation?
-	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
-	beq.s 	_haNoFillBlock			; Nope skip
-
-_haFillBlock:
-	lea.l 	bhData(a1),a2			; A2 --> Allocated memory
-	move.l 	bhSize(a1),d0 			; Get size of the block in bytes
-	sub.l 	#BLK_HDR_SIZE,d0 		; Adjust for block header
-	beq.s 	_haNoFillBlock			; Don't zero a block with no bytes
-	lsr.l 	#2,d0 				; Fill using long words
-	subq.l 	#1,d0 				; Adjust for dbra
-_haFillBlockLoop:
-	move.l 	d1,(a2)+			; Fill using a long word
-	dbra 	d0,_haFillBlockLoop		; Loop until block filled
-
-_haNoFillBlock:
-	; Do we need to initialize the tail checking bytes?
-	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
-	beq.s 	_haNoTailChecking
-	move.l 	#HEAP_TAIL,-4(a1,d2.L)
-
-_haNoTailChecking:
-	lea.l 	bhData(a1),a0		; Put memory pointer in a0
+	move.l 	lFlags(a6),d2 			; Caller requested flags
+	bsr 	__FillBlock
+	lea.l 	bhData(a1),a0			; Put memory pointer in a0
         bra.s   _haExit
 
 _haNoMem:
-	move.l	#HEAP_ERROR_OUT_OF_MEMORY,d0 ; Not enough free space for request
+	move.l	#HEAP_ERROR_OUT_OF_MEMORY,d0 	; Not enough free space for request
 
 _haErrorExit:
-	move.l 	d0,__HeapError		; Store the error code
+	move.l 	d0,__HeapError			; Store the error code
 
 _haErrorExit1:
-	suba.l  a0,a0                   ; Return NULL pointer on error
+	suba.l  a0,a0                   	; Return NULL pointer on error
 
 _haExit:
-	move.l	a0,d0 			; Return pointer in D0
-	movem.l (sp)+,a0-a4/d1-d3       ; Restore registers
+	move.l	a0,d0 				; Return pointer in D0
+	movem.l (sp)+,a0-a4/d1-d3       	; Restore registers
 	unlk 	a6
         rts
 
 _haFreeBlockChainCorrupt:
-	move.l	#HEAP_ERROR_BLOCK_NOT_FREE,d0 ; Flag that the free block chain is corrupt
+	move.l	#HEAP_ERROR_BLOCK_NOT_FREE,d0 	; Flag that the free block chain is corrupt
 	bra.s 	_haErrorExit
+
+
+;hHeap 	equ 	A0
+;pBlock 	equ	A1
+;pMem	equ	A2
+;lData 	equ	D1
+;lFlag  equ 	D2
+
+__FillBlock:
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_fbNoTailChecking
+
+	move.l 	bhRequestSize(a1),d0 		; Requested block size
+	andi.l 	#NOT(3),d0 			; Round down to nearest long word
+	lea 	bhData(a1,d0.l),a2		; A2 --> Nearest long word for tail fill
+
+	move.l 	bhSize(a1),d0			; Size of block
+	subi.l 	#BLK_HDR_SIZE-3,d0 		; Size of data area
+	sub.l 	bhRequestSize(a1),d0 		; Count of bytes to fill
+	lsr 	#2,d0				; Convert to long word count
+	subi.l 	#1,d0				; Adjust for dbra
+
+_fbTailCheckLoop:
+	move.l 	#HEAP_TAIL,(a2)+		; Fill the block debug data to help
+	dbra 	d0,_fbTailCheckLoop		; detect buffer overruns.
+
+_fbNoTailChecking:
+	; HEAP_ENABLE_DEBUG_FILL flag takes precedence over HEAP_ZERO_MEMORY
+	move.l 	#CDCDCDCD,d1 			; Initialize fill pattern
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	bne.s 	_fbFillBlock
+
+	; If the HEAP_ZERO_MEMORY flag passed in then zero out the block
+	clr.l 	d1 				; Initialize fill pattern
+	btst.l 	#FLG_HEAP_ZERO_MEMORY,d2 	; Caller requested block to be zeroed?
+	bne.s 	_fbFillBlock			; Yes, go zero the block
+
+	; Is the heap configured to zero every allocation?
+	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
+	beq.s 	_fbExit				; Nope skip
+
+_fbFillBlock:
+	lea.l 	bhData(a1),a2			; A2 --> Allocated memory
+	move.l 	bhRequestSize(a1),d0 		; D0 = count of bytes to fill
+	lsr 	#2,d0				; Convert to longwords
+	beq.s 	_fbFillBytes			; Skip if count < 4
+	subi.l 	#1,d0				; Adjust for dbra
+
+_fbFillLongWordLoop:
+	move.l 	d1,(a2)+ 			; Fill a long word
+	dbra 	d0,_fbFillLongWordLoop
+
+_fbFillBytes:
+	move.l 	bhRequestSize(a1),d0		; D0 = count of bytes to fill
+	andi.l 	#3,d0 				; Any remaining bytes?
+	beq.s 	_fbExit				; Nope
+	subi.l 	#1,d0 				; Adjust for dbra
+
+_fbByteLoop:
+	move.b 	d1,(a2)+ 			; Fill a byte
+	dbra 	d0,_fbByteLoop			; Loop until remaing bytes filled
+
+_fbExit:
+	rts
 
 	end

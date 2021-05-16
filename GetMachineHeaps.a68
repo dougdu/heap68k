@@ -1,0 +1,98 @@
+************************************************************************
+*  _GetMachineHeap
+************************************************************************
+*
+*  Returns the number of active heaps and retrieves handles to all
+*  of the active heaps.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  NumHeaps : The maximum number of heap handles that can be stored
+*             into the buffer pointed to by
+*
+*  pHeaps : A pointer to a buffer that receives an array of heap
+*	    handles.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  The return value is the number of handles to heaps that are active.
+*
+*  If the return value is greater than NumHeaps, the buffer pointed
+*  to by pHeaps is too small to hold all the heap handles, and the
+*  function stores NumHeaps handles in the buffer. Use the return
+*  value to allocate a buffer that is large enough to receive all of
+*  the handles, and call the function again.
+*
+*  If the return value is zero, the function has failed because there
+*  always be at least one active heap, the machine heap. To get
+*  extended error information, call HeapGetError.
+************************************************************************
+
+	include	heap.inc
+
+	public	_GetMachineHeaps
+	extern 	__MachineHeapHandle, __HeapError
+
+	.code
+
+; Parameter offsets
+NumHeaps equ	8
+pHeaps	 equ 	12
+
+_GetMachineHeaps:
+	link 	a6,#0				; Set up stack frame
+	movem.l d1-d2/a0-a3,-(sp)		; Save registers
+	clr.l 	__HeapError			; Clear status
+	move.l 	__MachineHeapHandle,d0		; Get the machine heap handle
+	bne.s 	_gmhsIsInitialized		; Abort if it isn't initialized
+	move.l 	#HEAP_ERROR_NOT_INITIALIZED,__HeapError
+	bra.s 	_gmhsExit
+
+_gmhsIsInitialized:
+	movea.l d0,a0				; A0 --> Machine Heap
+
+	; Initialize the count of heaps to 1 for the machine heap
+	moveq	#1,d2 				; D2 = # of heaps
+
+	; Get parameters
+	movea.l pHeaps(a6),a1			; A1 --> caller supplied handle buffer
+	move.l 	NumHeaps(a6),d1 		; D1 = size of buffer in handles
+	beq.s 	_gmhsHeapScan			; Skip storing machine heap if no buffer provided
+	move.l 	a0,(a1)+ 			; Store the machine heap in the buffer
+	subq.l 	#1,d1
+
+	; Now walk all the blocks in the machine heap looking for the "HEAP" magic number
+_gmhsHeapScan:
+	movea.l hhHeapHead(a0),a2 		; A2 --> Head of the machine heap block chain
+
+_gmhsHeapScanLoop:
+	cmpa.l 	#0,a2 				; End of the block chain?
+	beq.s 	_gmhsEndOfBlockChain		; Yes, exit loop
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Is the block free?
+	bne.s 	_gmhsNextBlock			; Yes, move to next block
+	lea 	bhData(a2),a3			; A3 --> block's data area
+	cmpi.l 	#HEAP_MAGIC,(a3)		; Is the block actually a heap?
+	bne.s 	_gmhsNextBlock			; No, move to next block
+	addq.l	#1,d2				; Bump number of heaps
+	tst.l 	d1 				; Any more room for handles?
+	beq.s 	_gmhsNextBlock			; No, move to next block
+	move.l 	a3,(a1)+ 			; Yes, store the heap handle
+	subq.l 	#1,d1 				; Count down on handle space
+
+_gmhsNextBlock:
+	movea.l bhNext(a2),a2 			; Move to next block in chain
+	bra.s 	_gmhsHeapScanLoop
+
+_gmhsEndOfBlockChain:
+	move.l 	d2,d0 				; Return total count of handles
+
+_gmhsExit:
+	movem.l (sp)+,d1-d2/a0-a3		; Restore registers
+	unlk 	a6
+	rts
+
+	end

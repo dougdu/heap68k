@@ -29,77 +29,78 @@
 	include heap.inc
 
 	public	_HeapCompact
-	extern 	_HeapValidateHandle, _HeapValidate
-	extern	__HeapError
+	extern 	__HeapAutoValidateFlagCheck, __HeapCoalesce
 
 	.code
 
 ; Parameter offsets
 hHeap	equ 	8
 
+; Local offsets
 _HeapCompact:
 	link 	a6,#0				; Initialize stack frame
-	movem.l a0,-(sp)			; Save registers
-
-	clr.l	__HeapError			; Clear Heap Error
+	movem.l d1/a0-a1,-(sp)			; Save registers
 
 	movea.l hHeap(a6),a0 			; A0 --> Heap Header
-	move.l 	hhFlags(a0),d1 			; Get heap flags
-	btst.l 	#FLG_HEAP_VALIDATE_PARAMETERS,d1 ; Limited heap validation ?
-	beq.s 	heapCompactCheckNextflg		; Nope, skip
-	move.l 	a0,-(sp)			; Push machine heap handle
-	jsr 	_HeapValidateHandle		; Validate handle
-	adda.l 	#4,sp
-	bne 	heapCompactError		; Validation failed, abort
 
-heapCompactCheckNextflg:
-	btst.l 	#FLG_HEAP_VALIDATE_ALL,d1 	; Full heap validation ?
-	beq.s 	heapCompactNoValidation
-	clr.l 	-(sp)				; Validate entire heap
-	move.l 	a0,-(sp)			; Push machine heap handle
-	jsr 	_HeapValidate			; Go do validation
+	; Run any configured heap validations
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
 	adda.l 	#8,sp
-	bne 	heapCompactError		; Go if validation failed
+	bne 	_hcpError			; Validation failed
 
-heapCompactNoValidation:
 	btst.l 	#FLG_HEAP_DISABLE_COALESCING,d0 ; Coalescing disabled?
-;	beq.s	heapCompactNoCoalesce 		; Nope, heap should be good
+	beq.s	_hcpNoCoalesce 			; Nope, heap should be good
 
-	; Here we need to walk the free list and coalesce
-	; all the adjacent free blocks.
+	; Here we walk the free list and coalesce all the adjacent
+	; free blocks.
 
+	tst.l 	hhFreeHead(a0)			; Are there any free blocks?
+	beq.s 	_hcpNoCoalesce			; Nope, nothing to coalesce
 
-	; TODO: Implement coalescing of free list
+_hcpResetCoalesceLoop:
+	movea.l hhFreeHead(a0),a1 		; A1 --> head of the free block chain
 
+_hcpCoalesceLoop:
+	move.l 	a1,-(sp)			; Push the block address
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapCoalesce			; Attempt to coalesce the block
+	adda.l 	12,sp
+	tst.l 	d0 				; Was the block coalesced?
+	bne.s 	_hcpResetCoalesceLoop		; Yes, restart the free list walk
+	movea.l bhFreeNext(a1),a1 		; Follow link to next block
+	cmpa.l 	#0,a1 				; End of the free block chain?
+	bne.s 	_hcpCoalesceLoop		; Nope, try and coalesce the next block
 
-heapCompactNoCoalesce:
+_hcpNoCoalesce:
 	movea.l hhFreeHead(a0),a1 		; A1 --> start of free block chain
 	clr.l 	d0 				; D0 = largest free block
 
-heapCompactFindLargestFreeBlockLoop:
+_hcpFindLargestFreeBlockLoop:
 	cmpa.l 	#0,a1 				; End of the free block chain?
-	beq.s	heapCompactExitFindLoop		; Yes, return largest free block found
+	beq.s	_hcpExitFindLoop		; Yes, return largest free block found
 	move.l 	bhSize(a1),d1 			; D1 = size of free block
 	cmp.l 	d1,d0				; New block larger than currently cached size?
-	ble.s 	heapCompactNotLarger		; Nope, move on to next block
+	bge.s 	_hcpNotLarger			; Nope, move on to next block
 	move.l 	d1,d0 				; Update largest block size
 
-heapCompactNotLarger:
+_hcpNotLarger:
 	movea.l bhFreeNext(a1),a1 		; Follow forward link and loop
-	bra.s 	heapCompactFindLargestFreeBlockLoop
+	bra.s 	_hcpFindLargestFreeBlockLoop
 
-heapCompactExitFindLoop:
+_hcpExitFindLoop:
 	tst.l 	d0 				; Is final size 0?
-	beq.s 	heapCompactExit			; Yes, return it
+	beq.s 	_hcpExit			; Yes, return it
 	subi.l 	#BLK_HDR_SIZE,d0		; Nope, only return the data portion
 
-heapCompactExit:
-	movem.l (sp)+,a0			; Restore registers
+_hcpExit:
+	movem.l (sp)+,d1/a0-a1			; Restore registers
 	unlk	a6
 	rts
 
-heapCompactError:
+_hcpError:
 	clr.l 	d0
-	bra.s 	heapCompactExit
+	bra.s 	_hcpExit
 
 	end

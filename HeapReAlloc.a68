@@ -1,22 +1,67 @@
-*********************************************************
-* _HeapReAlloc
+************************************************************************
+*  _HeapReAlloc
+************************************************************************
 *
-*     Reallocates a block of memory from a heap. This
-*     function enables you to resize a memory block and
-*     change other memory block properties.
+*  Reallocates a block of memory from a heap. This function enables
+*  you to resize a memory block and change other memory block
+*  properties.
 *
-*     Entry:  A0 = Handle of heap
-*	      D0 = flags
-*	      A1 = Pointer to block to reallocate
-*             D1 = New size of memory block in bytes
+************************************************************************
+*  PARAMETERS
+************************************************************************
 *
-*     Exit:   D0 = error code: 0 = Handle Valid
-*                              1 = Handle Invalid
-*********************************************************
+*  hHeap : A handle to the heap from which the memory is to be
+*	   reallocated. This handle is returned by the HeapCreate
+*	   or GetMachineHeap function.
+*
+*  lFlags : The heap allocation options. Specifying any of these
+*           values will override the corresponding value specified
+*	    when the heap was created with HeapCreate. This parameter
+*           can be one or more of the following values.
+*
+*	HEAP_ZERO_MEMORY - If the reallocation request is for a larger
+*		size, the additional region of memory beyond the
+*		original size be initialized to zero. The contents of
+*		the memory block up to its original size are unaffected.
+*
+*	HEAP_REALLOC_IN_PLACE_ONLY - There can be no movement when
+*		reallocating a memory block. If this value is not
+*		specified, the function may move the block to a new
+*		location. If this value is specified and the block
+*		cannot be resized without moving, the function fails,
+*		leaving the original memory block unchanged.
+*
+*  pMem : A pointer to the block of memory that the function
+*         reallocates. This pointer is returned by an earlier call
+*         to the HeapAlloc or HeapReAlloc function.
+*
+*  lBytes : The new size of the memory block, in bytes. A memory
+* 	    block's size can be increased or decreased by using
+*           this function.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If HeapReAlloc succeeds, it allocates at least the amount of
+*  memory requested.
+*
+*  If HeapReAlloc fails, the original memory is not freed, and
+*  the original handle and pointer are still valid.
+*
+*  HeapReAlloc is guaranteed to preserve the content of the memory
+*  being reallocated, even if the new memory is allocated at a
+*  different location. The process of preserving the memory content
+*  involves a memory copy operation that is potentially very
+*  time-consuming.
+*
+************************************************************************
 
 	include heap.inc
 
 	public	_HeapReAlloc
+	extern 	__HeapAutoValidateFlagCheck
+	extern	__HeapError
 
 	.code
 
@@ -24,9 +69,103 @@
 hHeap 	equ 	8
 lFlags	equ	12
 pMem 	equ 	16
-lSize 	equ 	20
+lBytes 	equ 	20
 
 _HeapReAlloc:
+	link 	a6,#0
+
+	movea.l hHeap(a6),a0 			; A0 --> Heap
+
+	; Run any configured heap validations
+	clr.l 	-(sp)				; Flag caller as not HeapFree
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapAutoValidateFlagCheck
+	adda.l 	#8,sp
+	bne 	_hrErrorExit			; Validation failed
+
+	; Begin ReAlloc processing
+	move.l 	pMem(a6),a1 			; Get memory pointer
+	cmpa.l 	#0,a1 				; NULL pointer?
+	beq 	_hrErrorExit			; Yes, abort
+	suba.l 	#BLK_HDR_SIZE,a1 		; Get pointer to block
+
+	; Compute the size of block needed to satisfy the request
+	move.l 	lBytes(a6),d1 			; D1 = size of required block
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_hrTailCheckingNotEnabled
+	addi.l 	#HEAP_TAIL_SIZE,d1		; Reserve space for block tail debug data
+
+_hrTailCheckingNotEnabled:
+        add.l  	#BLK_HDR_SIZE-1,d1		; Force the requested block size to
+        andi.b  #NOT(BLK_HDR_SIZE-1),d1		; be aligned on a block header boundary
+        add.l   #BLK_HDR_SIZE,d1        	; Add the size of a block header
+
+	; Compare the required size to the current block size
+	move.l 	bhSize(a1),d2 			; D2 = current block size
+	cmp.l 	d1,d2				; Grow, shrink, reuse same block?
+
+	beq.s 	_hrUseExistingBlock
+	bgt.s 	_hrShrinkBlock
+
+_hrGrowBlock:
+	; Here if the current block is too small to satisfy the request.
+	; We will compute how many bytes we need to grow and see if the
+	; adjacent block is free and able to help satisfy the request.
+	move.l  d1,d3
+	sub.l 	d2,d3				; D3 = number of bytes we need to grow
+	movea.l bhNext(a1),a2 			; See if the next block is free
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)
+	beq.s 	_hrgbNextBlockNotFree		; Not free, see if we can move the block
+	move.l 	bhRequestSize(a2),d4		; Get size of free block
+	cmp.l 	d3,d4				; Enough space?
+	blt.s 	_hrgbNextBlockNotFree		; No, see if we can move the block
+	beq.s 	_hrgbConsumeNextBlock 		; Yes, consume entire block
+
+	; The next block is bigger than we need, see if it is worth
+	; splitting the block.
+	sub.l 	d3,d4 				; Compute what would be left over
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_hrgbNoTailCheck
+	subi.l 	#HEAP_TAIL_SIZE,d4 		; Include tail check bytes
+_hrgbNoTailCheck:
+	cmpi.l 	#BLK_HDR_SIZE,d4		; Enough to warrant a split?
+	blt.s 	_hrgbConsumeNextBlock		; Nope, just use it all
+
+	; Here we will split the next block taking just enough to
+	; grow the specified block to satisfy the request in place.
+	nop
+
+_hrgbConsumeNextBlock:
+
+_hrgbNextBlockNotFree:
+	bra.s	_hrExit
+
+_hrShrinkBlock:
+	move.l 	#-1,d0
+	move.l  d2,d3
+	sub.l 	d1,d3
+	bra.s	_hrExit
+
+_hrUseExistingBlock:
+	; Here if the existing block is sufficient to satisfy the
+	; request due to the allocation chunk size.
+
+	; TODO: handle debug fill and tail fill
+
+	; Adjust the block's requested allocation size
+	move.l 	lBytes(a6),bhRequestSize(a1)
+
+	bra.s 	_hrExit
+
+_hrInvalidBlock:
+	move.l 	#HEAP_ERROR_INVALID_BLOCK,__HeapError
+
+_hrErrorExit:
+	clr.l 	d0 				; return NULL
+
+_hrExit:
+	movem.l (sp)+,a0 			; Restore registers
+	unlk 	a6
 	rts
 
         end

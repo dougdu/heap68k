@@ -19,14 +19,17 @@
 *  RETURN VALUE
 ************************************************************************
 *
-*  Heap error code.
+*  If the function succeeds, the return value is nonzero.
 *
+*  If the function fails, the return value is zero. An application
+*  can call GetHeapError for extended error information.
 ************************************************************************
 
 	include heap.inc
 
 	public 	_HeapFree
-	extern 	__HeapAutoValidateFlagCheck
+	extern 	__HeapAutoValidateFlagCheck, __HeapCoalesce, __HeapDebugFillOnFree
+	extern	__HeapError
 
 	.code
 
@@ -45,11 +48,11 @@ _HeapFree:
 	move.l 	a0,-(sp)			; Push heap handle
 	jsr 	__HeapAutoValidateFlagCheck
 	adda.l 	#8,sp
-	bne 	_hfExit				; Validation failed
+	bne 	_hfErrorExit			; Validation failed
 
 	; Abort if the supplied block pointer is NULL
 	move.l 	pMem(a6),d1			; Get pMem
-        beq  	_hfNullPtr                 	; Return if NULL
+        beq  	_hfSuccess                 	; Return if NULL
 
 	; Adjust pointer to start of block header
         sub.l  #BLK_HDR_SIZE,d1                 ; Point at block header
@@ -68,203 +71,42 @@ _HeapFree:
 	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block already free?
 	bne 	_hfBlockInvalid			; Abort, if it is already free
 
-	; TODO: Need a way to validate that the block is part of the heap
-	; associated with the supplied heap handle.
+	; Validate that the block is part of the specified heap
+	move.l 	hhFlags(a0),d0 			; Get the Heap's Heap Id
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	bhFlags(a1),d1 			; Get the Block's Heap Id
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d0,d1 				; Do they match?
+	bne	_hfInvalidHeap			; Nope, abort
 
 	; Flags that need to be implemented:
-	;btst.b 	#HEAP_TAIL_CHECKING_ENABLED,hhFlags+3(a0)
-	;btst.b 	#HEAP_FREE_CHECKING_ENABLE_BIT,hhFlags+3(a0)
+	btst.b 	#HEAP_TAIL_CHECKING_ENABLED,hhFlags+3(a0)
+	move.l 	bhRequestSize(a1),d0 		; Get the requested block size
+	lea 	bhData(a1,d0.l),a2		; A2 --> start of block tail
+	move.l 	bhSize(a1),d1 			; Compute tail size
+	subi.l 	#BLK_HDR_SIZE+1,d1		; +1 to adjust for dbra
+	sub.l 	d0,d1 				; D1 = tail size
 
+_hfTailCheckLoop:
+	cmpi.b 	#HEAP_TAIL,(a2)+		; Has the tail been corrupted?
+	bne	_hfBufferOverrun		; Yes, abort
+	dbra 	d1,_hfTailCheckLoop		; Loop until entire tail validated
+
+_hfNoTailCheck:
 	; Does the heap have coalesce on free disabled?
 	btst.b 	#FLG_HEAP_DISABLE_COALESCING,hhFlags+3(a0)
 	bne 	_hfFreeWithNoCoalesce		; Yes, just free the block
 
-	; Check to see if we can coalesce with adjacent blocks
-
-	tst.l 	bhPrev(a1)			; Have a previous block?
-	beq 	_hfNoPrevBlock 			; Nope, go check for a next block
-	movea.l bhPrev(a1),a2 			; A2 --> Previous block
-	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Is the previous block free?
-	beq 	_hfNoPrevBlock			; Nope, go check for a next block
-
-	; Here we have a previous block (A2) that we can coalesce with
-	; now check to see if we have a next block as well.
-
-	tst.l 	bhNext(a1)			; Have a next block?
-	beq 	_hfCoalesceWithPrev 		; Nope, go coalesce with the previous
-	movea.l bhNext(a1),a3 			; A3 --> Next block
-	btst.b 	#FLG_FREE_BIT,bhFlags+3(a3)	; Is the next block free?
-	beq 	_hfCoalesceWithPrev		; Nope, go coalesce with the previous
-
-_hfCoalesceWithBoth:
-	; Here we will coalesce with both the previous and next blocks
-	; thus A2 points to what will be the new free block.  Blocks
-	; A1 (the freed block) and A3 (the adjacent below free block)
-	; will be removed from the block chain.  In addition, block
-	; A3 will also be removed from the free block chain.
-	;
-	; 	A0 = pointer to the heap header
-	; 	A1 = pointer to block being freed
-	; 	A2 = bhPrev(A1) (i.e. pointer to block adjacent above the freed block)
-	; 	A3 = bhNext(A1) (i.e. pointer to block adjacent below the freed block)
-	; 	A4 = bhNext(A2) (i.e. next block after the newly coalesced block)
-	;
-	; When we are done, the register values will be
-	;	A1 = address of the new coalesced block
-	;	A5 = address of start of the block of just freed data
-	;	D5 = size of just freed data that needs to be zapped
-
-	move.l 	bhNext(a3),bhNext(a2)		; Set forward linkage to next block after coalesced blocks
-	tst.l 	bhNext(a3)			; End of block chain?
-	beq.s   _hfcwbNoNextBlock		; Yes, skip
-	movea.l bhNext(a3),a4 			; A4 --> Next block in chain
-	move.l  a2,bhPrev(a4)			; Set correct back linkage
-
-_hfcwbNoNextBlock:
-	move.l 	bhSize(a1),d0			; Compute size of coalesced block
-	move.l 	d0,d5
-	add.l 	bhSize(a3),d0
-	add.l 	d0,bhSize(a2)
-
-	add.l 	#BLK_HDR_SIZE,d5 		; Compute number of bytes to zap
-	movea.l a1,a5 				; A5 -> Address to begin zapping
-
-	; Now unlink the coalesed free block A3 from the free block chain
-	tst.l 	bhFreePrev(a3)			; Is there a previous free block?
-	beq.s 	_hfcwbNoPrevFreeBlock		; Nope, go update the head pointer
-	movea.l bhFreePrev(a3),a4 		; A4 --> Previous free block
-	move.l 	bhFreeNext(a3),bhFreeNext(a4)	; Unlink block A3
-	bra 	_hfcwbChkNextFreeBlock
-
-_hfcwbNoPrevFreeBlock:
-	move.l 	bhFreeNext(a3),hhFreeHead(a0)	; We were the head, so update head
-
-_hfcwbChkNextFreeBlock:
-	tst.l 	bhFreeNext(a3)			; Is there a next free block?
-	beq.s 	_hfcwbNoNextFreeBlock		; Nope, go finish up
-	movea.l bhFreeNext(a3),a4 		; A4 --> next free block
-	move.l 	bhFreePrev(a3),bhFreePrev(a4) 	; Update Free chain back link
-
-_hfcwbNoNextFreeBlock:
-	; Clear the magic number of the absorbed blocks so that the pointers
-	; will no longer be considered a valid blocks.
-	clr.l 	bhMagic(a1)			; Invalidate absorbed block A1
-	clr.l 	bhMagic(a3)			; Invalidate absorbed block A3
-	move.l 	a2,a1 				; A1 --> coalesced free block
-	bra 	_hfBlockFreed
-
-	; Here if the block to be freed has no adjacent above block that is free.
-
-_hfNoPrevBlock:
-	tst.l	bhNext(a1)			; Have a next block?
-	beq 	_hfFreeWithNoCoalesce		; No, just free it
-	movea.l bhNext(a1),a3 			; A3 --> Next block
-	btst.b 	#FLG_FREE_BIT,bhFlags+3(a3)	; Is the next block free?
-	beq 	_hfFreeWithNoCoalesce		; Nope, just free it
-
-_hfCoalesceWithNext:
-	; Here we will coalesce with the next block thus A1 points
-	; to what will be the new free block.  Block A3 (the adjacent
-	; below free block) will be removed from the block chain.
-	; In addition, block A1 (the freed block) will inherit block
-	; A3's position in the free block chain.
-	;
-	; 	A0 = pointer to the heap header
-	; 	A1 = pointer to block being freed
-	; 	A2 = N/A
-	; 	A3 = bhNext(A1) (i.e. pointer to block adjacent below the freed block)
-	; 	A4 = bhNext(A3) (i.e. next block after the newly coalesced block)
-	;
-	; When we are done, the register values will be
-	;	A1 = address of the new coalesced block
-	;	A5 = address of start of the block of just freed data
-	;	D5 = size of just freed data that needs to be zapped
-
-	; Initialize offset and count of data to be zapped
-	lea.l 	bhData(a1),a5 			; A5 --> start of data to zap
-	move.l 	bhSize(a1),d5 			; D5 = count of bytes to zap
-
-	; Clear the magic number of the absorbed block so that it's pointer
-	; will no longer be considered a valid block.
-	clr.l 	bhMagic(a3)			; Invalidate absorbed block
-
-	move.l 	bhSize(a3),d2 			; Compute new coalesed block size
-	add.l 	d2,bhSize(a1)
-
-	; Unlink the next block from the block chain
-	move.l 	bhNext(a3),bhNext(a1)		; Update forward link
-	tst.l 	bhNext(a3)			; Is forward link NULL?
-	beq 	_fhcwnFwdNull			; Yes, skip
-	movea.l bhNext(a3),a4 			; Nope, update the next block
-	move.l 	a1,bhPrev(a4)			; Link it in
-
-_fhcwnFwdNull:
-	; Inherit the free block's position in the free block chain
-	move.l	bhFreePrev(a3),bhFreePrev(a1) 	; Copy the fwd/back links
-	move.l 	bhFreeNext(a3),bhFreeNext(a1)
-	tst.l 	bhFreePrev(a1)			; Back link NULL?
-	beq 	_fhcwnFreeBackNull		; Yes, go update the head pointer
-	movea.l bhFreePrev(a1),a4 		; Update previous free block to point to us
-	move.l 	a1,bhFreeNext(a4)
-	bra  	_fhcwnChkFwdFreeLink		; Now go handle the forward link
-
-_fhcwnFreeBackNull:
-	move.l 	a1,hhFreeHead(a0)		; Update the free block chain head pointer
-
-_fhcwnChkFwdFreeLink:
-	tst.l 	bhFreeNext(a1)			; Is there a forward link
-	beq	_hfBlockFreed			; Nope, done
-	movea.l bhFreeNext(a1),a4 		; Update next free block to point back to us
-	move.l 	a1,bhFreePrev(a4)
-	bra  	_hfBlockFreed			; Done
-
-_hfCoalesceWithPrev:
-	; Here we will coalesce with the previous block thus A2 points
-	; to what will be the new free block.  Block A1 (the freed)
-	; block will be removed from the block chain.  No updates
-	; to the free block chain are necessary as A2 is already
-	; a freed block.
-	;
-	; 	A0 = pointer to the heap header
-	; 	A1 = pointer to block being freed
-	; 	A2 = bhPrev(A1) (i.e. pointer to block adjacent above the freed block)
-	; 	A3 = N/A
-	; 	A4 = bhNext(A1) (i.e. next block after the newly coalesced block)
-	;
-	; When we are done, the register values will be
-	;	A1 = address of the new coalesced block
-	;	A5 = address of start of the block of just freed data
-	;	D5 = size of just freed data that needs to be zapped
-
-	; Initialize offset and count of data to be zapped
-	movea.l	a1,a5 				; A5 --> start of data to zap
-	move.l 	bhSize(a1),d5 			; D5 = count of bytes to zap
-
-	; Clear the magic number of the absorbed block so that it's pointer
-	; will no longer be considered a valid block.
-	clr.l 	bhMagic(a1)			; Invalidate absorbed block
-
-	move.l 	bhSize(a1),d2			; Compute new coalesed block size
-	add.l 	d2,bhSize(a2)
-
-	; Unlink the freed block from the block chain
-	move.l 	bhNext(a1),bhNext(a2)		; Unlink ourself from the chain
-	tst.l 	bhNext(a1)			; Is there a next block?
-	beq 	_hfcwpNoNextBlock		; Nope, skip
-	movea.l bhNext(a1),a4 			; A3 --> Next block
-	move.l 	a2,bhPrev(a4)			; Set the back link
-
-_hfcwpNoNextBlock:
-	movea.l	a2,a1 				; a1 -> new combined block
-	bra.s 	_hfBlockFreed			; Done
+	; Attempt to coalesce with adjacent blocks
+	move.l 	a1,-(sp)			; Push the block being freed
+	move.l 	a0,-(sp)			; Push the Heap Handle
+	jsr 	__HeapCoalesce			; Go attempt to coalesce with surrounding blocks
+	adda.l 	#8,sp
+	tst.l 	d0				; Did we actually coalesce?
+	bne.s 	_hfSuccess			; Yes, return success
 
 _hfFreeWithNoCoalesce:
 	; Here we have nothing to coalesce with so just free the block
-
-	; Initialize offset and count of data to be zapped
-	lea.l	bhData(a1),a5			; A5 --> start of data to zap
-	move.l 	bhSize(a1),d5 			; D5 = count of bytes to zap
-	subi.l 	#BLK_HDR_SIZE,d5 		; Don't include the block header
 
 	; Insert the newly freed block on the head of the free block chain
 	movea.l hhFreeHead(a0),a2		; A2 --> Head of free block list
@@ -283,30 +125,36 @@ _hfBlockFreed:
 	sub.l 	#BLK_HDR_SIZE,d0 		; Adjust for block header
 	move.l 	d0,bhRequestSize(a1) 		; Requested size is len of data area
 
-	; Fill recently freed portion of the block's data area the
-	; debug freed memory marker.
+	; Is debug fill data enabled?
 	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
-	beq.s 	_hfNullPtr			; No, don't write the debug data
+	beq.s 	_hfSuccess			; No, don't write the debug data
+	move.l 	a1,-(sp)
+	jsr	__HeapDebugFillOnFree
+	adda.l 	#4,sp
 
-_hfBaadfood:
-	lsr.l 	#2,d5 				; Fill using long words
-	beq.s 	_hfNullPtr			; Don't fill if byte count is 0
-	subq.l 	#1,d5 				; Adjust for dbra
+_hfSuccess:
+	move.l 	#-1,d0				; Flag as success
+	bra.s 	_hfExit
 
-_hfBaadfoodLoop:
-	move.l 	#BAADFOOD,(a5)+
-	dbra 	d5,_hfBaadfoodLoop		; Loop until filled
+_hfInvalidHeap:
+	move.l 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,__HeapError ; Heap Id's don't match
+	bra.s 	_hfErrorExit
 
-_hfNullPtr:
-	clr.l 	d0				; Signal success
+_hfBufferOverrun:
+	move.l 	#HEAP_ERROR_TAIL_VALIDATION_FAILED,__HeapError ; Debug block tail is corrupt
+	bra.s 	_hfErrorExit
+
+_hfBlockInvalid:
+  	move.l  #HEAP_ERROR_INVALID_BLOCK,__HeapError ; Block pointer not valid
+
+_hfErrorExit:
+	clr.l 	d0				; Flag as an error
 
 _hfExit:
 	movem.l (sp)+,d1-d5/a0-a5          	; Restore registers
 	unlk	a6
         rts
 
-_hfBlockInvalid:
-  	moveq   #2,d0                   	; Block pointer not valid
         bra   _hfExit
 
         end

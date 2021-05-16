@@ -1,0 +1,81 @@
+************************************************************************
+*  __HeapUnlinkFromBlockChain
+************************************************************************
+*
+*  Removes the specified block from the block chain.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap  : The heap handle of the heap that owns the block.
+*
+*  pBlock : Pointer to the block to unlink
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  No return value, just the data structure is updated.
+************************************************************************
+
+	include heap.inc
+
+	public 	__HeapUnlinkFromBlockChain
+
+	.code
+
+; Parameter offsets
+hHeap 	equ 	8
+pBlock 	equ 	12
+
+__HeapUnlinkFromBlockChain:
+	link	a6,#0				; Setup stack frame
+        movem.l a0-a3,-(sp)                     ; Save registers
+
+	movea.l hHeap(a6),a0 			; A0 --> Heap header
+	movea.l pBlock(a6),a1 			; A1 --> Block to unlink
+
+	tst.l 	bhPrev(a1)			; Is there a back link?
+	bne.s	_hubcBackwardLink		; Yes, go
+	tst.l 	bhNext(a1)			; Is there a forward link?
+	bne.s 	_hubcForwardLinkOnly		; Yes, just a forward link
+
+	; Here we are the only block on the block chain.
+	; This is a fatal error as this should NEVER happen.
+	; For now we will take the Illegal exception. Once
+	; we have an operating system this should be an exception.
+	illegal
+
+_hubcBackwardLink:
+	move.l 	bhPrev(a1),a3 			; A3 --> back block
+	tst.l 	bhNext(a1)			; Is there a forward link?
+	bne.s 	_hubcBothLinks			; Yes, have both links
+
+	; Here we only have a back link
+	clr.l 	bhNext(a3) 			; Break the link with the previous block
+	clr.l 	bhPrev(a1)
+	bra.s 	_hubcDone 			; We are done
+
+_hubcForwardLinkOnly:
+	movea.l bhNext(a1),a2			; A2 --> Forward block
+	clr.l 	bhPrev(a2) 			; Break the link with the next block
+	clr.l 	bhNext(a1)
+	move.l 	a2,hhHeapHead(a0)		; Update the block chain head pointer
+	bra.s 	_hubcDone 			; We are done
+
+_hubcBothLinks:
+	; Here we have both back and forward links
+	move.l 	bhPrev(a1),a3 			; A3 --> back block
+	movea.l bhNext(a1),a2			; A2 --> Forward block
+	move.l 	a3,bhPrev(a2)			; Link the back block to the next block
+	move.l 	a2,bhNext(a3)
+	clr.l 	bhPrev(a1)			; Clear unlinked blocks pointers
+	clr.l 	bhNext(a1)
+
+_hubcDone:
+        movem.l (sp)+,a0-a3                     ; Restore registers
+	unlk 	a6
+        rts
+
+        end

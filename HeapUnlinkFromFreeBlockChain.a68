@@ -1,0 +1,81 @@
+************************************************************************
+*  __HeapUnlinkFromFreeBlockChain
+************************************************************************
+*
+*  Removes the specified block from the free block chain.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap  : The heap handle of the heap that owns the block.
+*
+*  pBlock : Pointer to the block to unlink
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  No return value, just the data structure is updated.
+************************************************************************
+
+	include heap.inc
+
+	public 	__HeapUnlinkFromFreeBlockChain
+
+	.code
+
+; Parameter offsets
+hHeap 	equ 	8
+pBlock	equ 	12
+
+__HeapUnlinkFromFreeBlockChain:
+	link 	a6,#0
+        movem.l a0-a3,-(sp)                     ; Save registers
+
+	movea.l pBlock(a6),a1			; A1 --> block to unlink
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is it a free block?
+	beq.s 	_hufbcDone			; Nope, abort
+	movea.l hHeap(a6),a0 			; A0 --> Heap header
+	tst.l 	bhFreePrev(a1)			; Is there a back link?
+	bne.s	_hufbcBackwardLink		; Yes, go
+	tst.l 	bhFreeNext(a1)			; Is there a forward link?
+	bne.s 	_hufbcForwardLinkOnly		; Yes, just a forward link
+
+	; Here we are the only block on the free list
+	; So just clear the head pointer
+	clr.l 	hhFreeHead(a0)			; Clear the free list head pointer
+	bra.s 	_hufbcDone 			; We are done
+
+_hufbcBackwardLink:
+	move.l 	bhFreePrev(a1),a3 		; A3 --> back block
+	tst.l 	bhFreeNext(a1)			; Is there a forward link?
+	bne.s 	_hufbcBothLinks			; Yes, have both links
+
+	; Here we only have a back link
+	clr.l 	bhFreeNext(a3) 			; Break the link with the previous block
+	clr.l 	bhFreePrev(a1)
+	bra.s 	_hufbcDone 			; We are done
+
+_hufbcForwardLinkOnly:
+	movea.l bhFreeNext(a1),a2		; A2 --> Forward block
+	clr.l 	bhFreePrev(a2) 			; Break the link with the next block
+	clr.l 	bhFreeNext(a1)
+	move.l 	a2,hhFreeHead(a0)		; Update the free list head pointer
+	bra.s 	_hufbcDone 			; We are done
+
+_hufbcBothLinks:
+	; Here we have both back and forward links
+	move.l 	bhFreePrev(a1),a3 		; A3 --> back block
+	movea.l bhFreeNext(a1),a2		; A2 --> Forward block
+	move.l 	a3,bhFreePrev(a2)		; Break the links
+	move.l 	a2,bhFreeNext(a3)
+	clr.l 	bhFreePrev(a1)
+	clr.l 	bhFreeNext(a1)
+
+_hufbcDone:
+        movem.l (sp)+,a0-a3                     ; Restore registers
+	unlk 	a6
+        rts
+
+        end
