@@ -12,10 +12,10 @@
 
 	.even
 
-__HeapId:		dc.w 	0	; Next heap ID
+__HeapId		dc.w 	0	; Next heap ID
 			dc.w 	0 	; Heap ID can be accessed as a long
-__MachineHeapHandle:	dc.l 	0	; Handle of the machine heap
-__HeapError:		dc.l 	0 	; Last error set by heap functions
+__MachineHeapHandle	dc.l 	0	; Handle of the machine heap
+__HeapError		dc.l 	0 	; Last error set by heap functions
 
         .bss
 
