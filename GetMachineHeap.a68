@@ -21,6 +21,8 @@
 *  can call GetHeapError for extended error information.
 ************************************************************************
 
+	include heap.inc
+
 	public	_GetMachineHeap
 	extern 	__MachineHeapHandle, __HeapError
 

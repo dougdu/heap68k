@@ -183,21 +183,20 @@ _ErrorEnd: jmp _ErrorEnd
 
 	.bss
 
-HeapEntry:	ds.l 	1
+HeapEntry	ds.l 	1
 
-NumberOfHeaps:	ds.l	1
-HeapsIndex:	ds.l	1
-HeapsLength: 	ds.l 	1
-aHeaps: 	ds.l 	1
-hDefaultHeap:	ds.l 	1
-BytesToAllocate: ds.l	1
+NumberOfHeaps	ds.l	1
+HeapsIndex	ds.l	1
+HeapsLength 	ds.l 	1
+aHeaps 		ds.l 	1
+hDefaultHeap	ds.l 	1
+BytesToAllocate ds.l	1
 
-blk1:	ds.l 	1
-blk2:	ds.l 	1
-blk3:	ds.l 	1
-blk4:	ds.l 	1
+blk1		ds.l 	1
+blk2		ds.l 	1
+blk3		ds.l 	1
+blk4		ds.l 	1
 
-_PrivateHeap1:
-	ds.l	1
+_PrivateHeap1	ds.l	1
 
 	end
