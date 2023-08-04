@@ -8,15 +8,15 @@
 
 .SUFFIXES: .a68 .s .bas .a
 
-ASM       =F:\git\worm68k\68KTools\debug\asm68k.exe
+ASM       =C:\git\worm68k\68KTools\debug\asm68k.exe
 AFLAGS    =/Cu /coff /Fl /Fm /nologo
 AINC      =/I.
-LD        =F:\git\worm68k\tools\ld.exe
-AR        =F:\git\worm68k\tools\ar.exe
-RANLIB	  =F:\git\worm68k\tools\ranlib.exe
-SIM68KDIR =F:\git\worm68k\68KTools\sim68k
-LIBDIR    =F:\git\worm68k\lib
-INCDIR    =F:\git\worm68k\include
+LD        =C:\git\worm68k\tools\ld.exe
+AR        =C:\git\worm68k\tools\ar.exe
+RANLIB	  =C:\git\worm68k\tools\ranlib.exe
+SIM68KDIR =C:\git\worm68k\68KTools\sim68k
+LIBDIR    =C:\git\worm68k\lib
+INCDIR    =C:\git\worm68k\include
 
 .a68.obj:
 	$(ASM) $(AFLAGS) $(AINC) /c $<
