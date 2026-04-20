@@ -50,7 +50,7 @@ _HeapCompact:
 	adda.l 	#8,sp
 	bne 	_hcpError			; Validation failed
 
-	btst.l 	#FLG_HEAP_DISABLE_COALESCING,d0 ; Coalescing disabled?
+	btst.b 	#FLG_HEAP_DISABLE_COALESCING-8,hhFlags+2(a0) ; Coalescing disabled? (bit 8 in flags word)
 	beq.s	_hcpNoCoalesce 			; Nope, heap should be good
 
 	; Here we walk the free list and coalesce all the adjacent
@@ -66,7 +66,7 @@ _hcpCoalesceLoop:
 	move.l 	a1,-(sp)			; Push the block address
 	move.l 	a0,-(sp)			; Push heap handle
 	jsr 	__HeapCoalesce			; Attempt to coalesce the block
-	adda.l 	12,sp
+	adda.l 	#8,sp
 	tst.l 	d0 				; Was the block coalesced?
 	bne.s 	_hcpResetCoalesceLoop		; Yes, restart the free list walk
 	movea.l bhFreeNext(a1),a1 		; Follow link to next block

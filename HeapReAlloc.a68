@@ -61,6 +61,11 @@
 
 	public	_HeapReAlloc
 	extern 	__HeapAutoValidateFlagCheck
+	extern	__HeapUnlinkFromFreeBlockChain, __HeapUnlinkFromBlockChain
+	extern	__HeapInvalidateBlockHeader
+	extern	__HeapCoalesce
+	extern	__HeapDebugFillOnFree
+	extern	_HeapAlloc, _HeapFree
 	extern	__HeapError
 
 	.code
@@ -73,6 +78,7 @@ lBytes 	equ 	20
 
 _HeapReAlloc:
 	link 	a6,#0
+	movem.l d1-d4/a0-a4,-(sp)		; Save work registers
 
 	movea.l hHeap(a6),a0 			; A0 --> Heap
 
@@ -86,8 +92,29 @@ _HeapReAlloc:
 	; Begin ReAlloc processing
 	move.l 	pMem(a6),a1 			; Get memory pointer
 	cmpa.l 	#0,a1 				; NULL pointer?
-	beq 	_hrErrorExit			; Yes, abort
+	beq 	_hrInvalidBlock			; Yes, treat as invalid block pointer
 	suba.l 	#BLK_HDR_SIZE,a1 		; Get pointer to block
+
+	; Validate that the pointer is aligned as we expect
+	move.l 	a1,d0 				; Verify block pointer bit pattern is ok
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0
+	bne 	_hrInvalidBlock			; Abort, not a valid heap block
+
+	; Validate that the block header has the correct signature
+	cmpi.l 	#BLOCK_MAGIC,bhMagic(a1)	; Verify the magic number
+	bne 	_hrInvalidBlock			; Abort, not a valid heap block
+
+	; Validate that the block is marked as allocated
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block already free?
+	bne 	_hrInvalidBlock			; Abort, cannot realloc a free block
+
+	; Validate that the block is part of the specified heap
+	move.l 	hhFlags(a0),d0 			; Get the Heap's Heap Id
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	bhFlags(a1),d1 			; Get the Block's Heap Id
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d0,d1 				; Do they match?
+	bne 	_hrInvalidHeap			; Nope, abort
 
 	; Compute the size of block needed to satisfy the request
 	move.l 	lBytes(a6),d1 			; D1 = size of required block
@@ -114,9 +141,11 @@ _hrGrowBlock:
 	move.l  d1,d3
 	sub.l 	d2,d3				; D3 = number of bytes we need to grow
 	movea.l bhNext(a1),a2 			; See if the next block is free
+	cmpa.l 	#0,a2				; Last block in chain?
+	beq.s 	_hrgbNextBlockNotFree		; Yes, cannot grow in place
 	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)
 	beq.s 	_hrgbNextBlockNotFree		; Not free, see if we can move the block
-	move.l 	bhRequestSize(a2),d4		; Get size of free block
+	move.l 	bhSize(a2),d4			; Get total size of free block
 	cmp.l 	d3,d4				; Enough space?
 	blt.s 	_hrgbNextBlockNotFree		; No, see if we can move the block
 	beq.s 	_hrgbConsumeNextBlock 		; Yes, consume entire block
@@ -124,38 +153,392 @@ _hrGrowBlock:
 	; The next block is bigger than we need, see if it is worth
 	; splitting the block.
 	sub.l 	d3,d4 				; Compute what would be left over
-	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
-	beq.s 	_hrgbNoTailCheck
-	subi.l 	#HEAP_TAIL_SIZE,d4 		; Include tail check bytes
 _hrgbNoTailCheck:
 	cmpi.l 	#BLK_HDR_SIZE,d4		; Enough to warrant a split?
 	blt.s 	_hrgbConsumeNextBlock		; Nope, just use it all
 
 	; Here we will split the next block taking just enough to
 	; grow the specified block to satisfy the request in place.
-	nop
+	;
+	; A0=heap  A1=block to grow  A2=free block to split
+	; D1=new required total size for A1  D2=current bhSize(A1)
+	; D3=bytes taken from A2 (D1-D2)   D4=leftover size (bhSize(A2)-D3)
+
+	; Compute address of new free block; recycle D3 for old requested size
+	movea.l a2,a3				; A3 = A2
+	adda.l 	d3,a3				; A3 --> new free block (= A1+D1)
+	move.l 	bhRequestSize(a1),d3		; D3 = old requested size
+
+	; Block chain: A1 <-> A3 <-> bhNext(A2)
+	move.l 	bhNext(a2),bhNext(a3)		; A3 inherits A2's forward link
+	move.l 	a1,bhPrev(a3)			; A3 back link = A1
+	move.l 	a3,bhNext(a1)			; A1 forward link = A3
+	tst.l 	bhNext(a3)			; Block after new free block?
+	beq.s 	_hrspNoFwdBlock
+	movea.l bhNext(a3),a4
+	move.l 	a3,bhPrev(a4)			; Update following block's back link
+_hrspNoFwdBlock:
+
+	; Free chain: bhFreePrev(A2) <-> A3 <-> bhFreeNext(A2)
+	move.l 	bhFreeNext(a2),bhFreeNext(a3)	; A3 inherits A2's free chain links
+	move.l 	bhFreePrev(a2),bhFreePrev(a3)
+	tst.l 	bhFreePrev(a3)			; Is there a previous free block?
+	beq.s 	_hrspNoBackFreeBlock
+	movea.l bhFreePrev(a3),a4
+	move.l 	a3,bhFreeNext(a4)		; Update prev free block's forward link
+	bra.s 	_hrspChkFwdFreeBlock
+_hrspNoBackFreeBlock:
+	move.l 	a3,hhFreeHead(a0)		; A3 becomes new free chain head
+_hrspChkFwdFreeBlock:
+	tst.l 	bhFreeNext(a3)			; Is there a next free block?
+	beq.s 	_hrspNoFwdFreeBlock
+	movea.l bhFreeNext(a3),a4
+	move.l 	a3,bhFreePrev(a4)		; Update next free block's back link
+_hrspNoFwdFreeBlock:
+
+	; Initialize new free block header at A3
+	move.l 	#BLOCK_MAGIC,bhMagic(a3)
+	move.l 	#FLG_FREE,bhFlags(a3)
+	move.l 	hhFlags(a0),d0
+	andi.l 	#HEAP_ID_MASK,d0
+	or.l 	d0,bhFlags(a3)
+	move.l 	d4,bhSize(a3)
+	move.l 	d4,d0
+	subi.l 	#BLK_HDR_SIZE,d0
+	move.l 	d0,bhRequestSize(a3)
+
+	; Invalidate A2's now-defunct header
+	move.l 	a2,-(sp)
+	move.l 	a0,-(sp)
+	jsr 	__HeapInvalidateBlockHeader
+	adda.l 	#8,sp
+
+	; Update A1's size and requested size
+	move.l 	d1,bhSize(a1)			; Grow A1 to exactly D1
+	move.l 	lBytes(a6),bhRequestSize(a1)	; Set new requested size
+	bra 	_hrInPlaceGrowFill		; Shared fill + tail + return
 
 _hrgbConsumeNextBlock:
+	; A0 = heap, A1 = block to grow, A2 = free block to consume
+	; D1 = required total block size
+	move.l 	bhRequestSize(a1),d3		; D3 = old requested size
+	move.l 	bhSize(a2),d4			; D4 = full size of block being consumed
+
+	; Remove A2 from free chain and block chain, then invalidate its header
+	; __HeapUnlinkFromBlockChain also bridges bhNext(A1) -> A2's old bhNext
+	move.l 	a2,-(sp)			; Push pBlock
+	move.l 	a0,-(sp)			; Push hHeap
+	jsr 	__HeapUnlinkFromFreeBlockChain
+	jsr 	__HeapUnlinkFromBlockChain
+	jsr 	__HeapInvalidateBlockHeader
+	adda.l 	#8,sp
+
+	; Grow A1 to absorb A2's full size and update requested size
+	add.l 	d4,bhSize(a1)			; Expand A1 by full size of absorbed block
+	move.l 	lBytes(a6),bhRequestSize(a1)	; Set new requested size
+
+_hrInPlaceGrowFill:
+	; HEAP_ENABLE_DEBUG_FILL takes precedence over HEAP_ZERO_MEMORY
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	beq.s 	_hrcbChkZeroMem
+	lea 	bhData(a1,d3.l),a2		; A2 --> first new byte to fill
+	move.l 	lBytes(a6),d4			; D4 = count of new bytes
+	sub.l 	d3,d4
+	ble.s 	_hrcbNoZeroFill			; Skip if not actually growing
+	subq.l 	#1,d4
+_hrcbDebugFillLoop:
+	move.b 	#$cd,(a2)+			; Fill new bytes with CDCDCDCD
+	dbra 	d4,_hrcbDebugFillLoop
+	sub.l 	#$10000,d4			; Decrement high word of count
+	bcc.s 	_hrcbDebugFillLoop		; Branch if more to fill (32-bit count)
+	bra.s 	_hrcbNoZeroFill
+
+_hrcbChkZeroMem:
+	; Check HEAP_ZERO_MEMORY: zero bytes between old and new requested sizes
+	move.l 	lFlags(a6),d0			; Check caller flags
+	btst.l 	#FLG_HEAP_ZERO_MEMORY,d0
+	bne.s 	_hrcbZeroMemCheck
+	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
+	beq.s 	_hrcbNoZeroFill
+
+_hrcbZeroMemCheck:
+	lea 	bhData(a1,d3.l),a2		; A2 --> first new byte to zero
+	move.l 	lBytes(a6),d4			; D4 = count of bytes to zero
+	sub.l 	d3,d4				; D4 = new_request - old_request
+	ble.s 	_hrcbNoZeroFill			; Skip if not growing (safety)
+	subq.l 	#1,d4				; Adjust for dbra
+_hrcbZeroLoop:
+	clr.b 	(a2)+				; Zero one byte
+	dbra 	d4,_hrcbZeroLoop
+	sub.l 	#$10000,d4			; Decrement high word of count
+	bcc.s 	_hrcbZeroLoop			; Branch if more to zero (32-bit count)
+
+_hrcbNoZeroFill:
+	; Rewrite tail guard at new position if tail checking is enabled
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_hrcbNoTailFill
+	move.l 	bhRequestSize(a1),d3		; D3 = new requested size
+	andi.l 	#NOT(3),d3			; Round down to nearest long word
+	lea 	bhData(a1,d3.l),a2		; A2 --> nearest long word for tail fill
+	move.l 	bhSize(a1),d4			; Compute tail long word count
+	subi.l 	#BLK_HDR_SIZE-3,d4
+	sub.l 	bhRequestSize(a1),d4
+	lsr.l 	#2,d4
+	subi.l 	#1,d4
+_hrcbTailLoop:
+	move.l 	#HEAP_TAIL,(a2)+
+	dbra 	d4,_hrcbTailLoop
+
+_hrcbNoTailFill:
+	lea 	bhData(a1),a0			; Return pointer to data area
+	move.l 	a0,d0
+	bra 	_hrExit
 
 _hrgbNextBlockNotFree:
-	bra.s	_hrExit
+	; Cannot grow in place. Check if in-place-only is required.
+	move.l 	lFlags(a6),d0 			; Check caller flags
+	btst.l 	#FLG_HEAP_REALLOC_IN_PLACE_ONLY,d0
+	bne.s 	_hrInPlaceOnlyFailed
+	btst.b 	#FLG_HEAP_REALLOC_IN_PLACE_ONLY,hhFlags+3(a0)
+	bne.s 	_hrInPlaceOnlyFailed
+
+	; Allocate a new block large enough for the request
+	move.l 	lBytes(a6),-(sp)			; Push lBytes
+	move.l 	lFlags(a6),-(sp)			; Push lFlags
+	move.l 	a0,-(sp)				; Push hHeap
+	jsr 	_HeapAlloc				; Allocate new block
+	adda.l 	#12,sp
+	tst.l 	d0					; Allocation failed?
+	beq 	_hrMoveAllocFailed			; Yes, return NULL (original untouched)
+	movea.l d0,a3					; A3 --> new data area
+
+	; Copy old data to new block (copy bhRequestSize(a1) bytes)
+	lea 	bhData(a1),a2				; A2 --> source (old data area)
+	move.l 	bhRequestSize(a1),d3			; D3 = old requested size
+	beq.s 	_hrMoveCopyDone				; Nothing to copy if size is 0
+	movea.l a3,a4					; A4 --> destination (new data area)
+	move.l 	d3,d4					; D4 = byte count
+	subq.l 	#1,d4					; Adjust for dbra
+_hrMoveCopyLoop:
+	move.b 	(a2)+,(a4)+				; Copy one byte
+	dbra 	d4,_hrMoveCopyLoop
+	sub.l 	#$10000,d4				; Decrement high word of count
+	bcc.s 	_hrMoveCopyLoop				; Branch if more to copy (32-bit count)
+
+_hrMoveCopyDone:
+	; Free the original block — A1 is already at the block header,
+	; so pMem = bhData(a1)
+	lea 	bhData(a1),a4				; A4 = original pMem to pass to _HeapFree
+	move.l 	a4,-(sp)				; Push pMem
+	move.l 	a0,-(sp)				; Push hHeap
+	jsr 	_HeapFree				; Free the original block
+	adda.l 	#8,sp
+	tst.l 	d0					; Did _HeapFree succeed?
+	bne.s 	_hrMoveFreeDone				; Yes, all good
+	; _HeapFree failed (original block leaked), but the copy already succeeded
+	; and the caller has a valid new pointer — clear the error so the caller
+	; does not see a spurious failure from an internal book-keeping problem.
+	clr.l 	__HeapError
+_hrMoveFreeDone:
+	move.l 	a3,d0					; Return new pointer
+	bra 	_hrExit
+
+_hrMoveAllocFailed:
+	; _HeapAlloc already set __HeapError (HEAP_ERROR_OUT_OF_MEMORY)
+	bra.s 	_hrErrorExit
+
+_hrInPlaceOnlyFailed:
+	move.l 	#HEAP_ERROR_OUT_OF_MEMORY,__HeapError
+	bra.s 	_hrErrorExit
 
 _hrShrinkBlock:
-	move.l 	#-1,d0
-	move.l  d2,d3
-	sub.l 	d1,d3
-	bra.s	_hrExit
+	; A0=heap  A1=block to shrink  D1=new required total size  D2=current bhSize(A1)
+	move.l 	d2,d3
+	sub.l 	d1,d3				; D3 = leftover bytes
+
+	cmpi.l 	#BLK_HDR_SIZE,d3		; Enough leftover to warrant splitting?
+	ble.s 	_hrsbNoSplit			; No, keep block size as-is
+
+	; Split: carve new free block at A1+D1
+	movea.l a1,a2
+	adda.l 	d1,a2				; A2 --> new free block
+
+	; Block chain: insert A2 between A1 and bhNext(A1)
+	move.l 	bhNext(a1),bhNext(a2)		; A2's forward link
+	move.l 	a1,bhPrev(a2)			; A2's back link
+	move.l 	a2,bhNext(a1)			; A1 now points forward to A2
+	tst.l 	bhNext(a2)			; Block after A2?
+	beq.s 	_hrsbNoFwdBlock
+	movea.l bhNext(a2),a3
+	move.l 	a2,bhPrev(a3)			; Update following block's back link
+_hrsbNoFwdBlock:
+
+	; Free chain: LIFO insert at head
+	movea.l hhFreeHead(a0),a3		; A3 --> current free chain head
+	move.l 	a2,hhFreeHead(a0)		; A2 is new head
+	clr.l 	bhFreePrev(a2)			; No back link (head of list)
+	move.l 	a3,bhFreeNext(a2)		; Forward link to old head
+	cmpa.l 	#0,a3				; Was there a previous head?
+	beq.s 	_hrsbFreeChainDone
+	move.l 	a2,bhFreePrev(a3)		; Update old head's back link
+_hrsbFreeChainDone:
+
+	; Initialize new free block header
+	move.l 	#BLOCK_MAGIC,bhMagic(a2)
+	move.l 	#FLG_FREE,bhFlags(a2)
+	move.l 	hhFlags(a0),d0
+	andi.l 	#HEAP_ID_MASK,d0
+	or.l 	d0,bhFlags(a2)
+	move.l 	d3,bhSize(a2)
+	subi.l 	#BLK_HDR_SIZE,d3
+	move.l 	d3,bhRequestSize(a2)
+
+	; Update A1's total size to the new smaller size
+	move.l 	d1,bhSize(a1)
+
+	; Debug fill the new free block's data area if enabled
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	beq.s 	_hrsbChkCoalesce
+	move.l 	a2,-(sp)
+	jsr 	__HeapDebugFillOnFree		; Fill new free block with BAADF00D
+	adda.l 	#4,sp
+
+_hrsbChkCoalesce:
+	; Coalesce new free block with its successor if coalescing is enabled
+	btst.b 	#FLG_HEAP_DISABLE_COALESCING-8,hhFlags+2(a0) ; (bit 8 in flags word)
+	bne.s 	_hrsbUpdateReqSize
+	move.l 	a2,-(sp)
+	move.l 	a0,-(sp)
+	jsr 	__HeapCoalesce
+	adda.l 	#8,sp
+	bra.s 	_hrsbUpdateReqSize
+
+_hrsbNoSplit:
+	; Leftover too small to split — block retains its current bhSize.
+	; Debug fill surrendered bytes [lBytes rounded-down .. old bhRequestSize) with BAADF00D
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	beq.s 	_hrsbUpdateReqSize
+	move.l 	lBytes(a6),d3			; D3 = new requested size
+	andi.l 	#NOT(3),d3			; Round down to nearest longword (preserve user data)
+	lea 	bhData(a1,d3.l),a2		; A2 --> fill start
+	move.l 	bhRequestSize(a1),d4		; D4 = old requested size
+	andi.l 	#NOT(3),d4			; Round down to nearest longword
+	sub.l 	d3,d4				; D4 = count of bytes to fill
+	lsr.l 	#2,d4				; Convert to longwords
+	ble.s 	_hrsbUpdateReqSize		; Nothing to fill
+	subq.l 	#1,d4				; Adjust for dbra
+_hrsbNoSplitFillLoop:
+	move.l 	#BAADFOOD,(a2)+			; Fill surrendered longwords with BAADF00D
+	dbra 	d4,_hrsbNoSplitFillLoop
+
+_hrsbUpdateReqSize:
+	move.l 	lBytes(a6),bhRequestSize(a1)	; Set new requested size
+
+	; Rewrite tail guard at new position if tail checking is enabled
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_hrsbNoTailFill
+	move.l 	bhRequestSize(a1),d3		; D3 = new requested size
+	andi.l 	#NOT(3),d3			; Round down to nearest long word
+	lea 	bhData(a1,d3.l),a2		; A2 --> nearest long word for tail fill
+	move.l 	bhSize(a1),d4			; Compute tail long word count
+	subi.l 	#BLK_HDR_SIZE-3,d4
+	sub.l 	bhRequestSize(a1),d4
+	lsr.l 	#2,d4
+	subi.l 	#1,d4
+_hrsbTailLoop:
+	move.l 	#HEAP_TAIL,(a2)+
+	dbra 	d4,_hrsbTailLoop
+
+_hrsbNoTailFill:
+	lea 	bhData(a1),a0			; Return pointer to data area
+	move.l 	a0,d0
+	bra 	_hrExit
 
 _hrUseExistingBlock:
-	; Here if the existing block is sufficient to satisfy the
-	; request due to the allocation chunk size.
+	; Here if the existing block size exactly satisfies the request.
+	; Save old requested size and update to new.
+	move.l 	bhRequestSize(a1),d3 		; D3 = old requested size
+	move.l 	lBytes(a6),bhRequestSize(a1)	; Update requested size
 
-	; TODO: handle debug fill and tail fill
+	; HEAP_ENABLE_DEBUG_FILL takes precedence over HEAP_ZERO_MEMORY
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	beq.s 	_hrueChkZeroMem
+	move.l 	lBytes(a6),d4			; D4 = new requested size
+	cmp.l 	d3,d4				; New > old (growing)?
+	ble.s 	_hrueNoZeroFill			; No, skip CD fill
+	lea 	bhData(a1,d3.l),a2		; A2 --> first new byte to fill
+	sub.l 	d3,d4				; D4 = count of bytes to fill
+	subq.l 	#1,d4				; Adjust for dbra
+_hrueDebugGrowFillLoop:
+	move.b 	#$cd,(a2)+			; Fill new bytes with CDCDCDCD
+	dbra 	d4,_hrueDebugGrowFillLoop
+	sub.l 	#$10000,d4			; Decrement high word of count
+	bcc.s 	_hrueDebugGrowFillLoop		; Branch if more to fill (32-bit count)
+	bra.s 	_hrueNoZeroFill			; Debug fill takes precedence; skip HEAP_ZERO_MEMORY
 
-	; Adjust the block's requested allocation size
-	move.l 	lBytes(a6),bhRequestSize(a1)
+_hrueChkZeroMem:
+	; Check HEAP_ZERO_MEMORY: zero bytes from old to new requested size
+	move.l 	lFlags(a6),d0 			; Check caller flags
+	btst.l 	#FLG_HEAP_ZERO_MEMORY,d0
+	bne.s 	_hrueZeroMemCheck
+	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
+	beq.s 	_hrueNoZeroFill
 
+_hrueZeroMemCheck:
+	move.l 	bhRequestSize(a1),d4 		; D4 = new requested size
+	cmp.l 	d3,d4 				; New > old?
+	ble.s 	_hrueNoZeroFill 		; No, nothing to zero
+	lea 	bhData(a1,d3.l),a2 		; A2 --> first new byte to zero
+	sub.l 	d3,d4 				; D4 = count of bytes to zero
+	subq.l 	#1,d4 				; Adjust for dbra
+_hrueZeroLoop:
+	clr.b 	(a2)+ 				; Zero one byte
+	dbra 	d4,_hrueZeroLoop
+	sub.l 	#$10000,d4			; Decrement high word of count
+	bcc.s 	_hrueZeroLoop			; Branch if more to zero (32-bit count)
+
+_hrueNoZeroFill:
+	; Debug fill surrendered bytes [round_down4(lBytes) .. round_down4(old)) with BAADF00D
+	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	beq.s 	_hrueNoShrinkFill
+	move.l 	lBytes(a6),d4			; D4 = new requested size
+	andi.l 	#NOT(3),d4			; Round down to nearest longword
+	move.l 	d3,d0				; D0 = old requested size
+	andi.l 	#NOT(3),d0			; Round down to nearest longword
+	sub.l 	d4,d0				; D0 = count of bytes to fill
+	lsr.l 	#2,d0				; Convert to longwords
+	ble.s 	_hrueNoShrinkFill		; Nothing to fill
+	lea 	bhData(a1,d4.l),a2		; A2 --> fill start
+	subq.l 	#1,d0				; Adjust for dbra
+_hrueDebugShrinkFillLoop:
+	move.l 	#BAADFOOD,(a2)+			; Fill surrendered longwords with BAADF00D
+	dbra 	d0,_hrueDebugShrinkFillLoop
+
+_hrueNoShrinkFill:
+	; Rewrite tail guard at new position if tail checking is enabled
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_hrueNoTailFill
+
+	move.l 	bhRequestSize(a1),d3 		; D3 = new requested size
+	andi.l 	#NOT(3),d3 			; Round down to nearest long word
+	lea 	bhData(a1,d3.l),a2 		; A2 --> nearest long word for tail fill
+	move.l 	bhSize(a1),d4 			; Compute tail long word count
+	subi.l 	#BLK_HDR_SIZE-3,d4
+	sub.l 	bhRequestSize(a1),d4
+	lsr.l 	#2,d4
+	subi.l 	#1,d4
+_hrueTailLoop:
+	move.l 	#HEAP_TAIL,(a2)+
+	dbra 	d4,_hrueTailLoop
+
+_hrueNoTailFill:
+	lea 	bhData(a1),a0 			; Return pointer to data area
+	move.l 	a0,d0
 	bra.s 	_hrExit
+
+_hrInvalidHeap:
+	move.l 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,__HeapError
+	bra.s 	_hrErrorExit
 
 _hrInvalidBlock:
 	move.l 	#HEAP_ERROR_INVALID_BLOCK,__HeapError
@@ -164,7 +547,7 @@ _hrErrorExit:
 	clr.l 	d0 				; return NULL
 
 _hrExit:
-	movem.l (sp)+,a0 			; Restore registers
+	movem.l (sp)+,d1-d4/a0-a4		; Restore registers
 	unlk 	a6
 	rts
 

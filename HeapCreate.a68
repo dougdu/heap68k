@@ -179,6 +179,8 @@ _hcEndMarkerInitLoop:
 _hcBaadfoodLoop:
 	move.l 	#BAADFOOD,(a1)+
 	dbra 	d0,_hcBaadfoodLoop		; Loop until filled
+	sub.l 	#$10000,d0			; Decrement high word of count
+	bcc.s 	_hcBaadfoodLoop			; Branch if more to fill (32-bit count)
 
 _hcExit:
 	move.l 	a0,d0 				; Return heap handle in D0

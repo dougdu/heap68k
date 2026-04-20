@@ -39,7 +39,7 @@ pMem 	equ	12
 
 _HeapFree:
 	link 	a6,#0				; Initialize stack frame
- 	movem.l d1-d5/a0-a5,-(sp)          	; Save work registers
+ 	movem.l d1-d2/a0-a2,-(sp)          	; Save work registers
 
 	movea.l hHeap(a6),a0 			; A0 --> Heap header
 
@@ -79,8 +79,8 @@ _HeapFree:
 	cmp.l 	d0,d1 				; Do they match?
 	bne	_hfInvalidHeap			; Nope, abort
 
-	; Flags that need to be implemented:
-	btst.b 	#HEAP_TAIL_CHECKING_ENABLED,hhFlags+3(a0)
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s 	_hfNoTailCheck
 	move.l 	bhRequestSize(a1),d0 		; Get the requested block size
 	lea 	bhData(a1,d0.l),a2		; A2 --> start of block tail
 	move.l 	bhSize(a1),d1 			; Compute tail size
@@ -94,7 +94,7 @@ _hfTailCheckLoop:
 
 _hfNoTailCheck:
 	; Does the heap have coalesce on free disabled?
-	btst.b 	#FLG_HEAP_DISABLE_COALESCING,hhFlags+3(a0)
+	btst.b 	#FLG_HEAP_DISABLE_COALESCING-8,hhFlags+2(a0) ; (bit 8 in flags word)
 	bne 	_hfFreeWithNoCoalesce		; Yes, just free the block
 
 	; Attempt to coalesce with adjacent blocks
@@ -151,10 +151,8 @@ _hfErrorExit:
 	clr.l 	d0				; Flag as an error
 
 _hfExit:
-	movem.l (sp)+,d1-d5/a0-a5          	; Restore registers
+	movem.l (sp)+,d1-d2/a0-a2          	; Restore registers
 	unlk	a6
         rts
-
-        bra   _hfExit
 
         end

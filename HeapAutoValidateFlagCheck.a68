@@ -57,8 +57,10 @@ __HeapAutoValidateFlagCheck:
 	clr.l	__HeapError			; Clear Heap Error
 
 	movea.l hHeap(a6),a0 			; A0 --> Heap header
+	cmpa.l 	#0,a0				; NULL handle?
+	beq.s 	_havfcNullHandle		; Yes, abort
 	move.l 	hhFlags(a0),d0 			; Get heap flags
-	andi.w 	#HEAP_AUTO_VALIDATE_FLGS,d0 	; Any auto-validate flags set?
+	andi.l 	#HEAP_AUTO_VALIDATE_FLGS,d0 	; Any auto-validate flags set?
 	beq.s 	_havfcExit			; Nope, assume all good
 
 	; Is the heap configured to do full validation
@@ -89,9 +91,14 @@ _havfcNoFullValidation:
 	move.l 	a0,-(sp)			; Push machine heap handle
 	jsr 	_HeapValidateHandle		; Validate handle
 	adda.l 	#4,sp
+	bra.s 	_havfcExit			; Return validation result
 
+_havfcNullHandle:
+	move.l 	#HEAP_ERROR_INVALID_HANDLE,__HeapError
+	moveq 	#HEAP_ERROR_INVALID_HANDLE,d0	; Set NZ condition
+						; fall through to _havfcExit
 _havfcExit:
-	movem.l (sp)+,d0/a0			; Restore registers
+	movem.l (sp)+,d0/a0			; Restore registers (CCR unaffected by movem)
 	unlk 	a6
 	rts
 

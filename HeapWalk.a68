@@ -60,7 +60,9 @@ _HeapWalk:
 
 
 	move.l 	pEntry(a6),a1 			; A1 --> Heap Block Header buffer
-	tst.l 	(a1)				; Is the pointer NULL?
+	cmpa.l 	#0,a1				; NULL pEntry pointer?
+	beq.s 	_hwNullParam			; Yes, abort
+	tst.l 	(a1)				; Is the block pointer NULL?
 	bne.s 	_hwFollowBlockLink		; Go if the block pointer is not NULL
 
 	movea.l hhHeapHead(a0),a2 		; Get the head of the block chain
@@ -84,6 +86,10 @@ _hwSuccess:
 	bra.s 	_hwExit
 
 _hwInvalidBlock:
+	move.l	#HEAP_ERROR_INVALID_BLOCK,__HeapError
+	bra.s 	_hwErrorExit
+
+_hwNullParam:
 	move.l	#HEAP_ERROR_INVALID_PARAM,__HeapError
 	bra.s 	_hwErrorExit
 

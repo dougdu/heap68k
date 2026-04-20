@@ -37,6 +37,10 @@ _HeapValidateHandle:
 
 	movea.l hHeap(a6),a0 			; A0 = Heap handle
 
+	; Reject NULL handle immediately
+	cmpa.l 	#0,a0
+	beq.s 	hvhInvalidHandle		; NULL is not a valid heap handle
+
 	; First validate that the supplied heap pointer looks like
 	; a heap pointer in that the address is a multiple of
 	; BLK_HDR_SIZE and that the upper byte is zero.
@@ -69,6 +73,7 @@ _HeapValidateHandle:
 	bne.s 	hvhInvalidBlockChainHead	; Nope, bail
 
 	move.l 	hhFreeHead(a0),a1 		; Pointer to first free block in the heap
+	cmpa.l 	#0,a1				; Is the pointer NULL?
 	beq.s 	hvhExit 			; Ok if NULL
 	cmp.l 	#BLOCK_MAGIC,bhMagic(a1)	; Is the magic number there?
 	beq.s 	hvhExit				; Yes, success
@@ -93,8 +98,10 @@ hvhInvalidBlockChainHead:			; The block chain head pointer is invalid
 	move.l 	#HEAP_HEADER_BLOCK_HEADPTR_BAD,__HeapError
 
 hvhExit:
+	; CCR is already correct: all error paths execute move.l #nonzero,__HeapError
+	; (which sets Z=0) before branching here; success paths arrive via beq (Z=1).
+	movem.l (sp)+,d0-d1/a0-a1		; Restore registers (movem does not affect CCR)
 	unlk 	a6
-	movem.l (sp)+,d0-d1/a0-a1		; Restore registers
 	rts
 
 	end

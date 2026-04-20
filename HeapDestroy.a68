@@ -81,9 +81,11 @@ _hdInvalidateHandleLoop:
 
 	; Release the private heap memory back to the machine heap
 	move.l 	d1,-(sp)			; Push pointer to heap to destroy
-	move.l 	d0,-(sp)			; Push machine heap handle
+	move.l 	__MachineHeapHandle,-(sp)	; Push machine heap handle
 	jsr 	_HeapFree 			; Destroy the heap
 	adda.l	#8,sp
+	tst.l 	d0				; Did _HeapFree succeed?
+	beq.s 	_hdError			; No, propagate failure
 
 	; Flag success by return a non-zero value
 	move.l 	#-1,d0				; Return TRUE

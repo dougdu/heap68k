@@ -62,9 +62,7 @@
 	.code
 
 _HeapGetError:
-	link 	a6,#0
 	move.l 	__HeapError,d0
-	unlk 	a6
 	rts
 
 	end
