@@ -38,6 +38,8 @@ __HeapDebugFillOnFree:
 _hdfofLoop:
 	move.l 	#BAADFOOD,(a0)+ 		; Init memory
 	dbra 	d0,_hdfofLoop			; Loop until done
+	sub.l 	#$10000,d0			; Decrement high word of count
+	bcc.s 	_hdfofLoop			; Branch if more to fill (32-bit count)
 
 _hdfofExit:
 	movem.l (sp)+,d0/a0 			; Restore registers

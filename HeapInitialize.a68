@@ -170,6 +170,8 @@ mhi_EndMarkerInitLoop:
 mhi_BaadfoodLoop:
 	move.l 	#BAADFOOD,(a1)+
 	dbra 	d0,mhi_BaadfoodLoop		; Loop until filled
+	sub.l 	#$10000,d0			; Decrement high word of count
+	bcc.s 	mhi_BaadfoodLoop		; Branch if more to fill (32-bit count)
 
 mhi_Exit:
 	move.l 	a0,__MachineHeapHandle		; Update machine heap handle
@@ -185,6 +187,6 @@ mhi_AlreadyInitialized:
 
 mhi_Error:
 	clr.l 	d0				; NULL heap handle
-	bra.s 	mhi_Exit			; Return failure
+	bra.s 	mhi_ErrorExit			; Return failure
 
         end

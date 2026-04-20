@@ -211,7 +211,7 @@ __CoalesceWithBoth:
 	beq.s 	_hclcwbBlockIsFree		; Nope, skip
 	move.l 	a1,-(sp)
 	jsr 	__HeapDebugFillOnFree
-	adda.l 	#8,sp
+	adda.l 	#4,sp
 
 _hclcwbBlockIsFree:
 	move.l 	a1,-(sp)			; Clean-up first absorbed block (A1)
@@ -234,7 +234,7 @@ _hclCoalesceComplete:
 	subi.l 	#BLK_HDR_SIZE,d0
 	move.l 	d0,bhRequestSize(a2)
 	bclr.b 	#FLG_GARBAGE_BIT,bhFlags+3(a2)	; Flag the block as not garbage
-	bset.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Flag the block as free
+	bset.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Flag the block as free
 	move.l 	a2,d0				; Return value in d0
 	bra 	_hclExit
 

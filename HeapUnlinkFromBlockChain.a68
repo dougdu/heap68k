@@ -66,7 +66,7 @@ _hubcForwardLinkOnly:
 
 _hubcBothLinks:
 	; Here we have both back and forward links
-	move.l 	bhPrev(a1),a3 			; A3 --> back block
+	; A3 --> back block was already loaded above in _hubcBackwardLink
 	movea.l bhNext(a1),a2			; A2 --> Forward block
 	move.l 	a3,bhPrev(a2)			; Link the back block to the next block
 	move.l 	a2,bhNext(a3)

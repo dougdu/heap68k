@@ -53,15 +53,51 @@ _HeapValidate:
 	; Here the caller wants to validate a single block
 	movea.l d0,a1 				; D0 & A1 --> block
 
-	; Validate that the block is valid
+	; Validate alignment and magic
 	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the block pointer bit pattern is ok
 	bne	hvInvalidBlockInChain		; Nope, abort
 	cmpi.l 	#BLOCK_MAGIC,bhMagic(a1)	; Block magic number present?
 	bne	hvInvalidBlockInChain		; Nope, abort
 
-	; TODO:  Do indepth block validate
+	; Validate that the block is owned by the specified heap
+	move.l 	hhFlags(a0),d0			; Get heap ID
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	bhFlags(a1),d1			; Get block ID
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d0,d1				; IDs match?
+	bne	hvBlockHeapMismatch		; Nope, abort
 
-	bra.s 	hvEndofFreeChain
+	; Validate block-chain back-link consistency
+	tst.l 	bhPrev(a1)			; Is there a previous block?
+	beq.s 	hvSingleBlkChkFwdLink		; No, skip
+	movea.l bhPrev(a1),a2			; A2 --> previous block
+	cmpa.l 	bhNext(a2),a1			; Does prev->next point back to us?
+	bne	hvInvalidPrevLink		; Nope, chain corrupt
+
+hvSingleBlkChkFwdLink:
+	tst.l 	bhNext(a1)			; Is there a next block?
+	beq.s 	hvSingleBlkChkFreeChain		; No, skip
+	movea.l bhNext(a1),a2			; A2 --> next block
+	cmpa.l 	bhPrev(a2),a1			; Does next->prev point back to us?
+	bne	hvInvalidNextLink		; Nope, chain corrupt
+
+hvSingleBlkChkFreeChain:
+	; If the block is free, validate its free-chain link consistency
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is the block free?
+	beq	hvEndofFreeChain		; No, all checks passed
+	tst.l 	bhFreePrev(a1)			; Is there a previous free block?
+	beq.s 	hvSingleBlkChkFwdFreeLink	; No, skip
+	movea.l bhFreePrev(a1),a2		; A2 --> previous free block
+	cmpa.l 	bhFreeNext(a2),a1		; Does freeprev->freenext point back to us?
+	bne	hvInvalidPrevFreeLink		; Nope, free chain corrupt
+
+hvSingleBlkChkFwdFreeLink:
+	tst.l 	bhFreeNext(a1)			; Is there a next free block?
+	beq	hvEndofFreeChain		; No, all checks passed
+	movea.l bhFreeNext(a1),a2		; A2 --> next free block
+	cmpa.l 	bhFreePrev(a2),a1		; Does freenext->freeprev point back to us?
+	bne	hvInvalidPrevFreeLink		; Nope, free chain corrupt
+	bra	hvEndofFreeChain
 
 hvValidateEntireHeap:
 	; First validate the heap block chain
@@ -106,11 +142,7 @@ hvEndofBlockChain:
 	; Verify the free block chain
 
 	tst.l 	hhFreeHead(a0)			; Is the heap exhausted?
-	beq.s 	hvEndofFreeChain		; Yes, no free chain to validate
-						; TODO: if the head is NULL then walk
-						; the block chain and make sure all blocks
-						; are marked as allocated and that the
-						; bhFreePrev and bhFreeNext pointers are null.
+	beq	hvExhaustedHeapCheck		; Yes, verify all blocks are allocated
 
 	movea.l hhFreeHead(a0),a2		; A2 --> Head of the free list
 	suba.l 	a3,a3				; A3 --> previous free block
@@ -126,6 +158,23 @@ hvFreeChainVerifyLoop:
 	movea.l d1,a2				; A2 = next block
 	bra	hvFreeChainVerifyLoop  		; Loop until done.
 
+hvExhaustedHeapCheck:
+	; Heap is fully allocated — walk the block chain and verify that
+	; no block is marked free and no stale free-chain pointers exist
+	movea.l hhHeapHead(a0),a2		; A2 --> start of block chain
+
+hvExhaustedHeapCheckLoop:
+	cmpa.l 	#0,a2				; End of block chain?
+	beq.s 	hvEndofFreeChain		; Yes, all good
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Block marked as free?
+	bne	hvBlockNotFree			; Yes, heap is corrupt
+	tst.l 	bhFreePrev(a2)			; Stale bhFreePrev pointer?
+	bne	hvInvalidBlockInChain		; Yes, heap is corrupt
+	tst.l 	bhFreeNext(a2)			; Stale bhFreeNext pointer?
+	bne	hvInvalidBlockInChain		; Yes, heap is corrupt
+	movea.l bhNext(a2),a2			; Follow next link
+	bra.s 	hvExhaustedHeapCheckLoop
+
 hvEndofFreeChain:
 	clr.l 	d0				; Flag no errors
 
@@ -136,8 +185,12 @@ hvExit:
 	rts
 
 
+hvBlockHeapMismatch:
+	moveq 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,d0
+	bra 	hvExit
+
 hvInvalidHeapHandle:
-	moveq 	#HEAP_ERROR_INVALID_HANDLE,d0
+	move.l 	__HeapError,d0			; Preserve specific error from _HeapValidateHandle
 	bra 	hvExit
 
 hvInvalidBlockInChain:
