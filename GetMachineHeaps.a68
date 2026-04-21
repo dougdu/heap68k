@@ -1,5 +1,5 @@
 ************************************************************************
-*  _GetMachineHeap
+*  _GetMachineHeaps
 ************************************************************************
 *
 *  Returns the number of active heaps and retrieves handles to all
@@ -61,7 +61,9 @@ _gmhsIsInitialized:
 	; Get parameters
 	movea.l pHeaps(a6),a1			; A1 --> caller supplied handle buffer
 	move.l 	NumHeaps(a6),d1 		; D1 = size of buffer in handles
-	beq.s 	_gmhsHeapScan			; Skip storing machine heap if no buffer provided
+	beq.s 	_gmhsHeapScan			; Skip storing if no room requested
+	cmpa.l 	#0,a1				; NULL buffer pointer?
+	beq.s 	_gmhsHeapScan			; Yes, just count; don't store
 	move.l 	a0,(a1)+ 			; Store the machine heap in the buffer
 	subq.l 	#1,d1
 

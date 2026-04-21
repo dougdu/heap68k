@@ -14,8 +14,9 @@
 ************************************************************************
 *
 *  hHeap  : The heap handle to validate.
-*  pBlock : pointer to the memory block to validate, if the value
-*           is NULL then the entire heap is validated.
+*  pBlock : Pointer to the memory block to validate, as returned by
+*           HeapAlloc or HeapReAlloc (i.e. pointer to the data area,
+*           not the block header). If NULL, the entire heap is validated.
 *
 ************************************************************************
 *  RETURN VALUE
@@ -48,13 +49,14 @@ _HeapValidate:
 	bne  	hvInvalidHeapHandle		; If it's not valid then abort
 
 	move.l 	pBlock(a6),d0 			; Get block to validate address
-	beq.s 	hvValidateEntireHeap		; Validate entire heap if NULL
+	beq 	hvValidateEntireHeap		; Validate entire heap if NULL
 
 	; Here the caller wants to validate a single block
-	movea.l d0,a1 				; D0 & A1 --> block
+	movea.l d0,a1 				; A1 --> data area (user pointer)
+	suba.l 	#BLK_HDR_SIZE,a1		; A1 --> block header
 
-	; Validate alignment and magic
-	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the block pointer bit pattern is ok
+	; Validate alignment and magic (D0 still holds the original data pointer)
+	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the data pointer bit pattern is ok
 	bne	hvInvalidBlockInChain		; Nope, abort
 	cmpi.l 	#BLOCK_MAGIC,bhMagic(a1)	; Block magic number present?
 	bne	hvInvalidBlockInChain		; Nope, abort
@@ -66,6 +68,17 @@ _HeapValidate:
 	andi.l 	#HEAP_ID_MASK,d1
 	cmp.l 	d0,d1				; IDs match?
 	bne	hvBlockHeapMismatch		; Nope, abort
+
+	; Confirm the block is a member of this heap's physical block chain
+	movea.l hhHeapHead(a0),a2		; A2 --> head of block chain
+hvSingleBlkChainWalk:
+	cmpa.l 	#0,a2				; End of chain without finding block?
+	beq	hvInvalidBlockInChain		; Yes, block not in this heap
+	cmpa.l 	a2,a1				; Found our block?
+	beq.s	hvSingleBlkChainFound		; Yes, confirmed
+	movea.l bhNext(a2),a2			; Follow next link
+	bra.s	hvSingleBlkChainWalk
+hvSingleBlkChainFound:
 
 	; Validate block-chain back-link consistency
 	tst.l 	bhPrev(a1)			; Is there a previous block?
@@ -96,7 +109,7 @@ hvSingleBlkChkFwdFreeLink:
 	beq	hvEndofFreeChain		; No, all checks passed
 	movea.l bhFreeNext(a1),a2		; A2 --> next free block
 	cmpa.l 	bhFreePrev(a2),a1		; Does freenext->freeprev point back to us?
-	bne	hvInvalidPrevFreeLink		; Nope, free chain corrupt
+	bne	hvInvalidFwdFreeLink		; Nope, free chain corrupt
 	bra	hvEndofFreeChain
 
 hvValidateEntireHeap:
@@ -108,20 +121,20 @@ hvBlockChainVerifyLoop:
 	; Validate that the block is valid
 	move.l 	a2,d0 				; Get block pointer in D0
 	and.l 	#$FF000000+(BLK_HDR_SIZE-1),d0	; Verify the block pointer bit pattern is ok
-	bne.s	hvInvalidBlockInChain		; Nope, abort
+	bne	hvInvalidBlockInChain		; Nope, abort
 	cmpi.l 	#BLOCK_MAGIC,bhMagic(a2)	; Block magic number present?
-	bne.s	hvInvalidBlockInChain		; Nope, abort
+	bne	hvInvalidBlockInChain		; Nope, abort
 
 	; Validate the block size and linkage
 	cmpa.l 	bhPrev(a2),a3			; Does the back link point to the previous block?
-	bne.s 	hvInvalidPrevLink
+	bne 	hvInvalidPrevLink
 
 	move.l 	a2,d0 				; Compute expected forward link from block size
 	add.l 	bhSize(a2),d0
 	move.l 	bhNext(a2),d1
-	beq.s 	hvEndofBlockChain
+	beq 	hvEndofBlockChain
 	cmp.l 	d0,d1 				; Does forward link match computed forward link?
-	bne.s 	hvInvalidNextLink
+	bne 	hvInvalidNextLink
 
 	; This block looks ok, move to next
 	movea.l a2,a3 				; Update previous block
@@ -135,28 +148,38 @@ hvEndofBlockChain:
 	subi.l 	#BLK_HDR_SIZE,d1 		; D1 = first byte of the end of heap marker
 	movea.l d1,a3 				; a3 --> End of heap marker
 	cmpi.l 	#HEAP_END,(a3)			; Heap end magic number?
-	bne.s	hvInvalidHeapEndMagic		; Nope, abort
+	bne	hvInvalidHeapEndMagic		; Nope, abort
 	cmp.l 	d0,d1				; Computed end match actual?
-	bne.s	hvInvalidHeapEnd		; Nope, error
+	bne	hvInvalidHeapEnd		; Nope, error
 
-	; Verify the free block chain
+	; Verify the free block chains across all segregated buckets
+	clr.l 	d0				; D0 = bucket offset
+	moveq 	#0,d1				; D1 = "found any free blocks" flag
 
-	tst.l 	hhFreeHead(a0)			; Is the heap exhausted?
-	beq	hvExhaustedHeapCheck		; Yes, verify all blocks are allocated
-
-	movea.l hhFreeHead(a0),a2		; A2 --> Head of the free list
-	suba.l 	a3,a3				; A3 --> previous free block
+hvVerifyNextBucket:
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a2 ; A2 = head of this bucket
+	cmpa.l 	#0,a2				; Empty bucket?
+	beq.s 	hvBucketEmpty			; Yes, skip
+	moveq 	#1,d1				; Mark: found free blocks
+	suba.l 	a3,a3				; A3 = NULL (no predecessor for head)
 
 hvFreeChainVerifyLoop:
 	cmpa.l 	bhFreePrev(a2),a3 		; Does the back link match?
-	bne.s 	hvInvalidPrevFreeLink
+	bne 	hvInvalidPrevFreeLink
 	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Is the block marked as free?
-	beq.s 	hvBlockNotFree
-	move.l 	bhFreeNext(a2),d1 		; Get pointer to next free block
-	beq.s 	hvEndofFreeChain
-	movea.l a2,a3				; A3 = new previous block
-	movea.l d1,a2				; A2 = next block
-	bra	hvFreeChainVerifyLoop  		; Loop until done.
+	beq 	hvBlockNotFree
+	movea.l a2,a3				; A3 = current (becomes previous)
+	movea.l bhFreeNext(a2),a2		; A2 = next block in this bucket
+	cmpa.l 	#0,a2				; End of bucket chain?
+	bne.s 	hvFreeChainVerifyLoop		; No, keep walking
+
+hvBucketEmpty:
+	addq.l 	#4,d0				; Advance to next bucket
+	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d0	; All buckets checked?
+	bne.s 	hvVerifyNextBucket		; No, keep checking
+
+	tst.l 	d1				; Were any free blocks found?
+	bne 	hvEndofFreeChain		; Yes, free chains verified; skip exhausted check
 
 hvExhaustedHeapCheck:
 	; Heap is fully allocated — walk the block chain and verify that
@@ -215,6 +238,10 @@ hvInvalidHeapEnd:
 
 hvInvalidPrevFreeLink:
 	moveq 	#HEAP_ERROR_INVALID_FPREV_LINK,d0
+	bra 	hvExit
+
+hvInvalidFwdFreeLink:
+	moveq 	#HEAP_ERROR_INVALID_FNXT_LINK,d0
 	bra 	hvExit
 
 hvBlockNotFree:

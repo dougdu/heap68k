@@ -21,7 +21,7 @@
 
 	include heap.inc
 
-	public 	__HeapUnlinkFromFreeBlockChain
+	public 	__HeapUnlinkFromFreeBlockChain, __HeapGetBucketOffset
 
 	.code
 
@@ -37,14 +37,19 @@ __HeapUnlinkFromFreeBlockChain:
 	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is it a free block?
 	beq.s 	_hufbcDone			; Nope, abort
 	movea.l hHeap(a6),a0 			; A0 --> Heap header
+
+	; Compute bucket offset for this block into D0 (needed when updating a head pointer)
+	move.l 	bhRequestSize(a1),d0		; D0 = data area size of block
+	bsr 	__HeapGetBucketOffset		; D0 = byte offset of correct hhFreeHeadN
+
 	tst.l 	bhFreePrev(a1)			; Is there a back link?
 	bne.s	_hufbcBackwardLink		; Yes, go
 	tst.l 	bhFreeNext(a1)			; Is there a forward link?
 	bne.s 	_hufbcForwardLinkOnly		; Yes, just a forward link
 
 	; Here we are the only block on the free list
-	; So just clear the head pointer
-	clr.l 	hhFreeHead(a0)			; Clear the free list head pointer
+	; So just clear the correct bucket head pointer
+	clr.l 	HEAP_FREE_BUCKET_BASE(a0,d0.l)	; Clear the bucket head pointer
 	bra.s 	_hufbcDone 			; We are done
 
 _hufbcBackwardLink:
@@ -61,7 +66,7 @@ _hufbcForwardLinkOnly:
 	movea.l bhFreeNext(a1),a2		; A2 --> Forward block
 	clr.l 	bhFreePrev(a2) 			; Break the link with the next block
 	clr.l 	bhFreeNext(a1)
-	move.l 	a2,hhFreeHead(a0)		; Update the free list head pointer
+	move.l 	a2,HEAP_FREE_BUCKET_BASE(a0,d0.l) ; Update the bucket head pointer
 	bra.s 	_hufbcDone 			; We are done
 
 _hufbcBothLinks:
@@ -77,5 +82,70 @@ _hufbcDone:
         movem.l (sp)+,a0-a3                     ; Restore registers
 	unlk 	a6
         rts
+
+************************************************************************
+*  __HeapGetBucketOffset
+************************************************************************
+*
+*  Given the data size of a free block, returns the byte offset of
+*  the corresponding segregated free list head (hhFreeHeadN) within
+*  the heap header.  The offset is suitable for use as:
+*
+*    HEAP_FREE_BUCKET_BASE(a0,d0.l)
+*
+*  where A0 points to the heap header.
+*
+*  Input:  D0.l = data size of block (bhRequestSize)
+*  Output: D0.l = byte offset of bucket head relative to heap header base
+*  Trashes: CCR only
+************************************************************************
+__HeapGetBucketOffset:
+	cmpi.l 	#HEAP_FREE_BKT0_MAX,d0
+	ble.s 	_hgboRet0
+	cmpi.l 	#HEAP_FREE_BKT1_MAX,d0
+	ble.s 	_hgboRet1
+	cmpi.l 	#HEAP_FREE_BKT2_MAX,d0
+	ble.s 	_hgboRet2
+	cmpi.l 	#HEAP_FREE_BKT3_MAX,d0
+	ble.s 	_hgboRet3
+	cmpi.l 	#HEAP_FREE_BKT4_MAX,d0
+	ble.s 	_hgboRet4
+	cmpi.l 	#HEAP_FREE_BKT5_MAX,d0
+	ble.s 	_hgboRet5
+	cmpi.l 	#HEAP_FREE_BKT6_MAX,d0
+	ble.s 	_hgboRet6
+	cmpi.l 	#HEAP_FREE_BKT7_MAX,d0
+	ble.s 	_hgboRet7
+	cmpi.l 	#HEAP_FREE_BKT8_MAX,d0
+	ble.s 	_hgboRet8
+	moveq 	#hhFreeHead9-HEAP_FREE_BUCKET_BASE,d0	; Bucket 9: >256 KB
+	rts
+_hgboRet8:
+	moveq 	#hhFreeHead8-HEAP_FREE_BUCKET_BASE,d0
+	rts
+_hgboRet7:
+	moveq 	#hhFreeHead7-HEAP_FREE_BUCKET_BASE,d0
+	rts
+_hgboRet6:
+	moveq 	#hhFreeHead6-HEAP_FREE_BUCKET_BASE,d0
+	rts
+_hgboRet5:
+	moveq 	#hhFreeHead5-HEAP_FREE_BUCKET_BASE,d0
+	rts
+_hgboRet4:
+	moveq 	#hhFreeHead4-HEAP_FREE_BUCKET_BASE,d0
+	rts
+_hgboRet3:
+	moveq 	#hhFreeHead3-HEAP_FREE_BUCKET_BASE,d0
+	rts
+_hgboRet2:
+	moveq 	#hhFreeHead2-HEAP_FREE_BUCKET_BASE,d0
+	rts
+_hgboRet1:
+	moveq 	#hhFreeHead1-HEAP_FREE_BUCKET_BASE,d0
+	rts
+_hgboRet0:
+	moveq 	#0,d0				; hhFreeHead0-HEAP_FREE_BUCKET_BASE = 0
+	rts
 
         end

@@ -147,7 +147,19 @@ _hcEndMarkerInitLoop:
 	move.l 	d1,hhSize(a0)			; Save the actual heap size
 	lea.l 	hhHeapData(a0),a1		; A1 --> Initial free block
 	move.l 	a1,hhHeapHead(a0)		; Initialize head of the block list.
-	move.l 	a1,hhFreeHead(a0)		; Initialize head of the free block list.
+
+	; Clear all segregated free list bucket heads and reserved field
+	clr.l 	hhFreeHead0(a0)
+	clr.l 	hhFreeHead1(a0)
+	clr.l 	hhFreeHead2(a0)
+	clr.l 	hhFreeHead3(a0)
+	clr.l 	hhFreeHead4(a0)
+	clr.l 	hhFreeHead5(a0)
+	clr.l 	hhFreeHead6(a0)
+	clr.l 	hhFreeHead7(a0)
+	clr.l 	hhFreeHead8(a0)
+	clr.l 	hhFreeHead9(a0)
+	clr.l 	hhReserved(a0)
 
 	; Initialize the initial free block block header
 	move.l 	#BLOCK_MAGIC,bhMagic(a1)	; Set the block header magic number
@@ -162,6 +174,55 @@ _hcEndMarkerInitLoop:
 	clr.l 	bhFreePrev(a1)			; pointer to the previous free block = NULL
 	clr.l 	bhFreeNext(a1)			; pointer to the next free block = NULL
 
+	; Insert initial free block into the correct size bucket (D2 = data area size)
+	cmpi.l 	#HEAP_FREE_BKT0_MAX,d2
+	ble.s 	_hcInitBkt0
+	cmpi.l 	#HEAP_FREE_BKT1_MAX,d2
+	ble.s 	_hcInitBkt1
+	cmpi.l 	#HEAP_FREE_BKT2_MAX,d2
+	ble.s 	_hcInitBkt2
+	cmpi.l 	#HEAP_FREE_BKT3_MAX,d2
+	ble.s 	_hcInitBkt3
+	cmpi.l 	#HEAP_FREE_BKT4_MAX,d2
+	ble.s 	_hcInitBkt4
+	cmpi.l 	#HEAP_FREE_BKT5_MAX,d2
+	ble.s 	_hcInitBkt5
+	cmpi.l 	#HEAP_FREE_BKT6_MAX,d2
+	ble.s 	_hcInitBkt6
+	cmpi.l 	#HEAP_FREE_BKT7_MAX,d2
+	ble.s 	_hcInitBkt7
+	cmpi.l 	#HEAP_FREE_BKT8_MAX,d2
+	ble.s 	_hcInitBkt8
+	move.l 	a1,hhFreeHead9(a0)		; Bucket 9: >256 KB
+	bra.s 	_hcBucketDone
+_hcInitBkt8:
+	move.l 	a1,hhFreeHead8(a0)
+	bra.s 	_hcBucketDone
+_hcInitBkt7:
+	move.l 	a1,hhFreeHead7(a0)
+	bra.s 	_hcBucketDone
+_hcInitBkt6:
+	move.l 	a1,hhFreeHead6(a0)
+	bra.s 	_hcBucketDone
+_hcInitBkt5:
+	move.l 	a1,hhFreeHead5(a0)
+	bra.s 	_hcBucketDone
+_hcInitBkt4:
+	move.l 	a1,hhFreeHead4(a0)
+	bra.s 	_hcBucketDone
+_hcInitBkt3:
+	move.l 	a1,hhFreeHead3(a0)
+	bra.s 	_hcBucketDone
+_hcInitBkt2:
+	move.l 	a1,hhFreeHead2(a0)
+	bra.s 	_hcBucketDone
+_hcInitBkt1:
+	move.l 	a1,hhFreeHead1(a0)
+	bra.s 	_hcBucketDone
+_hcInitBkt0:
+	move.l 	a1,hhFreeHead0(a0)
+_hcBucketDone:
+
 	; Bump heap id
 	addi.w 	#1,__HeapId			; Heap Id = # heaps
 
@@ -173,6 +234,7 @@ _hcEndMarkerInitLoop:
 	move.l 	bhSize(a1),d0 			; Computer size of block in long words
 	subi.l 	#BLK_HDR_SIZE,d0 		; Block size - block header size
 	lsr.l 	#2,d0				; Adjust to count of long words
+	beq.s 	_hcExit				; Nothing to fill (zero-data block)
 	subq.l 	#1,d0 				; Adjust for dbra
 	lea.l 	bhData(a1),a1			; A1 -> Start of data area
 

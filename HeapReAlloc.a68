@@ -61,7 +61,7 @@
 
 	public	_HeapReAlloc
 	extern 	__HeapAutoValidateFlagCheck
-	extern	__HeapUnlinkFromFreeBlockChain, __HeapUnlinkFromBlockChain
+	extern	__HeapUnlinkFromFreeBlockChain, __HeapUnlinkFromBlockChain, __HeapGetBucketOffset
 	extern	__HeapInvalidateBlockHeader
 	extern	__HeapCoalesce
 	extern	__HeapDebugFillOnFree
@@ -131,8 +131,8 @@ _hrTailCheckingNotEnabled:
 	move.l 	bhSize(a1),d2 			; D2 = current block size
 	cmp.l 	d1,d2				; Grow, shrink, reuse same block?
 
-	beq.s 	_hrUseExistingBlock
-	bgt.s 	_hrShrinkBlock
+	beq 	_hrUseExistingBlock
+	bgt 	_hrShrinkBlock
 
 _hrGrowBlock:
 	; Here if the current block is too small to satisfy the request.
@@ -142,20 +142,19 @@ _hrGrowBlock:
 	sub.l 	d2,d3				; D3 = number of bytes we need to grow
 	movea.l bhNext(a1),a2 			; See if the next block is free
 	cmpa.l 	#0,a2				; Last block in chain?
-	beq.s 	_hrgbNextBlockNotFree		; Yes, cannot grow in place
+	beq 	_hrgbNextBlockNotFree		; Yes, cannot grow in place
 	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)
-	beq.s 	_hrgbNextBlockNotFree		; Not free, see if we can move the block
+	beq 	_hrgbNextBlockNotFree		; Not free, see if we can move the block
 	move.l 	bhSize(a2),d4			; Get total size of free block
 	cmp.l 	d3,d4				; Enough space?
-	blt.s 	_hrgbNextBlockNotFree		; No, see if we can move the block
-	beq.s 	_hrgbConsumeNextBlock 		; Yes, consume entire block
+	blt 	_hrgbNextBlockNotFree		; No, see if we can move the block
+	beq 	_hrgbConsumeNextBlock 		; Yes, consume entire block
 
 	; The next block is bigger than we need, see if it is worth
 	; splitting the block.
 	sub.l 	d3,d4 				; Compute what would be left over
-_hrgbNoTailCheck:
 	cmpi.l 	#BLK_HDR_SIZE,d4		; Enough to warrant a split?
-	blt.s 	_hrgbConsumeNextBlock		; Nope, just use it all
+	blt 	_hrgbConsumeNextBlock		; Nope, just use it all
 
 	; Here we will split the next block taking just enough to
 	; grow the specified block to satisfy the request in place.
@@ -179,24 +178,14 @@ _hrgbNoTailCheck:
 	move.l 	a3,bhPrev(a4)			; Update following block's back link
 _hrspNoFwdBlock:
 
-	; Free chain: bhFreePrev(A2) <-> A3 <-> bhFreeNext(A2)
-	move.l 	bhFreeNext(a2),bhFreeNext(a3)	; A3 inherits A2's free chain links
-	move.l 	bhFreePrev(a2),bhFreePrev(a3)
-	tst.l 	bhFreePrev(a3)			; Is there a previous free block?
-	beq.s 	_hrspNoBackFreeBlock
-	movea.l bhFreePrev(a3),a4
-	move.l 	a3,bhFreeNext(a4)		; Update prev free block's forward link
-	bra.s 	_hrspChkFwdFreeBlock
-_hrspNoBackFreeBlock:
-	move.l 	a3,hhFreeHead(a0)		; A3 becomes new free chain head
-_hrspChkFwdFreeBlock:
-	tst.l 	bhFreeNext(a3)			; Is there a next free block?
-	beq.s 	_hrspNoFwdFreeBlock
-	movea.l bhFreeNext(a3),a4
-	move.l 	a3,bhFreePrev(a4)		; Update next free block's back link
-_hrspNoFwdFreeBlock:
+	; Free chain: remove A2 from its current bucket, then insert A3 into its bucket
+	; D4 = A3's total block size (leftover after the split)
+	move.l 	a2,-(sp)			; Push A2 to unlink
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapUnlinkFromFreeBlockChain	; Remove A2 from its free bucket
+	adda.l 	#8,sp
 
-	; Initialize new free block header at A3
+	; Initialize new free block header at A3 before inserting into free chain
 	move.l 	#BLOCK_MAGIC,bhMagic(a3)
 	move.l 	#FLG_FREE,bhFlags(a3)
 	move.l 	hhFlags(a0),d0
@@ -206,6 +195,19 @@ _hrspNoFwdFreeBlock:
 	move.l 	d4,d0
 	subi.l 	#BLK_HDR_SIZE,d0
 	move.l 	d0,bhRequestSize(a3)
+
+	; Insert A3 into the correct bucket (LIFO at head)
+	move.l 	d4,d0				; D0 = A3's total block size
+	subi.l 	#BLK_HDR_SIZE,d0		; D0 = A3's data area size
+	jsr 	__HeapGetBucketOffset		; D0 = byte offset of correct bucket
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a4 ; A4 = current bucket head
+	move.l 	a3,HEAP_FREE_BUCKET_BASE(a0,d0.l)  ; A3 is new bucket head
+	clr.l 	bhFreePrev(a3)			; No predecessor
+	move.l 	a4,bhFreeNext(a3)		; Forward link to old head
+	cmpa.l 	#0,a4				; Was bucket non-empty?
+	beq.s 	_hrspFreeChainDone
+	move.l 	a3,bhFreePrev(a4)		; Update old head's back link
+_hrspFreeChainDone:
 
 	; Invalidate A2's now-defunct header
 	move.l 	a2,-(sp)
@@ -278,13 +280,14 @@ _hrcbNoZeroFill:
 	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
 	beq.s 	_hrcbNoTailFill
 	move.l 	bhRequestSize(a1),d3		; D3 = new requested size
-	andi.l 	#NOT(3),d3			; Round down to nearest long word
-	lea 	bhData(a1,d3.l),a2		; A2 --> nearest long word for tail fill
+	addi.l 	#3,d3				; Round UP to nearest long word
+	andi.l 	#NOT(3),d3			; D3 = first tail fill offset (>= bhRequestSize)
+	lea 	bhData(a1,d3.l),a2		; A2 --> first tail fill long word (after user data)
 	move.l 	bhSize(a1),d4			; Compute tail long word count
-	subi.l 	#BLK_HDR_SIZE-3,d4
-	sub.l 	bhRequestSize(a1),d4
-	lsr.l 	#2,d4
-	subi.l 	#1,d4
+	subi.l 	#BLK_HDR_SIZE,d4		; D4 = data area size
+	sub.l 	d3,d4				; D4 = bytes to fill
+	lsr.l 	#2,d4				; Convert to long word count
+	subi.l 	#1,d4				; Adjust for dbra
 _hrcbTailLoop:
 	move.l 	#HEAP_TAIL,(a2)+
 	dbra 	d4,_hrcbTailLoop
@@ -345,11 +348,11 @@ _hrMoveFreeDone:
 
 _hrMoveAllocFailed:
 	; _HeapAlloc already set __HeapError (HEAP_ERROR_OUT_OF_MEMORY)
-	bra.s 	_hrErrorExit
+	bra 	_hrErrorExit
 
 _hrInPlaceOnlyFailed:
 	move.l 	#HEAP_ERROR_OUT_OF_MEMORY,__HeapError
-	bra.s 	_hrErrorExit
+	bra 	_hrErrorExit
 
 _hrShrinkBlock:
 	; A0=heap  A1=block to shrink  D1=new required total size  D2=current bhSize(A1)
@@ -357,7 +360,7 @@ _hrShrinkBlock:
 	sub.l 	d1,d3				; D3 = leftover bytes
 
 	cmpi.l 	#BLK_HDR_SIZE,d3		; Enough leftover to warrant splitting?
-	ble.s 	_hrsbNoSplit			; No, keep block size as-is
+	ble 	_hrsbNoSplit			; No, keep block size as-is
 
 	; Split: carve new free block at A1+D1
 	movea.l a1,a2
@@ -373,12 +376,15 @@ _hrShrinkBlock:
 	move.l 	a2,bhPrev(a3)			; Update following block's back link
 _hrsbNoFwdBlock:
 
-	; Free chain: LIFO insert at head
-	movea.l hhFreeHead(a0),a3		; A3 --> current free chain head
-	move.l 	a2,hhFreeHead(a0)		; A2 is new head
-	clr.l 	bhFreePrev(a2)			; No back link (head of list)
+	; Free chain: bucket-dispatched LIFO insert; D3 = A2's total block size
+	move.l 	d3,d0				; D0 = A2's total size
+	subi.l 	#BLK_HDR_SIZE,d0		; D0 = A2's data area size
+	jsr 	__HeapGetBucketOffset		; D0 = byte offset of correct bucket
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a3 ; A3 = current bucket head
+	move.l 	a2,HEAP_FREE_BUCKET_BASE(a0,d0.l)  ; A2 is new bucket head
+	clr.l 	bhFreePrev(a2)			; No predecessor
 	move.l 	a3,bhFreeNext(a2)		; Forward link to old head
-	cmpa.l 	#0,a3				; Was there a previous head?
+	cmpa.l 	#0,a3				; Was bucket non-empty?
 	beq.s 	_hrsbFreeChainDone
 	move.l 	a2,bhFreePrev(a3)		; Update old head's back link
 _hrsbFreeChainDone:
@@ -438,13 +444,14 @@ _hrsbUpdateReqSize:
 	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
 	beq.s 	_hrsbNoTailFill
 	move.l 	bhRequestSize(a1),d3		; D3 = new requested size
-	andi.l 	#NOT(3),d3			; Round down to nearest long word
-	lea 	bhData(a1,d3.l),a2		; A2 --> nearest long word for tail fill
+	addi.l 	#3,d3				; Round UP to nearest long word
+	andi.l 	#NOT(3),d3			; D3 = first tail fill offset (>= bhRequestSize)
+	lea 	bhData(a1,d3.l),a2		; A2 --> first tail fill long word (after user data)
 	move.l 	bhSize(a1),d4			; Compute tail long word count
-	subi.l 	#BLK_HDR_SIZE-3,d4
-	sub.l 	bhRequestSize(a1),d4
-	lsr.l 	#2,d4
-	subi.l 	#1,d4
+	subi.l 	#BLK_HDR_SIZE,d4		; D4 = data area size
+	sub.l 	d3,d4				; D4 = bytes to fill
+	lsr.l 	#2,d4				; Convert to long word count
+	subi.l 	#1,d4				; Adjust for dbra
 _hrsbTailLoop:
 	move.l 	#HEAP_TAIL,(a2)+
 	dbra 	d4,_hrsbTailLoop
@@ -520,13 +527,14 @@ _hrueNoShrinkFill:
 	beq.s 	_hrueNoTailFill
 
 	move.l 	bhRequestSize(a1),d3 		; D3 = new requested size
-	andi.l 	#NOT(3),d3 			; Round down to nearest long word
-	lea 	bhData(a1,d3.l),a2 		; A2 --> nearest long word for tail fill
+	addi.l 	#3,d3				; Round UP to nearest long word
+	andi.l 	#NOT(3),d3 			; D3 = first tail fill offset (>= bhRequestSize)
+	lea 	bhData(a1,d3.l),a2 		; A2 --> first tail fill long word (after user data)
 	move.l 	bhSize(a1),d4 			; Compute tail long word count
-	subi.l 	#BLK_HDR_SIZE-3,d4
-	sub.l 	bhRequestSize(a1),d4
-	lsr.l 	#2,d4
-	subi.l 	#1,d4
+	subi.l 	#BLK_HDR_SIZE,d4		; D4 = data area size
+	sub.l 	d3,d4				; D4 = bytes to fill
+	lsr.l 	#2,d4				; Convert to long word count
+	subi.l 	#1,d4				; Adjust for dbra
 _hrueTailLoop:
 	move.l 	#HEAP_TAIL,(a2)+
 	dbra 	d4,_hrueTailLoop
