@@ -29,6 +29,7 @@
 
 	public 	_HeapFree
 	extern 	__HeapAutoValidateFlagCheck, __HeapCoalesce, __HeapDebugFillOnFree
+	extern 	__HeapGetBucketOffset
 	extern	__HeapError
 
 	.code
@@ -82,6 +83,8 @@ _HeapFree:
 	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
 	beq.s 	_hfNoTailCheck
 	move.l 	bhRequestSize(a1),d0 		; Get the requested block size
+	addi.l 	#3,d0				; Round UP to nearest long word
+	andi.l 	#NOT(3),d0			; D0 = first tail fill offset (>= bhRequestSize)
 	lea 	bhData(a1,d0.l),a2		; A2 --> start of block tail
 	move.l 	bhSize(a1),d1 			; Compute tail size
 	subi.l 	#BLK_HDR_SIZE+1,d1		; +1 to adjust for dbra
@@ -108,14 +111,17 @@ _hfNoTailCheck:
 _hfFreeWithNoCoalesce:
 	; Here we have nothing to coalesce with so just free the block
 
-	; Insert the newly freed block on the head of the free block chain
-	movea.l hhFreeHead(a0),a2		; A2 --> Head of free block list
-	move.l 	a1,hhFreeHead(a0)		; This block is now the free list head
-	clr.l 	bhFreePrev(a1)			; Set the free list back pointer
-	move.l 	a2,bhFreeNext(a1)		; Set the free list fwd pointer
-	tst.l 	bhFreeNext(a1)			; Is there a forward free block?
-	beq 	_hfBlockFreed			; Nope, done
-	move.l 	a1,bhFreePrev(a2)		; Yes, update it's back link
+	; Insert the freed block at the head of the correct size bucket
+	move.l 	bhSize(a1),d0			; D0 = total block size
+	sub.l 	#BLK_HDR_SIZE,d0		; D0 = data area size
+	jsr 	__HeapGetBucketOffset		; D0 = byte offset of correct bucket
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a2 ; A2 = current bucket head
+	move.l 	a1,HEAP_FREE_BUCKET_BASE(a0,d0.l)  ; A1 is new bucket head
+	clr.l 	bhFreePrev(a1)			; No predecessor
+	move.l 	a2,bhFreeNext(a1)		; Forward link to old head
+	cmpa.l 	#0,a2				; Was bucket non-empty?
+	beq 	_hfBlockFreed			; No, done
+	move.l 	a1,bhFreePrev(a2)		; Update old head's back link
 
 _hfBlockFreed:
 	; Here the block pointed to by A1 has been freed clean up the flags/byte count

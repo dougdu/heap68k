@@ -39,7 +39,7 @@ hHeap	equ 	8
 ; Local offsets
 _HeapCompact:
 	link 	a6,#0				; Initialize stack frame
-	movem.l d1/a0-a1,-(sp)			; Save registers
+	movem.l d1-d2/a0-a1,-(sp)		; Save registers
 
 	movea.l hHeap(a6),a0 			; A0 --> Heap Header
 
@@ -51,16 +51,19 @@ _HeapCompact:
 	bne 	_hcpError			; Validation failed
 
 	btst.b 	#FLG_HEAP_DISABLE_COALESCING-8,hhFlags+2(a0) ; Coalescing disabled? (bit 8 in flags word)
-	beq.s	_hcpNoCoalesce 			; Nope, heap should be good
+	beq.s	_hcpNoCoalesce 			; Coalescing enabled — heap already coalesced on every free; skip pass
 
-	; Here we walk the free list and coalesce all the adjacent
-	; free blocks.
+	; Walk all buckets and coalesce adjacent free blocks in each
+	clr.l 	d2				; D2 = bucket offset
 
-	tst.l 	hhFreeHead(a0)			; Are there any free blocks?
-	beq.s 	_hcpNoCoalesce			; Nope, nothing to coalesce
+_hcpCoalesceBucketLoop:
+	tst.l 	HEAP_FREE_BUCKET_BASE(a0,d2.l)	; Any blocks in this bucket?
+	beq.s 	_hcpNextCoalesceBucket		; No, skip
 
 _hcpResetCoalesceLoop:
-	movea.l hhFreeHead(a0),a1 		; A1 --> head of the free block chain
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d2.l),a1 ; A1 = head of this bucket's chain
+	cmpa.l 	#0,a1				; Bucket now empty (block moved to larger bucket)?
+	beq.s 	_hcpNextCoalesceBucket		; Yes, no more blocks here
 
 _hcpCoalesceLoop:
 	move.l 	a1,-(sp)			; Push the block address
@@ -68,34 +71,45 @@ _hcpCoalesceLoop:
 	jsr 	__HeapCoalesce			; Attempt to coalesce the block
 	adda.l 	#8,sp
 	tst.l 	d0 				; Was the block coalesced?
-	bne.s 	_hcpResetCoalesceLoop		; Yes, restart the free list walk
-	movea.l bhFreeNext(a1),a1 		; Follow link to next block
-	cmpa.l 	#0,a1 				; End of the free block chain?
-	bne.s 	_hcpCoalesceLoop		; Nope, try and coalesce the next block
+	bne.s 	_hcpResetCoalesceLoop		; Yes, restart this bucket's walk
+	movea.l bhFreeNext(a1),a1 		; Follow link to next block in bucket
+	cmpa.l 	#0,a1 				; End of this bucket's chain?
+	bne.s 	_hcpCoalesceLoop		; No, try and coalesce the next block
+
+_hcpNextCoalesceBucket:
+	addq.l 	#4,d2				; Advance to next bucket
+	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d2	; All buckets coalesced?
+	bne.s 	_hcpCoalesceBucketLoop		; No, continue
 
 _hcpNoCoalesce:
-	movea.l hhFreeHead(a0),a1 		; A1 --> start of free block chain
-	clr.l 	d0 				; D0 = largest free block
+	clr.l 	d0				; D0 = largest free block size found
+	clr.l 	d2				; D2 = bucket offset
+
+_hcpFindBucketLoop:
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d2.l),a1 ; A1 = head of this bucket's chain
 
 _hcpFindLargestFreeBlockLoop:
-	cmpa.l 	#0,a1 				; End of the free block chain?
-	beq.s	_hcpExitFindLoop		; Yes, return largest free block found
-	move.l 	bhSize(a1),d1 			; D1 = size of free block
-	cmp.l 	d1,d0				; New block larger than currently cached size?
-	bge.s 	_hcpNotLarger			; Nope, move on to next block
+	cmpa.l 	#0,a1				; End of this bucket's chain?
+	beq.s 	_hcpNextFindBucket		; Yes, move to next bucket
+	move.l 	bhSize(a1),d1 			; D1 = size of this free block
+	cmp.l 	d1,d0				; Larger than current largest?
+	bge.s 	_hcpNotLarger			; No, move on
 	move.l 	d1,d0 				; Update largest block size
 
 _hcpNotLarger:
-	movea.l bhFreeNext(a1),a1 		; Follow forward link and loop
-	bra.s 	_hcpFindLargestFreeBlockLoop
+	movea.l bhFreeNext(a1),a1 		; Follow forward link
+	bra.s 	_hcpFindLargestFreeBlockLoop	; Check next block in bucket
 
-_hcpExitFindLoop:
+_hcpNextFindBucket:
+	addq.l 	#4,d2				; Advance to next bucket
+	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d2	; All buckets checked?
+	bne.s 	_hcpFindBucketLoop		; No, continue
 	tst.l 	d0 				; Is final size 0?
 	beq.s 	_hcpExit			; Yes, return it
 	subi.l 	#BLK_HDR_SIZE,d0		; Nope, only return the data portion
 
 _hcpExit:
-	movem.l (sp)+,d1/a0-a1			; Restore registers
+	movem.l (sp)+,d1-d2/a0-a1		; Restore registers
 	unlk	a6
 	rts
 

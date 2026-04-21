@@ -17,6 +17,14 @@
 *           HeapWalk function repeatedly, with no changes to
 *           hHeap or pEntry.
 *
+*           NOTE: The pointer stored at *pEntry is a raw block
+*           header address — it points to the internal bhMagic
+*           field, not to the user data area. This value cannot
+*           be passed directly to HeapFree, HeapSize, or
+*           HeapReAlloc. To obtain the user data pointer from
+*           a HeapWalk result, add BLK_HDR_SIZE ($20) to the
+*           stored value.
+*
 ************************************************************************
 *  RETURN VALUE
 ************************************************************************

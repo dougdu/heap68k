@@ -30,11 +30,35 @@ hhId 		equ 	$04 			; Heap ID (hiword)
 hhRequestSize   equ     $08             	; Requested heap size
 hhSize	        equ	$0C             	; Total actual size of the heap including the headers
 hhHeapHead      equ	$10             	; Pointer to the first block in the heap block list
-hhFreeHead      equ     $14             	; Pointer to the head of the free block list
-hhReserved1	equ 	$18			; Reserved for future use
-hhReserved2 	equ 	$1C			; Reserved for future use
-HEAP_HDR_SIZE   equ     $20             	; Size of the heap header in bytes
-hhHeapData 	equ 	$20			; Offset to the start of the heap data area
+hhFreeHead0     equ     $14             	; Free list head: data size <=64 bytes
+hhFreeHead1     equ     $18             	; Free list head: data size <=128 bytes
+hhFreeHead2     equ     $1C             	; Free list head: data size <=256 bytes
+hhFreeHead3     equ     $20             	; Free list head: data size <=512 bytes
+hhFreeHead4     equ     $24             	; Free list head: data size <=1 KB
+hhFreeHead5     equ     $28             	; Free list head: data size <=4 KB
+hhFreeHead6     equ     $2C             	; Free list head: data size <=16 KB
+hhFreeHead7     equ     $30             	; Free list head: data size <=64 KB
+hhFreeHead8     equ     $34             	; Free list head: data size <=256 KB
+hhFreeHead9     equ     $38             	; Free list head: data size >256 KB (overflow)
+hhReserved      equ     $3C             	; Reserved for future use
+HEAP_HDR_SIZE   equ     $40             	; Size of the heap header in bytes
+hhHeapData 	equ 	HEAP_HDR_SIZE		; Offset to the start of the heap data area
+
+************************************************************************
+* Segregated free list bucket definitions
+************************************************************************
+HEAP_NUM_FREE_BUCKETS   equ     10      	; Number of segregated free list buckets
+HEAP_FREE_BUCKET_BASE   equ     hhFreeHead0	; Offset of first bucket head in heap header
+HEAP_FREE_BKT0_MAX      equ     64      	; Bucket 0: data size <=64 bytes
+HEAP_FREE_BKT1_MAX      equ     128     	; Bucket 1: data size <=128 bytes
+HEAP_FREE_BKT2_MAX      equ     256     	; Bucket 2: data size <=256 bytes
+HEAP_FREE_BKT3_MAX      equ     512     	; Bucket 3: data size <=512 bytes
+HEAP_FREE_BKT4_MAX      equ     1024    	; Bucket 4: data size <=1 KB
+HEAP_FREE_BKT5_MAX      equ     4096    	; Bucket 5: data size <=4 KB
+HEAP_FREE_BKT6_MAX      equ     16384   	; Bucket 6: data size <=16 KB
+HEAP_FREE_BKT7_MAX      equ     65536   	; Bucket 7: data size <=64 KB
+HEAP_FREE_BKT8_MAX      equ     262144  	; Bucket 8: data size <=256 KB
+                                        	; Bucket 9: data size >256 KB (overflow, walk required)
 
 ************************************************************************
 * Heap Header Flag Definitions
@@ -160,5 +184,6 @@ HEAP_HEADER_BLOCK_FREEPTR_BAD 		equ 	$10 	; The free block chain head pointer is
 HEAP_HEADER_BAD_MAGIC			equ 	$11 	; The heap header magic number is invalid
 HEAP_HEADER_INVALID_SIZE		equ 	$12 	; Heap size not derived from reqested size
 HEAP_ERROR_TAIL_VALIDATION_FAILED 	equ 	$13 	; The debug tail data was corrupt
+HEAP_ERROR_INVALID_FNXT_LINK		equ 	$14 	; Block in free chain has an invalid forward link
 
 	.list

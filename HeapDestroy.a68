@@ -32,7 +32,7 @@
 
 	.code
 
-hhllen	equ 	(BLK_HDR_SIZE shr 2)-1
+hhllen	equ 	(HEAP_HDR_SIZE shr 2)-1
 
 ; Parameter offsets
 hHeap	equ 	8
@@ -61,6 +61,11 @@ _hdMachineHeapInitialized:
 	bra.s 	_hdSetError			; Set error code and exit
 
 _hdHeapHandleNotNull:
+	; Reject the machine heap handle — it was not allocated from any parent heap
+	; and destroying it would corrupt the global heap state
+	cmp.l 	__MachineHeapHandle,d1		; Is this the machine heap?
+	beq.s 	_hdIsMachineHeap		; Yes, reject
+
 	; Run any configured heap validations on the heap to be destroyed
 	clr.l 	-(sp)				; Flag caller as not HeapFree
 	move.l 	d1,-(sp)			; Push heap handle
@@ -90,6 +95,9 @@ _hdInvalidateHandleLoop:
 	; Flag success by return a non-zero value
 	move.l 	#-1,d0				; Return TRUE
 	bra.s 	_hdExit
+
+_hdIsMachineHeap:
+	move.l 	#HEAP_ERROR_INVALID_HANDLE,d0	; Cannot destroy the machine heap
 
 _hdSetError:
 	move.l 	d0,__HeapError			; Save the error code

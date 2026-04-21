@@ -37,7 +37,7 @@
 	include heap.inc
 
 	public	_HeapAlloc
-	extern	__HeapAutoValidateFlagCheck, __HeapUnlinkFromFreeBlockChain
+	extern	__HeapAutoValidateFlagCheck, __HeapUnlinkFromFreeBlockChain, __HeapGetBucketOffset
 	extern	__HeapError
 
 	.code
@@ -62,9 +62,6 @@ _HeapAlloc:
 
 	; Begin allocation
 	move.l 	lBytes(a6),d1 			; Get count of bytes to allocate
-	tst.l 	hhFreeHead(a0) 			; Is the free list empty?
-	beq 	_haNoMem			; Yes, abort
-	movea.l hhFreeHead(a0),a1 		; Get pointer to the head of the free list
 
 	; Compute actual size of the block we need
 	move.l 	d1,d2 				; D2 = working copy of request size
@@ -80,7 +77,24 @@ _haTailCheckingNotEnabled:
         add.l   #BLK_HDR_SIZE,d2        	; Add the size of a block header
         ble     _haNoMem                	; Error if negative
 
-	; Search the free block chain looking for large enough block
+	; Find the starting bucket: minimum data area size = D2 - BLK_HDR_SIZE
+	move.l 	d2,d0
+	subi.l 	#BLK_HDR_SIZE,d0		; D0 = minimum data area size needed
+	jsr 	__HeapGetBucketOffset		; D0 = starting bucket offset
+
+	; Walk buckets from the starting offset upward until a non-empty one is found
+_haFindBucket:
+	tst.l 	HEAP_FREE_BUCKET_BASE(a0,d0.l)	; Is this bucket empty?
+	bne.s 	_haFoundBucket			; No, go search it
+	addq.l 	#4,d0				; Advance to next bucket
+	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d0	; Past the last bucket?
+	bge 	_haNoMem			; Yes, out of memory
+	bra.s 	_haFindBucket
+
+_haFoundBucket:
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a1 ; A1 = head of current bucket
+
+	; Search the free block chain looking for a large enough block
 
 _haSearchFreeBlockChain:
 	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1) 	; Is the block marked as allocated?
@@ -95,11 +109,18 @@ _haSearchFreeBlockChain:
 	bra.s   _haSplitBlock           	; Go split into 2 blocks
 
 _haBlockTooSmall:
-	; Here if the block is too small, advance to the next free block
-	tst.l 	bhFreeNext(a1)			; Is there another free block?
-	beq 	_haNoMem			; Nope, abort
-	movea.l  bhFreeNext(a1),a1		; Yes, grab the next free block
+	; Block too small; advance to the next block in this bucket
+	tst.l 	bhFreeNext(a1)			; Is there another block in this bucket?
+	beq.s 	_haTryNextBucket		; No, try the next larger bucket
+	movea.l bhFreeNext(a1),a1		; Yes, advance to next block
 	bra.s 	_haSearchFreeBlockChain		; and keep searching
+
+_haTryNextBucket:
+	; Exhausted current bucket; advance to the next larger bucket
+	addq.l 	#4,d0				; Advance to next bucket
+	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d0	; Past the last bucket?
+	bge 	_haNoMem			; Yes, out of memory
+	bra.s 	_haFindBucket			; Look for next non-empty bucket
 
 _haExactFit:
 	; Here if the found free block is the exact size needed. We can
@@ -116,61 +137,55 @@ _haSplitBlock:
 	; Split the existing free block into two blocks.  One
 	; allocated and one free.
 
-	; First update the block chain linkage.
-	movea.l bhPrev(a1),a2 			; A2 --> Previous block
-	movea.l bhNext(a1),a3 			; A3 --> Next block
-	movea.l a1,a4 				; Compute start of new block
+	; Step 1: Update the block chain (physical) linkage
+	movea.l a1,a4 				; A4 = start of new free block
 	adda.l 	d2,a4
 
-	move.l 	a3,bhNext(a4)			; Set new block forward link
-	move.l	a1,bhPrev(a4)			; Set new block back link
-	move.l 	a4,bhNext(a1)			; Set old block forward link
+	move.l 	bhNext(a1),bhNext(a4)		; A4's forward link = A1's old forward link
+	move.l 	a1,bhPrev(a4)			; A4's back link = A1
+	move.l 	a4,bhNext(a1)			; A1's forward link = A4
 
-	tst.l 	bhNext(a4)			; Does the new block have a forward block?
+	tst.l 	bhNext(a4)			; Does A4 have a forward block?
 	beq.s 	_haNoFwdBlock			; Nope
-	move.l 	a4,bhPrev(a3)			; Yes, update it's back link
+	movea.l bhNext(a4),a3
+	move.l 	a4,bhPrev(a3)			; Update following block's back link
 
 _haNoFwdBlock:
+	; Step 2: Remove A1 from its bucket's free chain
+	move.l 	a1,-(sp)			; Push block to unlink
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	__HeapUnlinkFromFreeBlockChain
+	adda.l 	#8,sp
 
-	; Second update the free block chain linkage
-	movea.l bhFreePrev(a1),a2		; A2 --> Previous Free block
-	movea.l bhFreeNext(a1),a3 		; A3 --> Next Free block
-
-	move.l 	a3,bhFreeNext(a4)		; Set new Free block forward link
-	move.l	a2,bhFreePrev(a4)		; Set new Free block back link
-
-	tst.l 	bhFreePrev(a1)			; Is there a previous free block?
-	beq.s 	_haNoBackFreeBlock		; Nope
-	move.l 	a4,bhFreeNext(a2) 		; Yes, update it's forward link
-	bra.s 	_haChkFwdFreeBlk		; And move to the next step
-
-_haNoBackFreeBlock:
-	; There is no backwards free block so make this block the head
-	move.l 	a4,hhFreeHead(a0)		; Update free list head pointer
-
-_haChkFwdFreeBlk:
-	tst.l 	bhFreeNext(a4)			; Is there a next free block?
-	beq.s 	_haNoFwdFreeBlock		; Nope
-	move.l 	a4,bhFreePrev(a3)		; Yes, update it's back link
-
-_haNoFwdFreeBlock:
-	; Third update the values in the block headers
-	; Allocated block header
+	; Step 3: Initialize A1's block header (allocated)
 	bclr.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Clear the free block flag
 	move.l 	d1,bhRequestSize(a1)		; Set requested size
 	move.l 	d2,bhSize(a1)			; Set actual block size
 	clr.l 	bhFreePrev(a1)			; Clear free block chain links
 	clr.l 	bhFreeNext(a1)			; Clear free block chain links
 
-	; Free block header
+	; Step 4: Initialize A4's block header (free remainder)
 	move.l 	#BLOCK_MAGIC,bhMagic(a4)	; Init the magic word
 	move.l 	#FLG_FREE,bhFlags(a4)		; Set the free block flag
 	move.l 	hhFlags(a0),d0 			; Get the heap id
 	andi.l 	#HEAP_ID_MASK,d0 		; Mask off non-id bits
 	or.l 	d0,bhFlags(a4)			; Set heap id on block
 	move.l 	d3,bhSize(a4)			; Set actual block size
-	subi.l 	#BLK_HDR_SIZE,d3 		; Free block requested size
-	move.l 	d3,bhRequestSize(a4)		; is the size of data area
+	subi.l 	#BLK_HDR_SIZE,d3 		; Free block data area size
+	move.l 	d3,bhRequestSize(a4)		; Set data area size
+
+	; Step 5: Insert A4 into the correct bucket (LIFO at head)
+	move.l 	d3,d0				; D0 = data area size of A4
+	jsr 	__HeapGetBucketOffset		; D0 = byte offset of correct bucket
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a3 ; A3 = current bucket head
+	move.l 	a4,HEAP_FREE_BUCKET_BASE(a0,d0.l)  ; A4 is new bucket head
+	clr.l 	bhFreePrev(a4)			; No predecessor
+	move.l 	a3,bhFreeNext(a4)		; Forward link to old head
+	cmpa.l 	#0,a3				; Was bucket non-empty?
+	beq.s 	_haFreeChainDone
+	move.l 	a4,bhFreePrev(a3)		; Update old head's back link
+
+_haFreeChainDone:
 
 _haProcessFlags:
 	move.l 	lFlags(a6),d2 			; Caller requested flags
@@ -209,14 +224,16 @@ __FillBlock:
 	beq.s 	_fbNoTailChecking
 
 	move.l 	bhRequestSize(a1),d0 		; Requested block size
-	andi.l 	#NOT(3),d0 			; Round down to nearest long word
-	lea 	bhData(a1,d0.l),a2		; A2 --> Nearest long word for tail fill
+	addi.l 	#3,d0				; Round UP to nearest long word
+	andi.l 	#NOT(3),d0 			; D0 = first tail fill offset (>= bhRequestSize)
+	lea 	bhData(a1,d0.l),a2		; A2 --> First tail fill long word (after user data)
 
-	move.l 	bhSize(a1),d0			; Size of block
-	subi.l 	#BLK_HDR_SIZE-3,d0 		; Size of data area
-	sub.l 	bhRequestSize(a1),d0 		; Count of bytes to fill
-	lsr.l 	#2,d0				; Convert to long word count
-	subi.l 	#1,d0				; Adjust for dbra
+	move.l 	bhSize(a1),d1			; D1 = block size
+	subi.l 	#BLK_HDR_SIZE,d1		; D1 = data area size
+	sub.l 	d0,d1				; D1 = bytes to fill
+	lsr.l 	#2,d1				; Convert to long word count
+	subi.l 	#1,d1				; Adjust for dbra
+	move.l 	d1,d0				; D0 for dbra
 
 _fbTailCheckLoop:
 	move.l 	#HEAP_TAIL,(a2)+		; Fill the block debug data to help

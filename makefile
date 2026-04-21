@@ -9,7 +9,8 @@
 .SUFFIXES: .a68 .s .bas .a
 
 ASM       =C:\git\worm68k\68KTools\debug\asm68k.exe
-AFLAGS    =/Cu /coff /Fl /Fm /nologo
+COFF_FLAGS=/Cu /coff /Fl /Fm /nologo
+ELF_FLAGS =/Cu /elf /Fl /Fm /nologo
 AINC      =/I.
 LD        =C:\git\worm68k\tools\ld.exe
 AR        =C:\git\worm68k\tools\ar.exe
@@ -18,14 +19,17 @@ SIM68KDIR =C:\git\worm68k\68KTools\sim68k
 LIBDIR    =C:\git\worm68k\lib
 INCDIR    =C:\git\worm68k\include
 
+.a68.o:
+	$(ASM) $(ELF_FLAGS) $(AINC) /c $<
+
 .a68.obj:
-	$(ASM) $(AFLAGS) $(AINC) /c $<
+	$(ASM) $(COFF_FLAGS) $(AINC) /c $<
 
 .s.obj:
-	$(ASM) /ScAS68 $(AFLAGS) $(AINC) /c $<
+	$(ASM) /ScAS68 $(COFF_FLAGS) $(AINC) /c $<
 
 # targets
-HEAPOBJS = GetMachineHeap.obj GetMachineHeaps.obj \
+HEAP_COFF_OBJS = GetMachineHeap.obj GetMachineHeaps.obj \
 	   HeapAlloc.obj HeapAutoValidateFlagCheck.obj HeapCoalesce.obj HeapCompact.obj \
 	   HeapCreate.obj HeapDestroy.obj HeapFree.obj HeapGetError.obj HeapInitialize.obj \
 	   HeapReAlloc.obj HeapSize.obj HeapUnlinkFromBlockChain.obj \
@@ -33,17 +37,40 @@ HEAPOBJS = GetMachineHeap.obj GetMachineHeaps.obj \
 	   HeapValidateHandle.obj HeapWalk.obj HeapData.obj \
 	   HeapDebugFillOnFree.obj HeapInvalidateBlockHeader.obj
 
-all: libheap.a heaptest.68k
+HEAP_ELF_OBJS = GetMachineHeap.o GetMachineHeaps.o \
+	   HeapAlloc.o HeapAutoValidateFlagCheck.o HeapCoalesce.o HeapCompact.o \
+	   HeapCreate.o HeapDestroy.o HeapFree.o HeapGetError.o HeapInitialize.o \
+	   HeapReAlloc.o HeapSize.o HeapUnlinkFromBlockChain.o \
+	   HeapUnlinkFromFreeBlockChain.o HeapValidate.o \
+	   HeapValidateHandle.o HeapWalk.o HeapData.o \
+	   HeapDebugFillOnFree.o HeapInvalidateBlockHeader.o
 
-libheap.a: $(HEAPOBJS)
-	$(AR) -rscv libheap.a $**
+
+all: coff
+
+elf: libheap-elf.a heaptest-elf.68k
+
+coff: libheap-coff.a heaptest-coff.68k
+
+libheap-elf.a: $(HEAP_ELF_OBJS)
+	$(AR) -rscv libheap-elf.a $**
 	copy Heap.inc $(INCDIR)
-	copy libheap.a $(LIBDIR)
+	copy libheap-elf.a $(LIBDIR)
 
-heaptest.68k:  heaptest.obj libheap.a
-	$(LD) -o $@ -Ttext 1700 heaptest.obj -L.\ -lheap
+libheap-coff.a: $(HEAP_COFF_OBJS)
+	$(AR) -rscv libheap-coff.a $**
+	copy Heap.inc $(INCDIR)
+	copy libheap-coff.a $(LIBDIR)
+
+heaptest-elf.68k:  heaptest.o libheap-elf.a
+	$(LD) -o $@ -Ttext 1700 heaptest.o -L.\ -lheap-elf
 	copy $@ $(SIM68KDIR)
 
+heaptest-coff.68k:  heaptest.obj libheap-coff.a
+	$(LD) -o $@ -Ttext 1700 heaptest.obj -L.\ -lheap-coff
+	copy $@ $(SIM68KDIR)
+
+# Dependencies for COFF objects
 GetMachineHeap.obj: GetMachineHeap.a68
 GetMachineHeaps.obj: GetMachineHeaps.a68
 HeapAlloc.obj: HeapAlloc.a68 heap.inc
@@ -66,11 +93,39 @@ HeapValidate.obj: HeapValidate.a68 heap.inc
 HeapValidateHandle.obj: HeapValidateHandle.a68 heap.inc
 HeapWalk.obj: HeapWalk.a68 heap.inc
 
-# Test program for libheap.a
-heaptest.obj: heaptest.a68 heap.inc libheap.a
+# Test program for libheap-coff.a
+heaptest.obj: heaptest.a68 heap.inc libheap-coff.a
+
+# Dependencies for ELF objects
+GetMachineHeap.o: GetMachineHeap.a68
+GetMachineHeaps.o: GetMachineHeaps.a68
+HeapAlloc.o: HeapAlloc.a68 heap.inc
+HeapAutoValidateFlagCheck.o: HeapAutoValidateFlagCheck.a68 heap.inc
+HeapCoalesce.o: HeapCoalesce.a68 heap.inc
+HeapCompact.o: HeapCompact.a68 heap.inc
+HeapCreate.o: HeapCreate.a68 heap.inc
+HeapData.o: HeapData.a68 heap.inc
+HeapDebugFillOnFree.o: HeapDebugFillOnFree.a68 heap.inc
+HeapDestroy.o: HeapDestroy.a68 heap.inc
+HeapFree.o: HeapFree.a68 heap.inc
+HeapGetError.o: HeapGetError.a68
+HeapInitialize.o: HeapInitialize.a68 heap.inc
+HeapInvalidateBlockHeader.o: HeapInvalidateBlockHeader.a68 heap.inc
+HeapReAlloc.o: HeapReAlloc.a68 heap.inc
+HeapSize.o: HeapSize.a68 heap.inc
+HeapUnlinkFromBlockChain.o: HeapUnlinkFromBlockChain.a68 heap.inc
+HeapUnlinkFromFreeBlockChain.o: HeapUnlinkFromFreeBlockChain.a68 heap.inc
+HeapValidate.o: HeapValidate.a68 heap.inc
+HeapValidateHandle.o: HeapValidateHandle.a68 heap.inc
+HeapWalk.o: HeapWalk.a68 heap.inc
+
+
+
+heaptest.o: heaptest.a68 heap.inc libheap-elf.a
 
 clean:
 	del *.68k
 	del *.a
 	del *.obj
+	del *.o
 	del *.lst

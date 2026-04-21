@@ -42,6 +42,26 @@
 *
 *	HEAP_ERROR_INITIALIZED : Machine heap is already initialized.
 *
+*	HEAP_ERROR_NO_MORE_ITEMS : No more enumerable blocks.
+*
+*	HEAP_HEADER_BLOCK_HEADPTR_BAD : The block chain head pointer
+*		is invalid.
+*
+*	HEAP_HEADER_BLOCK_FREEPTR_BAD : The free block chain head
+*		pointer is invalid.
+*
+*	HEAP_HEADER_BAD_MAGIC : The heap header magic number is
+*		invalid.
+*
+*	HEAP_HEADER_INVALID_SIZE : Heap size not derived from
+*		requested size.
+*
+*	HEAP_ERROR_TAIL_VALIDATION_FAILED : The debug tail data
+*		was corrupt.
+*
+*	HEAP_ERROR_INVALID_FNXT_LINK : A block in the free chain
+*		has an invalid forward link.
+*
 ************************************************************************
 *  PARAMETERS
 ************************************************************************
