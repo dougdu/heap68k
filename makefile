@@ -13,6 +13,7 @@ COFF_FLAGS=/Cu /coff /Fl /Fm /nologo
 ELF_FLAGS =/Cu /elf /Fl /Fm /nologo
 AINC      =/I.
 LD        =C:\git\worm68k\tools\ld.exe
+LDSCRIPT  =C:\git\worm68k\tools\cpm68k.ld
 AR        =C:\git\worm68k\tools\ar.exe
 RANLIB	  =C:\git\worm68k\tools\ranlib.exe
 SIM68KDIR =C:\git\worm68k\68KTools\sim68k
@@ -63,11 +64,11 @@ libheap-coff.a: $(HEAP_COFF_OBJS)
 	copy libheap-coff.a $(LIBDIR)
 
 heaptest-elf.68k:  heaptest.o libheap-elf.a
-	$(LD) -o $@ -Ttext 1700 heaptest.o -L.\ -lheap-elf
+	$(LD) -T $(LDSCRIPT) -Ttext 1700 heaptest.o -L $(LIBDIR) -lheap-elf -o $@ 
 	copy $@ $(SIM68KDIR)
 
 heaptest-coff.68k:  heaptest.obj libheap-coff.a
-	$(LD) -o $@ -Ttext 1700 heaptest.obj -L.\ -lheap-coff
+	$(LD) -T $(LDSCRIPT) -Ttext 1700 heaptest.obj -L $(LIBDIR) -lheap-coff -o $@
 	copy $@ $(SIM68KDIR)
 
 # Dependencies for COFF objects
