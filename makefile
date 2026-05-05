@@ -8,9 +8,9 @@
 
 .SUFFIXES: .a68 .s .bas .a
 
-ASM       =C:\git\worm68k\68KTools\debug\asm68k.exe
-COFF_FLAGS=/Cu /coff /Fl /Fm /nologo
-ELF_FLAGS =/Cu /elf /Fl /Fm /nologo
+ASM       =C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe
+COFF_FLAGS=/Cp /coff /Fl /Fm /nologo
+ELF_FLAGS =/Cx /elf /Fl /Fm /Zi /nologo
 AINC      =/I.
 LD        =C:\git\worm68k\tools\ld.exe
 LDSCRIPT  =C:\git\worm68k\tools\cpm68k.ld
@@ -47,7 +47,7 @@ HEAP_ELF_OBJS = GetMachineHeap.o GetMachineHeaps.o \
 	   HeapDebugFillOnFree.o HeapInvalidateBlockHeader.o
 
 
-all: coff
+all: elf
 
 elf: libheap-elf.a heaptest-elf.68k
 

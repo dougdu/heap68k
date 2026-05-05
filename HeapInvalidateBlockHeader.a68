@@ -18,6 +18,8 @@
 *  The block header of the specified block is zeroed.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public	__HeapInvalidateBlockHeader

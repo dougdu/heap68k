@@ -26,6 +26,8 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public	_HeapCompact

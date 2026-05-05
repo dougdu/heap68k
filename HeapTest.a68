@@ -1,3 +1,5 @@
+	.model	flat
+
 	include	heap.inc
 
 	extern	_MachineHeapInitialize

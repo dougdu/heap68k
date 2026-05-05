@@ -32,6 +32,8 @@
 *  extended error information, call HeapGetError.
 ************************************************************************
 
+	.model	flat
+
 	include	heap.inc
 
 	public	_GetMachineHeaps

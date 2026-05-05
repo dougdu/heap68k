@@ -25,6 +25,8 @@
 *  (no adjacent free block), the return value is zero.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public 	__HeapCoalesce

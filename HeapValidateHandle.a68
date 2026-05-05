@@ -21,6 +21,8 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public 	_HeapValidateHandle

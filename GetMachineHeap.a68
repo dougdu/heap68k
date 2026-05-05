@@ -21,6 +21,8 @@
 *  can call GetHeapError for extended error information.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public	_GetMachineHeap

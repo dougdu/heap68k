@@ -36,6 +36,8 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	include	heap.inc
 
 	public 	__HeapAutoValidateFlagCheck

@@ -19,6 +19,8 @@
 *  No return value, just the data structure is updated.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public 	__HeapUnlinkFromBlockChain

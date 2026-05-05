@@ -76,6 +76,8 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	public	_HeapGetError
 	extern 	__HeapError
 

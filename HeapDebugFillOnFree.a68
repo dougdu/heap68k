@@ -16,6 +16,8 @@
 *  No registers are altered
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public	__HeapDebugFillOnFree

@@ -24,6 +24,8 @@
 *  error information, call GetHeapError.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public 	_HeapDestroy

@@ -27,6 +27,8 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public	_HeapValidate
