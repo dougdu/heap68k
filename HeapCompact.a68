@@ -30,20 +30,10 @@
 
 	include heap.inc
 
-	public	_HeapCompact
-	extern 	__HeapAutoValidateFlagCheck, __HeapCoalesce
-
 	.code
 
-; Parameter offsets
-hHeap	equ 	8
-
-; Local offsets
-_HeapCompact:
-	link 	a6,#0				; Initialize stack frame
-	movem.l d1-d2/a0-a1,-(sp)		; Save registers
-
-	movea.l hHeap(a6),a0 			; A0 --> Heap Header
+_HeapCompact PROC USES d1-d2/a0-a1, hHeap:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap Header
 
 	; Run any configured heap validations
 	clr.l 	-(sp)				; Flag caller as not HeapFree
@@ -110,13 +100,10 @@ _hcpNextFindBucket:
 	beq.s 	_hcpExit			; Yes, return it
 	subi.l 	#BLK_HDR_SIZE,d0		; Nope, only return the data portion
 
-_hcpExit:
-	movem.l (sp)+,d1-d2/a0-a1		; Restore registers
-	unlk	a6
-	rts
-
 _hcpError:
 	clr.l 	d0
-	bra.s 	_hcpExit
+
+_hcpExit:
+	ENDP
 
 	end

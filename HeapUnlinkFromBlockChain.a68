@@ -23,20 +23,11 @@
 
 	include heap.inc
 
-	public 	__HeapUnlinkFromBlockChain
-
 	.code
 
-; Parameter offsets
-hHeap 	equ 	8
-pBlock 	equ 	12
-
-__HeapUnlinkFromBlockChain:
-	link	a6,#0				; Setup stack frame
-        movem.l a0-a3,-(sp)                     ; Save registers
-
-	movea.l hHeap(a6),a0 			; A0 --> Heap header
-	movea.l pBlock(a6),a1 			; A1 --> Block to unlink
+__HeapUnlinkFromBlockChain PROC USES a0-a3, hHeap:DWORD, pBlock:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap header
+	movea.l pBlock,a1 			; A1 --> Block to unlink
 
 	tst.l 	bhPrev(a1)			; Is there a back link?
 	bne.s	_hubcBackwardLink		; Yes, go
@@ -76,8 +67,6 @@ _hubcBothLinks:
 	clr.l 	bhNext(a1)
 
 _hubcDone:
-        movem.l (sp)+,a0-a3                     ; Restore registers
-	unlk 	a6
-        rts
+	ENDP
 
         end

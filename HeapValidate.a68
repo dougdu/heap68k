@@ -31,26 +31,18 @@
 
 	include heap.inc
 
-	public	_HeapValidate
-	extern 	_HeapValidateHandle, __HeapError
+	extern 	__HeapError
 
 	.code
 
-; Parameter offsets
-hHeap 	equ	8
-pBlock 	equ 	12
-
-_HeapValidate:
-	link 	a6,#0
-	movem.l a0-a3/d0-d1,-(sp)		; Save registers
-
-	movea.l hHeap(a6),a0 			; Get the heap handle
+_HeapValidate PROC USES a0-a3/d0-d1, hHeap:DWORD, pBlock:DWORD
+	movea.l hHeap,a0 			; Get the heap handle
 	move.l 	a0,-(sp)			; Push the heap handle
 	jsr 	_HeapValidateHandle		; Validate the heap handle
 	adda.l 	#4,sp
 	bne  	hvInvalidHeapHandle		; If it's not valid then abort
 
-	move.l 	pBlock(a6),d0 			; Get block to validate address
+	move.l 	pBlock,d0 			; Get block to validate address
 	beq 	hvValidateEntireHeap		; Validate entire heap if NULL
 
 	; Here the caller wants to validate a single block
@@ -202,13 +194,7 @@ hvExhaustedHeapCheckLoop:
 
 hvEndofFreeChain:
 	clr.l 	d0				; Flag no errors
-
-hvExit:
-	move.l	d0,__HeapError 			; Save error code
-	movem.l (sp)+,a0-a3/d0-d1		; Restore registers
-	unlk 	a6
-	rts
-
+	bra.s 	hvExit
 
 hvBlockHeapMismatch:
 	moveq 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,d0
@@ -248,6 +234,9 @@ hvInvalidFwdFreeLink:
 
 hvBlockNotFree:
 	move.l 	#HEAP_ERROR_BLOCK_NOT_FREE,d0
-	bra 	hvExit
+
+hvExit:
+	move.l	d0,__HeapError 			; Save error code
+	ENDP
 
 	end

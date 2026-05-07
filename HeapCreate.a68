@@ -83,8 +83,6 @@
 
 	include heap.inc
 
-	public	_HeapCreate
-	extern 	__HeapAutoValidateFlagCheck, _HeapAlloc
 	extern 	__MachineHeapHandle, __HeapError, __HeapId
 
 	.code

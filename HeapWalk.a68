@@ -44,22 +44,12 @@
 
 	include heap.inc
 
-	public	_HeapWalk
-	extern	__HeapAutoValidateFlagCheck
 	extern  __HeapError
 
 	.code
 
-; Parameter offsets
-hHeap 	equ	8
-pEntry	equ	12
-
-
-_HeapWalk:
-	link 	a6,#0				; Setup stack frame
-	movem.l a0-a2,-(sp)			; Save registers
-
-	movea.l hHeap(a6),a0 			; A0 --> Heap
+_HeapWalk PROC USES a0-a2, hHeap:DWORD, pEntry:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap
 
 	; Run any configured heap validations
 	clr.l 	-(sp)				; Flag caller as not HeapFree
@@ -69,7 +59,7 @@ _HeapWalk:
 	bne 	_hwErrorExit			; Validation failed
 
 
-	move.l 	pEntry(a6),a1 			; A1 --> Heap Block Header buffer
+	move.l 	pEntry,a1 			; A1 --> Heap Block Header buffer
 	cmpa.l 	#0,a1				; NULL pEntry pointer?
 	beq.s 	_hwNullParam			; Yes, abort
 	tst.l 	(a1)				; Is the block pointer NULL?
@@ -110,8 +100,6 @@ _hwErrorExit:
 	clr.l 	d0				; Flag error
 
 _hwExit:
-	movem.l (sp)+,a0-a2			; Restore registers
-	unlk 	a6
-	rts
+	ENDP
 
 	end

@@ -38,22 +38,13 @@
 
 	include heap.inc
 
-	public	_HeapAlloc
-	extern	__HeapAutoValidateFlagCheck, __HeapUnlinkFromFreeBlockChain, __HeapGetBucketOffset
+	extern	__HeapGetBucketOffset
 	extern	__HeapError
 
 	.code
 
-; Parameter offsets
-hHeap 	equ 	8
-lFlags	equ	12
-lBytes	equ	16
-
-_HeapAlloc:
-	link 	a6,#0
-	movem.l a0-a4/d1-d3,-(sp)       	; Save work registers
-
-	movea.l hHeap(a6),a0 			; Get heap handle
+_HeapAlloc PROC USES d1-d3/a0-a4, hHeap:DWORD, lFlags:DWORD, lBytes:DWORD
+	movea.l hHeap,a0 			; Get heap handle
 
 	; Run any configured heap validations
 	clr.l 	-(sp)				; Flag caller as not HeapFree
@@ -63,7 +54,7 @@ _HeapAlloc:
 	bne 	_haErrorExit1			; Validation failed
 
 	; Begin allocation
-	move.l 	lBytes(a6),d1 			; Get count of bytes to allocate
+	move.l 	lBytes,d1 			; Get count of bytes to allocate
 
 	; Compute actual size of the block we need
 	move.l 	d1,d2 				; D2 = working copy of request size
@@ -190,10 +181,14 @@ _haNoFwdBlock:
 _haFreeChainDone:
 
 _haProcessFlags:
-	move.l 	lFlags(a6),d2 			; Caller requested flags
+	move.l 	lFlags,d2 			; Caller requested flags
 	bsr 	__FillBlock
 	lea.l 	bhData(a1),a0			; Put memory pointer in a0
         bra.s   _haExit
+
+_haFreeBlockChainCorrupt:
+	move.l	#HEAP_ERROR_BLOCK_NOT_FREE,d0 	; Flag that the free block chain is corrupt
+	bra.s 	_haErrorExit
 
 _haNoMem:
 	move.l	#HEAP_ERROR_OUT_OF_MEMORY,d0 	; Not enough free space for request
@@ -206,13 +201,7 @@ _haErrorExit1:
 
 _haExit:
 	move.l	a0,d0 				; Return pointer in D0
-	movem.l (sp)+,a0-a4/d1-d3       	; Restore registers
-	unlk 	a6
-        rts
-
-_haFreeBlockChainCorrupt:
-	move.l	#HEAP_ERROR_BLOCK_NOT_FREE,d0 	; Flag that the free block chain is corrupt
-	bra.s 	_haErrorExit
+	ENDP
 
 
 ;hHeap 	equ 	A0

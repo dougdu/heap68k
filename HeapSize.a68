@@ -32,21 +32,12 @@
 
 	include	heap.inc
 
-	public	_HeapSize
-	extern 	__HeapAutoValidateFlagCheck
 	extern 	__HeapError
 
 	.code
 
-; Parameter offsets
-hHeap	equ	8
-pMem	equ	12
-
-_HeapSize:
-	link	a6,#0				; Setup stack frame
-	movem.l d1/a0-a1,-(sp)			; Save registers
-
-	movea.l hHeap(a6),a0 			; A0 --> Heap header
+_HeapSize PROC USES d1/a0-a1, hHeap:DWORD, pMem:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap header
 
 	; Run any configured heap validations
 	clr.l 	-(sp)				; Flag caller as not HeapFree
@@ -55,7 +46,7 @@ _HeapSize:
 	adda.l 	#8,sp
 	bne.s 	_hsError			; Validation failed
 
-	movea.l	pMem(a6),a1 			; A1 --> memory block
+	movea.l	pMem,a1 			; A1 --> memory block
 	suba.l 	#BLK_HDR_SIZE,a1 		; A1 --> block header
 
 	; Validate that the pointer is aligned as we expect
@@ -80,11 +71,7 @@ _HeapSize:
 	bne	_hsInvalidHeap			; Nope, abort
 
 	move.l 	bhRequestSize(a1),d0 		; Get the request size of the block
-
-_hsExit:
-	movem.l (sp)+,d1/a0-a1			; Restore registers
-	unlk 	a6
-	rts
+	bra.s 	_hsExit
 
 _hsInvalidHeap:
 	move.l 	#HEAP_ERROR_HANDLE_BLOCK_MISMATCH,__HeapError ; Heap Id's don't match
@@ -95,6 +82,8 @@ _hsBlockInvalid:
 
 _hsError:
 	move.l	#-1,d0				; Flag that an error occurred.
-	bra.s 	_hsExit
+
+_hsExit:
+	ENDP
 
         end
