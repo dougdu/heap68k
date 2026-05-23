@@ -1,0 +1,76 @@
+#
+# Makefile for building libheap-elf.a
+#
+# A library that supports a simple heap management API.
+#
+
+# Definitions for Assembler
+
+.SUFFIXES: .a68 .a
+
+ASM       =C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe
+ELF_FLAGS =/Cx /elf /Fl /Fm /Zi /nologo
+AINC      =/I.
+LD        =C:\git\worm68k\tools\elf\m68k-elf-ld.exe
+LDSCRIPT  =C:\git\worm68k\tools\cpm68k.ld
+AR        =C:\git\worm68k\tools\elf\m68k-elf-ar.exe
+RANLIB	  =C:\git\worm68k\tools\elf\m68k-elf-ranlib.exe
+LIBDIR    =C:\git\worm68k\lib
+INCDIR    =C:\git\worm68k\include
+BINDIR    =C:\git\worm68k\bin
+
+.a68.o:
+	$(ASM) $(ELF_FLAGS) $(AINC) /c $<
+
+# targets
+
+HEAP_ELF_OBJS = GetMachineHeap.o GetMachineHeaps.o \
+	   HeapAlloc.o HeapAutoValidateFlagCheck.o HeapCoalesce.o HeapCompact.o \
+	   HeapCreate.o HeapDestroy.o HeapFree.o HeapGetError.o HeapInitialize.o \
+	   HeapReAlloc.o HeapSize.o HeapUnlinkFromBlockChain.o \
+	   HeapUnlinkFromFreeBlockChain.o HeapValidate.o \
+	   HeapValidateHandle.o HeapWalk.o HeapData.o \
+	   HeapDebugFillOnFree.o HeapInvalidateBlockHeader.o
+
+
+all: libheap-elf.a heaptest.elf
+
+libheap-elf.a: $(HEAP_ELF_OBJS)
+	$(AR) -rscv $@ $**
+	copy Heap.inc $(INCDIR)
+	copy $@ $(LIBDIR)
+
+heaptest.elf:  heaptest.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 heaptest.o -L $(LIBDIR) -lheap-elf -o $@ 
+	copy $@ $(BINDIR)
+
+# Dependencies for ELF objects
+GetMachineHeap.o: GetMachineHeap.a68
+GetMachineHeaps.o: GetMachineHeaps.a68
+HeapAlloc.o: HeapAlloc.a68 heap.inc
+HeapAutoValidateFlagCheck.o: HeapAutoValidateFlagCheck.a68 heap.inc
+HeapCoalesce.o: HeapCoalesce.a68 heap.inc
+HeapCompact.o: HeapCompact.a68 heap.inc
+HeapCreate.o: HeapCreate.a68 heap.inc
+HeapData.o: HeapData.a68 heap.inc
+HeapDebugFillOnFree.o: HeapDebugFillOnFree.a68 heap.inc
+HeapDestroy.o: HeapDestroy.a68 heap.inc
+HeapFree.o: HeapFree.a68 heap.inc
+HeapGetError.o: HeapGetError.a68
+HeapInitialize.o: HeapInitialize.a68 heap.inc
+HeapInvalidateBlockHeader.o: HeapInvalidateBlockHeader.a68 heap.inc
+HeapReAlloc.o: HeapReAlloc.a68 heap.inc
+HeapSize.o: HeapSize.a68 heap.inc
+HeapUnlinkFromBlockChain.o: HeapUnlinkFromBlockChain.a68 heap.inc
+HeapUnlinkFromFreeBlockChain.o: HeapUnlinkFromFreeBlockChain.a68 heap.inc
+HeapValidate.o: HeapValidate.a68 heap.inc
+HeapValidateHandle.o: HeapValidateHandle.a68 heap.inc
+HeapWalk.o: HeapWalk.a68 heap.inc
+
+heaptest.o: heaptest.a68 heap.inc libheap-elf.a
+
+clean:
+	del *.68k
+	del *.a
+	del *.o
+	del *.lst
