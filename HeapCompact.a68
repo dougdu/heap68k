@@ -99,6 +99,7 @@ _hcpNextFindBucket:
 	tst.l 	d0 				; Is final size 0?
 	beq.s 	_hcpExit			; Yes, return it
 	subi.l 	#BLK_HDR_SIZE,d0		; Nope, only return the data portion
+	bra.s 	_hcpExit
 
 _hcpError:
 	clr.l 	d0
