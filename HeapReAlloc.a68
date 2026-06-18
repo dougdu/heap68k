@@ -57,30 +57,17 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
-	public	_HeapReAlloc
-	extern 	__HeapAutoValidateFlagCheck
-	extern	__HeapUnlinkFromFreeBlockChain, __HeapUnlinkFromBlockChain, __HeapGetBucketOffset
-	extern	__HeapInvalidateBlockHeader
-	extern	__HeapCoalesce
-	extern	__HeapDebugFillOnFree
-	extern	_HeapAlloc, _HeapFree
+	extern	__HeapGetBucketOffset
 	extern	__HeapError
 
 	.code
 
-; Parameter offsets
-hHeap 	equ 	8
-lFlags	equ	12
-pMem 	equ 	16
-lBytes 	equ 	20
-
-_HeapReAlloc:
-	link 	a6,#0
-	movem.l d1-d4/a0-a4,-(sp)		; Save work registers
-
-	movea.l hHeap(a6),a0 			; A0 --> Heap
+_HeapReAlloc PROC USES d1-d4/a0-a4, hHeap:DWORD, lFlags:DWORD, pMem:DWORD, lBytes:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap
 
 	; Run any configured heap validations
 	clr.l 	-(sp)				; Flag caller as not HeapFree
@@ -90,7 +77,7 @@ _HeapReAlloc:
 	bne 	_hrErrorExit			; Validation failed
 
 	; Begin ReAlloc processing
-	move.l 	pMem(a6),a1 			; Get memory pointer
+	move.l 	pMem,a1 			; Get memory pointer
 	cmpa.l 	#0,a1 				; NULL pointer?
 	beq 	_hrInvalidBlock			; Yes, treat as invalid block pointer
 	suba.l 	#BLK_HDR_SIZE,a1 		; Get pointer to block
@@ -117,7 +104,7 @@ _HeapReAlloc:
 	bne 	_hrInvalidHeap			; Nope, abort
 
 	; Compute the size of block needed to satisfy the request
-	move.l 	lBytes(a6),d1 			; D1 = size of required block
+	move.l 	lBytes,d1 			; D1 = size of required block
 	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
 	beq.s 	_hrTailCheckingNotEnabled
 	addi.l 	#HEAP_TAIL_SIZE,d1		; Reserve space for block tail debug data
@@ -217,7 +204,7 @@ _hrspFreeChainDone:
 
 	; Update A1's size and requested size
 	move.l 	d1,bhSize(a1)			; Grow A1 to exactly D1
-	move.l 	lBytes(a6),bhRequestSize(a1)	; Set new requested size
+	move.l 	lBytes,bhRequestSize(a1)	; Set new requested size
 	bra 	_hrInPlaceGrowFill		; Shared fill + tail + return
 
 _hrgbConsumeNextBlock:
@@ -237,14 +224,14 @@ _hrgbConsumeNextBlock:
 
 	; Grow A1 to absorb A2's full size and update requested size
 	add.l 	d4,bhSize(a1)			; Expand A1 by full size of absorbed block
-	move.l 	lBytes(a6),bhRequestSize(a1)	; Set new requested size
+	move.l 	lBytes,bhRequestSize(a1)	; Set new requested size
 
 _hrInPlaceGrowFill:
 	; HEAP_ENABLE_DEBUG_FILL takes precedence over HEAP_ZERO_MEMORY
 	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
 	beq.s 	_hrcbChkZeroMem
 	lea 	bhData(a1,d3.l),a2		; A2 --> first new byte to fill
-	move.l 	lBytes(a6),d4			; D4 = count of new bytes
+	move.l 	lBytes,d4			; D4 = count of new bytes
 	sub.l 	d3,d4
 	ble.s 	_hrcbNoZeroFill			; Skip if not actually growing
 	subq.l 	#1,d4
@@ -257,7 +244,7 @@ _hrcbDebugFillLoop:
 
 _hrcbChkZeroMem:
 	; Check HEAP_ZERO_MEMORY: zero bytes between old and new requested sizes
-	move.l 	lFlags(a6),d0			; Check caller flags
+	move.l 	lFlags,d0			; Check caller flags
 	btst.l 	#FLG_HEAP_ZERO_MEMORY,d0
 	bne.s 	_hrcbZeroMemCheck
 	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
@@ -265,7 +252,7 @@ _hrcbChkZeroMem:
 
 _hrcbZeroMemCheck:
 	lea 	bhData(a1,d3.l),a2		; A2 --> first new byte to zero
-	move.l 	lBytes(a6),d4			; D4 = count of bytes to zero
+	move.l 	lBytes,d4			; D4 = count of bytes to zero
 	sub.l 	d3,d4				; D4 = new_request - old_request
 	ble.s 	_hrcbNoZeroFill			; Skip if not growing (safety)
 	subq.l 	#1,d4				; Adjust for dbra
@@ -299,15 +286,15 @@ _hrcbNoTailFill:
 
 _hrgbNextBlockNotFree:
 	; Cannot grow in place. Check if in-place-only is required.
-	move.l 	lFlags(a6),d0 			; Check caller flags
+	move.l 	lFlags,d0 			; Check caller flags
 	btst.l 	#FLG_HEAP_REALLOC_IN_PLACE_ONLY,d0
 	bne.s 	_hrInPlaceOnlyFailed
 	btst.b 	#FLG_HEAP_REALLOC_IN_PLACE_ONLY,hhFlags+3(a0)
 	bne.s 	_hrInPlaceOnlyFailed
 
 	; Allocate a new block large enough for the request
-	move.l 	lBytes(a6),-(sp)			; Push lBytes
-	move.l 	lFlags(a6),-(sp)			; Push lFlags
+	move.l 	lBytes,-(sp)			; Push lBytes
+	move.l 	lFlags,-(sp)			; Push lFlags
 	move.l 	a0,-(sp)				; Push hHeap
 	jsr 	_HeapAlloc				; Allocate new block
 	adda.l 	#12,sp
@@ -424,7 +411,7 @@ _hrsbNoSplit:
 	; Debug fill surrendered bytes [lBytes rounded-down .. old bhRequestSize) with BAADF00D
 	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
 	beq.s 	_hrsbUpdateReqSize
-	move.l 	lBytes(a6),d3			; D3 = new requested size
+	move.l 	lBytes,d3			; D3 = new requested size
 	andi.l 	#NOT(3),d3			; Round down to nearest longword (preserve user data)
 	lea 	bhData(a1,d3.l),a2		; A2 --> fill start
 	move.l 	bhRequestSize(a1),d4		; D4 = old requested size
@@ -438,7 +425,7 @@ _hrsbNoSplitFillLoop:
 	dbra 	d4,_hrsbNoSplitFillLoop
 
 _hrsbUpdateReqSize:
-	move.l 	lBytes(a6),bhRequestSize(a1)	; Set new requested size
+	move.l 	lBytes,bhRequestSize(a1)	; Set new requested size
 
 	; Rewrite tail guard at new position if tail checking is enabled
 	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
@@ -465,12 +452,12 @@ _hrUseExistingBlock:
 	; Here if the existing block size exactly satisfies the request.
 	; Save old requested size and update to new.
 	move.l 	bhRequestSize(a1),d3 		; D3 = old requested size
-	move.l 	lBytes(a6),bhRequestSize(a1)	; Update requested size
+	move.l 	lBytes,bhRequestSize(a1)	; Update requested size
 
 	; HEAP_ENABLE_DEBUG_FILL takes precedence over HEAP_ZERO_MEMORY
 	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
 	beq.s 	_hrueChkZeroMem
-	move.l 	lBytes(a6),d4			; D4 = new requested size
+	move.l 	lBytes,d4			; D4 = new requested size
 	cmp.l 	d3,d4				; New > old (growing)?
 	ble.s 	_hrueNoZeroFill			; No, skip CD fill
 	lea 	bhData(a1,d3.l),a2		; A2 --> first new byte to fill
@@ -485,7 +472,7 @@ _hrueDebugGrowFillLoop:
 
 _hrueChkZeroMem:
 	; Check HEAP_ZERO_MEMORY: zero bytes from old to new requested size
-	move.l 	lFlags(a6),d0 			; Check caller flags
+	move.l 	lFlags,d0 			; Check caller flags
 	btst.l 	#FLG_HEAP_ZERO_MEMORY,d0
 	bne.s 	_hrueZeroMemCheck
 	btst.b 	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0)
@@ -508,7 +495,7 @@ _hrueNoZeroFill:
 	; Debug fill surrendered bytes [round_down4(lBytes) .. round_down4(old)) with BAADF00D
 	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
 	beq.s 	_hrueNoShrinkFill
-	move.l 	lBytes(a6),d4			; D4 = new requested size
+	move.l 	lBytes,d4			; D4 = new requested size
 	andi.l 	#NOT(3),d4			; Round down to nearest longword
 	move.l 	d3,d0				; D0 = old requested size
 	andi.l 	#NOT(3),d0			; Round down to nearest longword
@@ -555,8 +542,6 @@ _hrErrorExit:
 	clr.l 	d0 				; return NULL
 
 _hrExit:
-	movem.l (sp)+,d1-d4/a0-a4		; Restore registers
-	unlk 	a6
-	rts
+	ENDP
 
         end

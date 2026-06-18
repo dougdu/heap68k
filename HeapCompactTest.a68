@@ -1,0 +1,58 @@
+************************************************************************
+*  HeapCompactTest
+*
+*  Minimal test: initialize the machine heap, then call HeapCompact
+*  on it.  After the call, D0 holds the size (bytes) of the largest
+*  free block.  Inspect D0 in the debugger at the `done` label.
+************************************************************************
+
+	.model	flat
+
+	include	heap.inc
+
+	.code
+
+lowtpa	equ	$00
+hightpa	equ	$04
+bsstart	equ	$18
+bslen	equ	$1C
+
+STKSIZE	equ	$200
+
+start:
+	; Get base page pointer pushed by loader
+	move.l 	(sp)+,a0 		; A0 --> base page
+
+	; Set up user stack at top of TPA
+	move.l 	hightpa(a0),d1
+	movea.l d1,a7
+
+	; Compute heap start (just past BSS) and size
+	move.l 	bsstart(a0),d2
+	add.l 	bslen(a0),d2 		; D2 = heap start
+	sub.l 	d2,d1 			; D1 = hightpa - heapstart
+	subi.l 	#STKSIZE,d1 		; reserve stack
+	subi.l 	#96,d1 			; alignment slop
+
+	; MachineHeapInitialize(options=0, start, size)
+	move.l 	d1,-(sp)		; size
+	move.l 	d2,-(sp)		; start
+	clr.l 	-(sp)			; options
+	jsr 	_MachineHeapInitialize
+	adda.l 	#12,sp
+	move.l 	d0,hMachineHeap 	; save handle
+
+	; HeapCompact(hHeap) -> D0 = size of largest free block
+	move.l 	hMachineHeap,-(sp)
+	jsr 	_HeapCompact
+	adda.l 	#4,sp
+	move.l 	d0,largestFree 		; <-- inspect this / D0 in debugger
+
+done:	jmp 	done
+
+	.bss
+
+hMachineHeap	ds.l 	1
+largestFree	ds.l 	1
+
+	end

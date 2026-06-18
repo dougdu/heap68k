@@ -186,4 +186,27 @@ HEAP_HEADER_INVALID_SIZE		equ 	$12 	; Heap size not derived from reqested size
 HEAP_ERROR_TAIL_VALIDATION_FAILED 	equ 	$13 	; The debug tail data was corrupt
 HEAP_ERROR_INVALID_FNXT_LINK		equ 	$14 	; Block in free chain has an invalid forward link
 
+************************************************************************
+* Heap API Prototypes
+************************************************************************
+_GetMachineHeap			PROTO
+_GetMachineHeaps		PROTO	, NumHeaps:DWORD, pHeaps:DWORD
+_HeapAlloc			PROTO	, hHeap:DWORD, lFlags:DWORD, lBytes:DWORD
+_HeapCompact			PROTO	, hHeap:DWORD
+_HeapCreate			PROTO	, lOptions:DWORD, lSize:DWORD
+_HeapDestroy			PROTO	, hHeap:DWORD
+_HeapFree			PROTO	, hHeap:DWORD, pMem:DWORD
+_HeapReAlloc			PROTO	, hHeap:DWORD, lFlags:DWORD, pMem:DWORD, lBytes:DWORD
+_HeapSize			PROTO	, hHeap:DWORD, pMem:DWORD
+_HeapValidate			PROTO	, hHeap:DWORD, pBlock:DWORD
+_HeapValidateHandle		PROTO	, hHeap:DWORD
+_HeapWalk			PROTO	, hHeap:DWORD, pEntry:DWORD
+_MachineHeapInitialize		PROTO	, lOptions:DWORD, lStart:DWORD, lSize:DWORD
+__HeapAutoValidateFlagCheck	PROTO	, hHeap:DWORD, fFree:DWORD
+__HeapCoalesce			PROTO	, hHeap:DWORD, pBlock:DWORD
+__HeapDebugFillOnFree		PROTO	, pBlock:DWORD
+__HeapInvalidateBlockHeader	PROTO	, hHeap:DWORD, pBlock:DWORD
+__HeapUnlinkFromBlockChain	PROTO	, hHeap:DWORD, pBlock:DWORD
+__HeapUnlinkFromFreeBlockChain	PROTO	, hHeap:DWORD, pBlock:DWORD
+
 	.list

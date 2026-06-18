@@ -6,6 +6,8 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	public 	__HeapId, __MachineHeapHandle, __HeapError
 
         .data

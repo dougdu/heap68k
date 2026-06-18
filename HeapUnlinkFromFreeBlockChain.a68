@@ -19,24 +19,19 @@
 *  No return value, just the data structure is updated.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
-	public 	__HeapUnlinkFromFreeBlockChain, __HeapGetBucketOffset
+	public 	__HeapGetBucketOffset
 
 	.code
 
-; Parameter offsets
-hHeap 	equ 	8
-pBlock	equ 	12
-
-__HeapUnlinkFromFreeBlockChain:
-	link 	a6,#0
-        movem.l a0-a3,-(sp)                     ; Save registers
-
-	movea.l pBlock(a6),a1			; A1 --> block to unlink
+__HeapUnlinkFromFreeBlockChain PROC USES a0-a3, hHeap:DWORD, pBlock:DWORD
+	movea.l pBlock,a1			; A1 --> block to unlink
 	btst.b 	#FLG_FREE_BIT,bhFlags+3(a1)	; Is it a free block?
 	beq.s 	_hufbcDone			; Nope, abort
-	movea.l hHeap(a6),a0 			; A0 --> Heap header
+	movea.l hHeap,a0 			; A0 --> Heap header
 
 	; Compute bucket offset for this block into D0 (needed when updating a head pointer)
 	move.l 	bhRequestSize(a1),d0		; D0 = data area size of block
@@ -79,9 +74,7 @@ _hufbcBothLinks:
 	clr.l 	bhFreeNext(a1)
 
 _hufbcDone:
-        movem.l (sp)+,a0-a3                     ; Restore registers
-	unlk 	a6
-        rts
+	ENDP
 
 ************************************************************************
 *  __HeapGetBucketOffset

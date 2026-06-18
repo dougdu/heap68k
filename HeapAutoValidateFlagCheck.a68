@@ -36,27 +36,20 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	include	heap.inc
 
-	public 	__HeapAutoValidateFlagCheck
-	extern 	_HeapValidate, _HeapValidateHandle
 	extern	__HeapError
 
 	.code
 
 HEAP_AUTO_VALIDATE_FLGS	equ	(HEAP_FREE_CHECKING_ENABLED or HEAP_VALIDATE_PARAMETERS or HEAP_VALIDATE_ALL_ENABLED)
 
-; Parameter offsets
-hHeap	equ 	8
-fFree	equ 	12
-
-__HeapAutoValidateFlagCheck:
-	link 	a6,#0				; Set up stack frame
-	movem.l d0/a0, -(sp)			; Save registers
-
+__HeapAutoValidateFlagCheck PROC USES d0/a0, hHeap:DWORD, fFree:DWORD
 	clr.l	__HeapError			; Clear Heap Error
 
-	movea.l hHeap(a6),a0 			; A0 --> Heap header
+	movea.l hHeap,a0 			; A0 --> Heap header
 	cmpa.l 	#0,a0				; NULL handle?
 	beq.s 	_havfcNullHandle		; Yes, abort
 	move.l 	hhFlags(a0),d0 			; Get heap flags
@@ -80,7 +73,7 @@ _havfcNoFullValidationAlways:
 	; on HeapFree calls only?
 	btst.l 	#FLG_HEAP_ENABLE_FREE_CHECK,d0 	; Full validation on HeapFree ?
 	beq.s	_havfcNoFullValidation		; Nope, skip
-	tst.l 	fFree(a6)			; Is it a HeapFree API call
+	tst.l 	fFree				; Is it a HeapFree API call
 	bne.s 	_havfcFullValidation		; Yes, go do full validation
 
 _havfcNoFullValidation:
@@ -98,8 +91,6 @@ _havfcNullHandle:
 	moveq 	#HEAP_ERROR_INVALID_HANDLE,d0	; Set NZ condition
 						; fall through to _havfcExit
 _havfcExit:
-	movem.l (sp)+,d0/a0			; Restore registers (CCR unaffected by movem)
-	unlk 	a6
-	rts
+	ENDP					; MOVEM (SP)+,D0/A0 does not affect CCR
 
 	end

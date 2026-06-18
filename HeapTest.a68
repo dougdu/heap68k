@@ -1,10 +1,8 @@
+	.model	flat
+
 	include	heap.inc
 
-	extern	_MachineHeapInitialize
-	extern 	_HeapCreate, _HeapDestroy
-	extern 	_HeapAlloc, _HeapReAlloc, _HeapFree
-	extern 	_HeapCompact, _GetMachineHeap, _GetMachineHeaps
-	extern  _HeapWalk, _HeapGetError, _HeapSize
+	extern _HeapGetError
 
 	.code
 

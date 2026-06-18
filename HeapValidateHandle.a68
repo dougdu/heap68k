@@ -21,21 +21,16 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
-	public 	_HeapValidateHandle
 	extern 	__HeapError
 
 	.code
 
-; Parameter offsets
-hHeap 	equ 	8
-
-_HeapValidateHandle:
-	link 	a6,#0
-	movem.l d0-d1/a0-a1,-(sp)		; Save registers
-
-	movea.l hHeap(a6),a0 			; A0 = Heap handle
+_HeapValidateHandle PROC USES d0-d1/a0-a1, hHeap:DWORD
+	movea.l hHeap,a0 			; A0 = Heap handle
 
 	; Reject NULL handle immediately
 	cmpa.l 	#0,a0
@@ -111,8 +106,6 @@ hvhInvalidBlockChainHead:			; The block chain head pointer is invalid
 hvhExit:
 	; CCR is already correct: all error paths execute move.l #nonzero,__HeapError
 	; (which sets Z=0) before branching here; success paths arrive via beq (Z=1).
-	movem.l (sp)+,d0-d1/a0-a1		; Restore registers (movem does not affect CCR)
-	unlk 	a6
-	rts
+	ENDP
 
 	end

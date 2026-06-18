@@ -16,19 +16,14 @@
 *  No registers are altered
 ************************************************************************
 
-	include heap.inc
+	.model	flat
 
-	public	__HeapDebugFillOnFree
+	include heap.inc
 
 	.code
 
-; Parameter offsets
-pBlock	equ	8
-
-__HeapDebugFillOnFree:
-	link 	a6,#0				; Set up stack frame
-	movem.l d0/a0,-(sp)			; Save registers
-	movea.l pBlock(a6),a0 			; A0 --> start of block
+__HeapDebugFillOnFree PROC USES d0/a0, pBlock:DWORD
+	movea.l pBlock,a0 			; A0 --> start of block
 	move.l 	bhSize(a0),d0			; D0 = count of bytes to blank
 	lea 	bhData(a0),a0			; A0 --> start of data area
 	subi.l 	#BLK_HDR_SIZE,d0
@@ -43,8 +38,6 @@ _hdfofLoop:
 	bcc.s 	_hdfofLoop			; Branch if more to fill (32-bit count)
 
 _hdfofExit:
-	movem.l (sp)+,d0/a0 			; Restore registers
-	unlk 	a6
-	rts
+	ENDP
 
 	end

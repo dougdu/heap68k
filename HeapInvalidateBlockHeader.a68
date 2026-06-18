@@ -18,6 +18,8 @@
 *  The block header of the specified block is zeroed.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
 	public	__HeapInvalidateBlockHeader
@@ -26,28 +28,20 @@
 
 clBlkHdrLen	equ 	BLK_HDR_SIZE shr 2	; Count of long words in a header
 
-; Parameter offsets
-hHeap 	equ 	8
-pBlock	equ 	12
-
-__HeapInvalidateBlockHeader:
-	link 	a6,#0				; Set up stack frame
-	movem.l d0-d1/a0,-(sp)			; Save registers
+__HeapInvalidateBlockHeader PROC USES d0-d1/a0, hHeap:DWORD, pBlock:DWORD
 	clr.l 	d1 				; Default fill pattern = 0
-	movea.l hHeap(a6),a0 			; A0 --> heap handle
+	movea.l hHeap,a0 			; A0 --> heap handle
 	btst.b 	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0) ; Debug Fill enabled?
 	beq.s 	_hibhNoDebugFill
 	move.l 	#BAADFOOD,d1 			; Use debug fill pattern
 
 _hibhNoDebugFill:
-	movea.l pBlock(a6),a0			; A0 --> Block header
+	movea.l pBlock,a0			; A0 --> Block header
 	move.l 	#clBlkHdrLen-1,d0		; Count of long words in a block header (adj for dbra)
 
 _hibhLoop:
 	move.l 	d1,(a0)+			; Initialize 4 bytes
 	dbra 	d0,_hibhLoop			; Loop until done
-	movem.l (sp)+,d0-d1/a0			; Restore registers
-	unlk 	a6
-	rts
+	ENDP
 
 	end

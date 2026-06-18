@@ -32,20 +32,15 @@
 *  extended error information, call HeapGetError.
 ************************************************************************
 
+	.model	flat
+
 	include	heap.inc
 
-	public	_GetMachineHeaps
 	extern 	__MachineHeapHandle, __HeapError
 
 	.code
 
-; Parameter offsets
-NumHeaps equ	8
-pHeaps	 equ 	12
-
-_GetMachineHeaps:
-	link 	a6,#0				; Set up stack frame
-	movem.l d1-d2/a0-a3,-(sp)		; Save registers
+_GetMachineHeaps PROC USES d1-d2/a0-a3, NumHeaps:DWORD, pHeaps:DWORD
 	clr.l 	__HeapError			; Clear status
 	move.l 	__MachineHeapHandle,d0		; Get the machine heap handle
 	bne.s 	_gmhsIsInitialized		; Abort if it isn't initialized
@@ -59,8 +54,8 @@ _gmhsIsInitialized:
 	moveq	#1,d2 				; D2 = # of heaps
 
 	; Get parameters
-	movea.l pHeaps(a6),a1			; A1 --> caller supplied handle buffer
-	move.l 	NumHeaps(a6),d1 		; D1 = size of buffer in handles
+	movea.l pHeaps,a1			; A1 --> caller supplied handle buffer
+	move.l 	NumHeaps,d1 			; D1 = size of buffer in handles
 	beq.s 	_gmhsHeapScan			; Skip storing if no room requested
 	cmpa.l 	#0,a1				; NULL buffer pointer?
 	beq.s 	_gmhsHeapScan			; Yes, just count; don't store
@@ -93,8 +88,6 @@ _gmhsEndOfBlockChain:
 	move.l 	d2,d0 				; Return total count of handles
 
 _gmhsExit:
-	movem.l (sp)+,d1-d2/a0-a3		; Restore registers
-	unlk 	a6
-	rts
+	ENDP
 
 	end

@@ -24,22 +24,17 @@
 *  error information, call GetHeapError.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
-	public 	_HeapDestroy
-	extern 	__HeapAutoValidateFlagCheck, _HeapFree
 	extern 	__MachineHeapHandle, __HeapError
 
 	.code
 
 hhllen	equ 	(HEAP_HDR_SIZE shr 2)-1
 
-; Parameter offsets
-hHeap	equ 	8
-
-_HeapDestroy:
-	link 	a6,#0				; Set up stack frame
-	movem.l d1-d2/a0,-(sp)			; Save registers
+_HeapDestroy PROC USES d1-d2/a0, hHeap:DWORD
 
 	; All private heaps are created from the machine heap
 	move.l 	__MachineHeapHandle,d0		; Get machine heap handle
@@ -55,7 +50,7 @@ _hdMachineHeapInitialized:
 	adda.l 	#8,sp
 	bne 	_hdError			; Validation failed
 
-	move.l 	hHeap(a6),d1			; Get handle to heap to destroy
+	move.l 	hHeap,d1			; Get handle of heap to destroy
 	bne.s 	_hdHeapHandleNotNull		; Trap NULL handle
 	move.l 	#HEAP_ERROR_INVALID_HANDLE,d0 	; Return invalid handle error
 	bra.s 	_hdSetError			; Set error code and exit
@@ -106,8 +101,6 @@ _hdError:
 	clr.l 	d0 				; Return FALSE
 
 _hdExit:
-	movem.l (sp)+,d1-d2/a0			; Restore registers
-	unlk 	a6
-	rts
+	ENDP
 
         end

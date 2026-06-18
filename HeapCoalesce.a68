@@ -25,24 +25,17 @@
 *  (no adjacent free block), the return value is zero.
 ************************************************************************
 
+	.model	flat
+
 	include heap.inc
 
-	public 	__HeapCoalesce
-	extern  __HeapUnlinkFromBlockChain, __HeapUnlinkFromFreeBlockChain
-	extern  __HeapInvalidateBlockHeader, __HeapDebugFillOnFree, __HeapGetBucketOffset
+	extern  __HeapGetBucketOffset
 
 	.code
 
-; Parameter offsets
-hHeap		equ	8			; Handle to the heap
-pBlock 		equ	12			; Pointer to block to coalesce
-
-__HeapCoalesce:
-	link 	a6,#0				; Set up stack frame
-	movem.l	d1/a0-a3,-(sp)			; Save registers
-
-	movea.l hHeap(a6),a0 			; A0 --> Heap header
-	movea.l	pBlock(a6),a1 			; A1 --> block to coalesce
+__HeapCoalesce PROC USES d1/a0-a3, hHeap:DWORD, pBlock:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap header
+	movea.l	pBlock,a1 			; A1 --> block to coalesce
 
 	; Check to see if we can coalesce with adjacent blocks
 
@@ -240,8 +233,6 @@ _hclNoCoalesce:
 	clr.l 	d0				; Flag that no coalescing occurred
 
 _hclExit:
-	movem.l (sp)+,d1/a0-a3			; Restore registers
-	unlk 	a6
-	rts
+	ENDP
 
         end

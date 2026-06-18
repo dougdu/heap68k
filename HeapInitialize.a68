@@ -81,21 +81,15 @@
 *
 ************************************************************************
 
+	.model	flat
+
 	include	heap.inc
 
-	public 	_MachineHeapInitialize
 	extern 	__MachineHeapHandle, __HeapError, __HeapId
 
 	.code
 
-; Parameter offsets
-lOptions	equ 	8
-lStart 		equ 	12
-lSize		equ	16
-
-_MachineHeapInitialize:
-	link 	a6,#0
-	movem.l d1-d2/a0-a1,-(sp)		; Save registers
+_MachineHeapInitialize PROC USES d1-d2/a0-a1, lOptions:DWORD, lStart:DWORD, lSize:DWORD
 
 	clr.l	__HeapError			; Clear Heap Error
 
@@ -103,7 +97,7 @@ _MachineHeapInitialize:
 	bne 	mhi_AlreadyInitialized		; Yup, report an error
 
 	; Compute the actual size of the initial (FREE) block
-	move.l 	lSize(a6),d1 			; Get requested size
+	move.l 	lSize,d1 			; Get requested size
         add.l   #BLK_HDR_SIZE-1,d1		; Align the initial block on a block boundary
         andi.b  #NOT(BLK_HDR_SIZE-1),d1
 	add.l 	#BLK_HDR_SIZE,d1 		; Add in the size of block's header
@@ -114,7 +108,7 @@ _MachineHeapInitialize:
 	addi.l 	#HEAP_END_SIZE,d1 		; Add in the size of the end of heap header
 
 	; Compute the start address of the machine heap
-	move.l 	lStart(a6),d0			; Get the supplied start of free RAM
+	move.l 	lStart,d0			; Get the supplied start of free RAM
         add.l   #BLK_HDR_SIZE-1,d0		; Align on a block boundary
         andi.b  #NOT(BLK_HDR_SIZE-1),d0
 	movea.l d0,a0 				; A0 --> start of heap
@@ -131,10 +125,10 @@ mhi_EndMarkerInitLoop:
 
 	; Initialize the heap header
 	move.l 	#HEAP_MAGIC,hhMagic(a0)		; Initialize MAGIC number
-	move.l	lOptions(a6),hhFlags(a0)	; Save requested heap flags
+	move.l	lOptions,hhFlags(a0)		; Save requested heap flags
 	move.l 	__HeapId,d0 			; Get heap Id
 	or.l 	d0,hhFlags(a0) 			; Mask in heap Id with flags
-	move.l 	lSize(a6),hhRequestSize(a0)	; Save requested heap size
+	move.l 	lSize,hhRequestSize(a0)		; Save requested heap size
 	move.l 	d1,hhSize(a0)			; Save the machine heap size
 	lea.l 	hhHeapData(a0),a1		; A1 --> Initial free block
 	move.l 	a1,hhHeapHead(a0)		; Initialize head of the block list.
@@ -238,17 +232,15 @@ mhi_BaadfoodLoop:
 mhi_Exit:
 	move.l 	a0,__MachineHeapHandle		; Update machine heap handle
 	move.l 	a0,d0 				; Return heap handle in D0
-
-mhi_ErrorExit:
-	movem.l (sp)+,d1-d2/a0-a1		; Restore registers
-	unlk	a6
-	rts
+	bra.s 	mhi_ErrorExit			; Return success
 
 mhi_AlreadyInitialized:
 	move.l 	#HEAP_ERROR_INITIALIZED,__HeapError ; Init error code
 
 mhi_Error:
 	clr.l 	d0				; NULL heap handle
-	bra.s 	mhi_ErrorExit			; Return failure
+
+mhi_ErrorExit:
+	ENDP
 
         end
