@@ -1,6 +1,6 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** Phases A–3 complete — harness + kit + block-path + SOA suites validated (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa` green via `nmake test`); suite build-out (Phases 4–8) pending
+**Status:** Phases A–4 complete — harness + kit + block-path + SOA + debug/validation suites validated (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug` green via `nmake test`); suite build-out (Phases 5–8) pending
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
@@ -471,7 +471,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 1 | Kit & result convention | ✅ | [`heaptestkit.inc`](heaptestkit.inc) (all macros) + [`test_kit.a68`](test_kit.a68) exercising every macro; builds `/Cx` and passes via `nmake test` (2026-07-21) |
 | 2 | Block-path functional suite | ✅ | [`test_create.a68`](test_create.a68) (§9.1) + [`test_block.a68`](test_block.a68) (§9.2–§9.5, SOA disabled) pass via `nmake test` (2026-07-21) |
 | 3 | SOA suite integration | ✅ | [`test_soa.a68`](test_soa.a68) refactored onto the kit from `HeapSmallTest.a68` (9 phases); passes headless via `nmake test` (2026-07-21) |
-| 4 | Debug & validation suite | ⬜ | `test_debug` covers §9.6 (debug-fill alloc/free, tail-guard, auto-validate) + corrupt-and-detect |
+| 4 | Debug & validation suite | ✅ | [`test_debug.a68`](test_debug.a68) covers §9.6 (debug-fill alloc/free, tail-guard, auto-validate) + corrupt-and-detect (block magic, chain fwd-link, free-chain back-link, SOA slab/arena magic); passes via `nmake test` (2026-07-21) |
 | 5 | Error-code & near-miss coverage | ⬜ | §9.7 every reachable code asserted; §9.8 near-miss/foreign pointers classified with **no crash** |
 | 6 | Stress / soak | ⬜ | `test_stress` (§9.9) fixed-seed mix + invariant checks + high-water compare; deterministic across runs |
 | 7 | Runner polish & CI | ⬜ | one-command `nmake test`; decoded summary; nonzero exit on fail; port/timeout/teardown robust; README |
@@ -539,10 +539,19 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
       manual `sid68k` procedure is retired for CI and kept in §10.3 for debugging.  The
       standalone `HeapSmallTest.a68`/`heapsmalltest.elf` is retained (unchanged) as a reference.
 
-### Phase 4 — Debug & validation suite  ⬜
-- [ ] `test_debug.a68`: debug-fill on alloc (`CDCDCDCD`) and on free (`BAADF00D`,
-      control-word-after-poison for cells); tail-guard overrun detection; auto-validate-on-call.
-- [ ] Corrupt-and-detect for block header magic, free links, counts, slab magic, arena magic.
+### Phase 4 — Debug & validation suite  ✅ (2026-07-21)
+- [x] [`test_debug.a68`](test_debug.a68): debug-fill on alloc (`CDCDCDCD`, whole cell / requested
+      block bytes) and on free (`BAADF00D`, control-word-after-poison for cells — `heapDF` uses
+      `HEAP_DISABLE_COALESCE_ON_FREE` so the free path always reaches the fill); tail-guard
+      overrun detection (`HEAP_TAIL_CHECKING_ENABLED` → `TAIL_VALIDATION_FAILED`, then repair);
+      auto-validate-on-call (`HEAP_VALIDATE_ALL_ENABLED` refuses a call while the heap is corrupt).
+- [x] Corrupt-and-detect via `_HeapValidate`: block header magic → `INVALID_BLOCK`, chain
+      forward link → `INVALID_NEXT_LINK`, free-chain back link → `INVALID_FPREV_LINK`, SOA slab
+      magic → `SLAB_CORRUPT`, arena magic → `SOA_ARENA_CORRUPT`; each repaired → revalidates clean.
+      Trap learned: `_HeapValidate` runs `_HeapValidateHandle` first, which checks `hhHeapHead`
+      (→ `HEADER_BLOCK_HEADPTR_BAD $0F`) and bucket-head magics (→ `HEADER_BLOCK_FREEPTR_BAD $10`)
+      — so a magic test must corrupt a **mid-chain** block (not the first) to surface
+      `INVALID_BLOCK` from the chain walk.
 
 ### Phase 5 — Error-code & near-miss coverage  ⬜
 - [ ] Trigger + assert every reachable error `$00`–`$17` (§9.7); mark unreachable codes.
@@ -613,3 +622,4 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 2026-07-21 | **Phase 1 complete** — [`heaptestkit.inc`](heaptestkit.inc) macro kit (`TEST_*`, `EXPECT_*` incl. flag-based `EXPECT_Z/NZ`, `H*` wrappers, `ANCHOR_CELL`/`DIRTY_BODY`) via asm68K `LOCAL`/`&param&`/`SET`, plus [`test_kit.a68`](test_kit.a68) exercising every macro (6 phases; passes via `nmake test`). Learned: macro-emitted `.bss ds.l` trips `A2005` (modules declare shared vars directly). Fixed the runner's case-insensitive `$sim`/`$Sim` variable collision that broke multi-module runs (→ `$simProc`/`$gdbProc`). |
 | 2026-07-21 | **Phase 2 complete** — [`test_create.a68`](test_create.a68) (§9.1 lifecycle/handles) + [`test_block.a68`](test_block.a68) (§9.2–§9.5 block path via `HEAP_DISABLE_SMALL_POOL`: sizes/alignment/zero/OOM, double-free/cross-heap/NULL, coalesce vs. no-coalesce, realloc + in-place, validate/walk/compact). Added `EXPECT_EQV`/`EXPECT_NEV` value compares; 4/4 green via `nmake test`. Trap noted: a symbol named `pC` binds to the `PC` register (register names are case-insensitive even under `/Cx`) → renamed `pQ`. |
 | 2026-07-21 | **Phase 3 complete** — [`test_soa.a68`](test_soa.a68): refactored `HeapSmallTest.a68` onto the kit (`TEST_INIT`/`TEST_PASS`/`TEST_EPILOGUE` + `include heaptestkit.inc`); all 9 phases of SOA checks + the anchor-cell discipline preserved verbatim. Runs headless via the runner (`RESULT=00000000`); 5/5 green via `nmake test`. Retires the manual `sid68k` procedure for CI (kept in §10.3 for debugging). |
+| 2026-07-21 | **Phase 4 complete** — [`test_debug.a68`](test_debug.a68) (§9.6): debug-fill on alloc (`CDCDCDCD`) and free (`BAADF00D`, control-word-after-poison for cells; `HEAP_DISABLE_COALESCE_ON_FREE` so the free fill is always reached), tail-guard overrun → `TAIL_VALIDATION_FAILED`, auto-validate-on-call refuses a call on a corrupt heap, and corrupt-and-detect (block magic→`INVALID_BLOCK`, fwd link→`INVALID_NEXT_LINK`, free back-link→`INVALID_FPREV_LINK`, slab→`SLAB_CORRUPT`, arena→`SOA_ARENA_CORRUPT`) with repair-revalidate. 6/6 green via `nmake test`. Trap learned: `_HeapValidate` runs `_HeapValidateHandle` first (checks `hhHeapHead`→`$0F` and bucket heads→`$10`), so a magic corruption must target a **mid-chain** block to surface `INVALID_BLOCK`. |

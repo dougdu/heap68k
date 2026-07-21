@@ -1,0 +1,184 @@
+************************************************************************
+*  test_block.a68 — Phase 2, §9.2-§9.5 block-path functional suite.
+*
+*  All allocations run on private heaps created with HEAP_DISABLE_SMALL_POOL
+*  so every request takes the legacy block path (never the SOA).  Covers
+*  allocation (sizes/flags/OOM/alignment), free (double-free/cross-heap/
+*  NULL/coalesce), realloc + size (grow/shrink/in-place), and validate/
+*  walk/compact.  Self-contained (in-BSS heap, no CP/M base page).
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+	include heaptestkit.inc
+
+	.code
+
+HEAPBUFSIZE equ $80000				; 512 KB self-contained machine heap
+BLKSZ	    equ $10000				; 64 KB main block-path heap
+CSZ	    equ $4000				; 16 KB coalesce-test heaps
+NOSOA	    equ HEAP_DISABLE_SMALL_POOL
+
+start:
+	TEST_INIT	heapbuf,HEAPBUFSIZE-128
+
+	HCREATE	#NOSOA,#BLKSZ			; block-path heap (SOA disabled)
+	move.l	d0,blkH
+	HCREATE	#NOSOA,#BLKSZ			; a second heap (cross-heap test)
+	move.l	d0,blkH2
+
+*----- Phase 1: block allocation (size / alignment / magic / zero / OOM) -----
+	PHASE	1
+	EXPECT_NONZERO	1,blkH
+	EXPECT_NONZERO	2,blkH2
+	HALLOC	blkH,#0,#16
+	EXPECT_NONZERO	3,d0
+	move.l	d0,pA
+	move.l	d0,d1				; alignment: block data is 32-byte aligned
+	andi.l	#BLK_HDR_SIZE-1,d1
+	EXPECT_ZERO	4,d1
+	movea.l	pA,a0				; block header magic 'BLKH' at pMem-$20
+	lea	-BLK_HDR_SIZE(a0),a0
+	EXPECT_MAGIC	5,(a0),BLOCK_MAGIC
+	HSIZE	blkH,pA
+	EXPECT_GE	6,d0,16			; usable size >= requested
+	; zero-fill on alloc
+	HALLOC	blkH,#HEAP_ZERO_MEMORY,#64
+	EXPECT_NONZERO	7,d0
+	move.l	d0,pB
+	EXPECT_FILL	8,pB,64,0		; whole block zeroed
+	; out of memory
+	HALLOC	blkH,#0,#500000			; 500 KB from a 64 KB heap
+	EXPECT_ZERO	9,d0
+	EXPECT_ERR	10,HEAP_ERROR_OUT_OF_MEMORY
+
+*----- Phase 2: free (reuse / double-free / cross-heap / NULL) -----
+	PHASE	2
+	HFREE	blkH,pB				; free then re-allocate the same class
+	HALLOC	blkH,#0,#64
+	EXPECT_NONZERO	1,d0			; reuse succeeds
+	move.l	d0,pB
+	HFREE	blkH,pB
+	HFREE	blkH,pB				; double free -> INVALID_BLOCK
+	EXPECT_ERR	2,HEAP_ERROR_INVALID_BLOCK
+	; cross-heap free: pA belongs to blkH, free it to blkH2
+	HFREE	blkH2,pA
+	EXPECT_ERR	3,HEAP_ERROR_HANDLE_BLOCK_MISMATCH
+	HFREE	blkH,pA				; free properly (still owned by blkH)
+	; NULL free is a no-op success
+	HFREE	blkH,#0
+	EXPECT_ERR	4,HEAP_ERROR_SUCCESS
+
+*----- Phase 3: realloc + size (grow / shrink / in-place) -----
+	PHASE	3
+	HALLOC	blkH,#0,#64
+	EXPECT_NONZERO	1,d0
+	move.l	d0,pA
+	HREALLOC blkH,#0,pA,#4096		; grow
+	EXPECT_NONZERO	2,d0
+	move.l	d0,pA
+	HSIZE	blkH,pA
+	EXPECT_GE	3,d0,4096
+	HREALLOC blkH,#0,pA,#128		; shrink
+	EXPECT_NONZERO	4,d0
+	move.l	d0,pA
+	HSIZE	blkH,pA
+	EXPECT_GE	5,d0,128
+	; in-place shrink succeeds and keeps the pointer
+	HREALLOC blkH,#HEAP_REALLOC_IN_PLACE_ONLY,pA,#64
+	EXPECT_NONZERO	6,d0
+	EXPECT_EQV	7,d0,pA			; same block (no move)
+	; in-place grow blocked by the next block -> fail, original preserved
+	HALLOC	blkH,#0,#64			; pC sits right after pA
+	EXPECT_NONZERO	8,d0
+	move.l	d0,pQ
+	HREALLOC blkH,#HEAP_REALLOC_IN_PLACE_ONLY,pA,#8192
+	EXPECT_ZERO	9,d0			; move required -> refused
+	HSIZE	blkH,pA
+	EXPECT_GE	10,d0,64		; original still intact
+	HFREE	blkH,pA
+	HFREE	blkH,pQ
+
+*----- Phase 4: validate / walk / compact -----
+	PHASE	4
+	HVALIDATE blkH,#0
+	EXPECT_Z	1			; clean heap validates
+	HALLOC	blkH,#0,#100
+	EXPECT_NONZERO	2,d0
+	move.l	d0,pA
+	movea.l	pA,a0				; corrupt the block header magic
+	lea	-BLK_HDR_SIZE(a0),a0
+	move.l	#$DEADBEEF,(a0)
+	HVALIDATE blkH,#0
+	EXPECT_NZ	3			; corruption detected
+	movea.l	pA,a0				; repair
+	lea	-BLK_HDR_SIZE(a0),a0
+	move.l	#BLOCK_MAGIC,(a0)
+	HVALIDATE blkH,#0
+	EXPECT_Z	4			; clean again
+	; walk every block to the end
+	clr.l	walkE
+_bwalk:
+	HWALK	blkH,#walkE
+	tst.l	d0
+	bne.s	_bwalk
+	EXPECT_ERR	5,HEAP_ERROR_NO_MORE_ITEMS
+	HCOMPACT blkH				; coalesce free space (return ignored)
+	HVALIDATE blkH,#0
+	EXPECT_Z	6			; still valid after compaction
+	HFREE	blkH,pA
+
+*----- Phase 5: coalesce-on-free vs. HEAP_DISABLE_COALESCE_ON_FREE -----
+	PHASE	5
+	; coalescing heap: free three adjacent blocks, then a big alloc fits
+	HCREATE	#NOSOA,#CSZ
+	EXPECT_NONZERO	1,d0
+	move.l	d0,heapC
+	HALLOC	heapC,#0,#4096
+	move.l	d0,pA
+	HALLOC	heapC,#0,#4096
+	move.l	d0,pB
+	HALLOC	heapC,#0,#4096
+	move.l	d0,pQ
+	HFREE	heapC,pA
+	HFREE	heapC,pB
+	HFREE	heapC,pQ			; coalesce -> one large free block
+	HALLOC	heapC,#0,#10240			; 10 KB fits only if coalesced
+	EXPECT_NONZERO	2,d0
+	; non-coalescing heap: same sequence leaves fragments; big alloc fails
+	HCREATE	#(NOSOA or HEAP_DISABLE_COALESCE_ON_FREE),#CSZ
+	EXPECT_NONZERO	3,d0
+	move.l	d0,heapD
+	HALLOC	heapD,#0,#4096
+	move.l	d0,pA
+	HALLOC	heapD,#0,#4096
+	move.l	d0,pB
+	HALLOC	heapD,#0,#4096
+	move.l	d0,pQ
+	HFREE	heapD,pA
+	HFREE	heapD,pB
+	HFREE	heapD,pQ			; no coalesce -> three 4 KB fragments
+	HALLOC	heapD,#0,#10240
+	EXPECT_ZERO	4,d0			; 10 KB does not fit any fragment
+	EXPECT_ERR	5,HEAP_ERROR_OUT_OF_MEMORY
+
+	TEST_PASS
+	TEST_EPILOGUE
+
+*----- module .bss -----
+	.bss
+hMachineHeap	ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+blkH	ds.l	1
+blkH2	ds.l	1
+heapC	ds.l	1
+heapD	ds.l	1
+pA	ds.l	1
+pB	ds.l	1
+pQ	ds.l	1
+walkE	ds.l	1
+	.even
+heapbuf	ds.b	HEAPBUFSIZE
+	end

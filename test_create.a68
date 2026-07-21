@@ -1,0 +1,103 @@
+************************************************************************
+*  test_create.a68 — Phase 2, §9.1 lifecycle & handles.
+*
+*  _MachineHeapInitialize, _GetMachineHeap(s), _HeapCreate, _HeapDestroy,
+*  and _HeapValidateHandle.  Self-contained (in-BSS heap, no base page).
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+	include heaptestkit.inc
+
+	.code
+
+HEAPBUFSIZE equ $40000				; 256 KB self-contained heap
+
+start:
+	TEST_INIT	heapbuf,HEAPBUFSIZE-128
+
+*----- Phase 1: _MachineHeapInitialize produced a usable heap -----
+	PHASE	1
+	EXPECT_NONZERO	1,hMachineHeap		; handle non-null
+	movea.l	hMachineHeap,a0
+	EXPECT_MAGIC	2,(a0),HEAP_MAGIC	; header magic 'HEAP'
+	HALLOC	hMachineHeap,#0,#32		; usable via alloc
+	EXPECT_NONZERO	3,d0
+	move.l	d0,tmpP
+	HFREE	hMachineHeap,tmpP
+
+*----- Phase 2: _GetMachineHeap / _GetMachineHeaps -----
+	PHASE	2
+	jsr	_GetMachineHeap			; D0 = the machine heap handle
+	EXPECT_EQV	1,d0,hMachineHeap
+	move.l	#gmhBuf,-(sp)			; enumerate: only the machine heap so far
+	move.l	#8,-(sp)
+	jsr	_GetMachineHeaps		; D0 = active-heap count
+	adda.l	#8,sp
+	EXPECT_EQ	2,d0,1			; exactly one active heap
+	EXPECT_EQV	3,gmhBuf,hMachineHeap	; buf[0] == the machine handle
+
+*----- Phase 3: _HeapCreate (magic, distinct ids, enumeration) -----
+	PHASE	3
+	HCREATE	#0,#4096
+	EXPECT_NONZERO	1,d0
+	move.l	d0,heapA
+	movea.l	d0,a0
+	EXPECT_MAGIC	2,(a0),HEAP_MAGIC	; created heap has a 'HEAP' header
+	HCREATE	#HEAP_ENABLE_DEBUG_FILL,#4096
+	EXPECT_NONZERO	3,d0
+	move.l	d0,heapB
+	movea.l	heapA,a0			; idA = hhFlags(heapA) & HEAP_ID_MASK
+	move.l	hhFlags(a0),d2
+	andi.l	#HEAP_ID_MASK,d2
+	movea.l	heapB,a0			; idB = hhFlags(heapB) & HEAP_ID_MASK
+	move.l	hhFlags(a0),d3
+	andi.l	#HEAP_ID_MASK,d3
+	EXPECT_NEV	4,d2,d3			; the two heaps have distinct ids
+	move.l	#gmhBuf,-(sp)			; now three active heaps
+	move.l	#8,-(sp)
+	jsr	_GetMachineHeaps
+	adda.l	#8,sp
+	EXPECT_EQ	5,d0,3			; machine + heapA + heapB
+
+*----- Phase 4: _HeapValidateHandle (valid / corrupt / repaired) -----
+	PHASE	4
+	HVALIDATEH	heapA
+	EXPECT_Z	1			; valid handle -> Z set
+	movea.l	heapA,a0			; corrupt the header magic
+	move.l	#$DEADBEEF,hhMagic(a0)
+	HVALIDATEH	heapA
+	EXPECT_NZ	2			; bad magic -> invalid (Z clear)
+	movea.l	heapA,a0			; repair
+	move.l	#HEAP_MAGIC,hhMagic(a0)
+	HVALIDATEH	heapA
+	EXPECT_Z	3			; valid again
+
+*----- Phase 5: _HeapDestroy invalidates the handle -----
+	PHASE	5
+	HDESTROY heapB
+	EXPECT_NONZERO	1,d0			; destroy returned TRUE
+	HVALIDATEH heapB
+	EXPECT_NZ	2			; destroyed handle no longer validates
+	move.l	#gmhBuf,-(sp)			; back to two active heaps
+	move.l	#8,-(sp)
+	jsr	_GetMachineHeaps
+	adda.l	#8,sp
+	EXPECT_EQ	3,d0,2			; machine + heapA
+
+	TEST_PASS
+	TEST_EPILOGUE
+
+*----- module .bss -----
+	.bss
+hMachineHeap	ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+tmpP	ds.l	1
+heapA	ds.l	1
+heapB	ds.l	1
+gmhBuf	ds.l	8
+	.even
+heapbuf	ds.b	HEAPBUFSIZE
+	end

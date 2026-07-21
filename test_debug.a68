@@ -1,0 +1,215 @@
+************************************************************************
+*  test_debug.a68 — Phase 4, §9.6 debug & validation suite.
+*
+*  Debug-fill on alloc (CDCDCDCD) and on free (BAADFOOD, control word
+*  after the poison for cells), tail-guard overrun detection, auto-
+*  validate-on-call, and corrupt-and-detect for block magic / chain
+*  links / SOA slab & arena magic.  Self-contained (in-BSS heap).
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+	include heaptestkit.inc
+
+	.code
+
+HEAPBUFSIZE equ $80000				; 512 KB self-contained machine heap
+HSZ	    equ $8000				; 32 KB per private heap
+
+; block-path heap that debug-fills on alloc AND on free (no coalescing so
+; the free path always reaches __HeapDebugFillOnFree)
+DFFLAGS equ (HEAP_ENABLE_DEBUG_FILL or HEAP_DISABLE_SMALL_POOL or HEAP_DISABLE_COALESCE_ON_FREE)
+
+start:
+	TEST_INIT	heapbuf,HEAPBUFSIZE-128
+
+	HCREATE	#DFFLAGS,#HSZ			; block debug-fill heap
+	move.l	d0,heapDF
+	HCREATE	#HEAP_ENABLE_DEBUG_FILL,#HSZ	; SOA (cell) debug-fill heap
+	move.l	d0,heapCell
+	HCREATE	#HEAP_TAIL_CHECKING_ENABLED,#HSZ ; tail-guard heap
+	move.l	d0,heapTC
+	HCREATE	#(HEAP_VALIDATE_ALL_ENABLED or HEAP_DISABLE_SMALL_POOL),#HSZ
+	move.l	d0,heapAV			; validate-on-every-call heap
+	HCREATE	#HEAP_DISABLE_SMALL_POOL,#HSZ	; plain block heap (corrupt/detect)
+	move.l	d0,heapCD
+	HCREATE	#0,#HSZ				; plain SOA heap (slab/arena corrupt)
+	move.l	d0,heapSOA
+
+*----- Phase 1: debug-fill on alloc (CDCDCDCD) -----
+	PHASE	1
+	EXPECT_NONZERO	1,heapDF
+	EXPECT_NONZERO	2,heapCell
+	; 1a: block alloc fills the requested bytes with CDCDCDCD
+	HALLOC	heapDF,#0,#32
+	EXPECT_NONZERO	3,d0
+	move.l	d0,pX
+	EXPECT_FILL	4,pX,32,CDCDCDCD
+	HFREE	heapDF,pX
+	; 1b: SOA cell alloc fills the whole cell with CDCDCDCD
+	HALLOC	heapCell,#0,#16			; class 1 (16 bytes)
+	EXPECT_NONZERO	5,d0
+	move.l	d0,pX
+	EXPECT_FILL	6,pX,16,CDCDCDCD
+	HFREE	heapCell,pX
+
+*----- Phase 2: debug-fill on free (BAADFOOD) -----
+	PHASE	2
+	; 2a: freeing a block fills its data area with BAADFOOD
+	HALLOC	heapDF,#0,#32
+	EXPECT_NONZERO	1,d0
+	move.l	d0,pX
+	HFREE	heapDF,pX			; no coalesce -> debug fill on free
+	EXPECT_FILL	2,pX,32,BAADFOOD
+	; 2b: freeing a cell poisons the body then rewrites the control word
+	HALLOC	heapCell,#0,#16			; anchor keeps the class-1 slab alive
+	EXPECT_NONZERO	3,d0
+	move.l	d0,pAnchor
+	HALLOC	heapCell,#0,#16			; test cell
+	EXPECT_NONZERO	4,d0
+	move.l	d0,pX
+	HFREE	heapCell,pX
+	movea.l	pX,a0				; freeTag control word survived
+	moveq	#0,d0
+	move.w	cellFreeTag(a0),d0
+	EXPECT_EQ	5,d0,SOA_FREE_TAG
+	movea.l	pX,a0				; body [4..16) == BAADFOOD
+	addq.l	#4,a0
+	moveq	#(16-4)/4-1,d4
+_p2body:
+	move.l	(a0)+,d0
+	move.l	#$0206,d7
+	cmpi.l	#BAADFOOD,d0
+	bne	_tfail
+	dbra	d4,_p2body
+	HFREE	heapCell,pAnchor
+
+*----- Phase 3: tail-guard overrun detection -----
+	PHASE	3
+	HALLOC	heapTC,#0,#16			; tail-check forces the block path
+	EXPECT_NONZERO	1,d0
+	move.l	d0,pX
+	movea.l	pX,a0				; overwrite the first guard byte
+	move.b	#$00,16(a0)			; (tail begins at request rounded up = +16)
+	HFREE	heapTC,pX			; free detects the overrun
+	EXPECT_ERR	2,HEAP_ERROR_TAIL_VALIDATION_FAILED
+	movea.l	pX,a0				; repair the guard byte and free cleanly
+	move.b	#$AB,16(a0)
+	HFREE	heapTC,pX
+	EXPECT_ERR	3,HEAP_ERROR_SUCCESS
+
+*----- Phase 4: auto-validate-on-call -----
+	PHASE	4
+	HALLOC	heapAV,#0,#32			; A (hhHeapHead; keep it valid)
+	EXPECT_NONZERO	1,d0
+	move.l	d0,pX
+	HALLOC	heapAV,#0,#32			; B (a mid-chain block to corrupt)
+	EXPECT_NONZERO	2,d0
+	move.l	d0,pY
+	movea.l	pY,a0				; corrupt its header magic
+	move.l	#$DEADBEEF,bhMagic-BLK_HDR_SIZE(a0)
+	HALLOC	heapAV,#0,#32			; any call now auto-validates and aborts
+	EXPECT_ZERO	3,d0			; alloc refused
+	EXPECT_ERR	4,HEAP_ERROR_INVALID_BLOCK
+	movea.l	pY,a0				; repair
+	move.l	#BLOCK_MAGIC,bhMagic-BLK_HDR_SIZE(a0)
+	HALLOC	heapAV,#0,#32			; heals -> a call succeeds again
+	EXPECT_NONZERO	5,d0
+
+*----- Phase 5: corrupt-and-detect via _HeapValidate -----
+	PHASE	5
+	HVALIDATE heapCD,#0
+	EXPECT_Z	1			; clean heap validates
+	HALLOC	heapCD,#0,#48			; A (first block)
+	EXPECT_NONZERO	2,d0
+	move.l	d0,pX
+	HALLOC	heapCD,#0,#48			; B (keeps A from coalescing when freed)
+	EXPECT_NONZERO	3,d0
+	move.l	d0,pY
+	; 5a: block header magic (corrupt B, a mid-chain block -> INVALID_BLOCK)
+	movea.l	pY,a0
+	move.l	bhMagic-BLK_HDR_SIZE(a0),d5	; save
+	clr.l	bhMagic-BLK_HDR_SIZE(a0)	; corrupt
+	HVALIDATE heapCD,#0
+	EXPECT_NZ	4
+	EXPECT_ERR	5,HEAP_ERROR_INVALID_BLOCK
+	movea.l	pY,a0
+	move.l	d5,bhMagic-BLK_HDR_SIZE(a0)	; repair
+	HVALIDATE heapCD,#0
+	EXPECT_Z	6
+	; 5b: block-chain forward link
+	movea.l	pX,a0
+	addi.l	#4,bhNext-BLK_HDR_SIZE(a0)	; skew the forward link
+	HVALIDATE heapCD,#0
+	EXPECT_NZ	7
+	EXPECT_ERR	8,HEAP_ERROR_INVALID_NEXT_LINK
+	movea.l	pX,a0
+	subi.l	#4,bhNext-BLK_HDR_SIZE(a0)	; repair
+	HVALIDATE heapCD,#0
+	EXPECT_Z	9
+	; 5c: free-chain back link (free A -> it heads its bucket, bhFreePrev == 0)
+	HFREE	heapCD,pX
+	movea.l	pX,a0
+	move.l	#$DEADBEEF,bhFreePrev-BLK_HDR_SIZE(a0)
+	HVALIDATE heapCD,#0
+	EXPECT_NZ	10
+	EXPECT_ERR	11,HEAP_ERROR_INVALID_FPREV_LINK
+	movea.l	pX,a0
+	clr.l	bhFreePrev-BLK_HDR_SIZE(a0)	; repair
+	HVALIDATE heapCD,#0
+	EXPECT_Z	12
+	; 5d: SOA slab magic
+	HALLOC	heapSOA,#0,#24			; class 2 cell -> slab + arena
+	EXPECT_NONZERO	13,d0
+	move.l	d0,pX
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabX
+	movea.l	d0,a0
+	move.l	slMagic(a0),d5			; save
+	clr.l	slMagic(a0)			; corrupt
+	HVALIDATE heapSOA,#0
+	EXPECT_NZ	14
+	EXPECT_ERR	15,HEAP_ERROR_SLAB_CORRUPT
+	movea.l	slabX,a0
+	move.l	d5,slMagic(a0)			; repair
+	HVALIDATE heapSOA,#0
+	EXPECT_Z	16
+	; 5e: SOA arena magic
+	movea.l	slabX,a0
+	movea.l	slArena(a0),a1			; A1 --> owning arena
+	move.l	a1,arenaX
+	move.l	arMagic(a1),d5			; save
+	clr.l	arMagic(a1)			; corrupt
+	HVALIDATE heapSOA,#0
+	EXPECT_NZ	17
+	EXPECT_ERR	18,HEAP_ERROR_SOA_ARENA_CORRUPT
+	movea.l	arenaX,a1
+	move.l	d5,arMagic(a1)			; repair
+	HVALIDATE heapSOA,#0
+	EXPECT_Z	19
+
+	TEST_PASS
+	TEST_EPILOGUE
+
+*----- module .bss -----
+	.bss
+hMachineHeap	ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+heapDF	ds.l	1
+heapCell ds.l	1
+heapTC	ds.l	1
+heapAV	ds.l	1
+heapCD	ds.l	1
+heapSOA	ds.l	1
+pX	ds.l	1
+pY	ds.l	1
+pAnchor	ds.l	1
+slabX	ds.l	1
+arenaX	ds.l	1
+	.even
+heapbuf	ds.b	HEAPBUFSIZE
+	end
