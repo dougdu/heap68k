@@ -331,7 +331,7 @@ implemented and passing. `→err` means "assert via `_HeapGetError`".
 | Area | Cases |
 |------|-------|
 | `_HeapValidate` (whole) | clean heap passes; after a mixed workload still passes |
-| `_HeapValidate` (corrupt) | corrupt a block header magic / free links / counts → detected →err; SOA slab-magic corruption → `SLAB_CORRUPT`; arena corruption → `SOA_ARENA_CORRUPT ($17)`; repair → clean |
+| `_HeapValidate` (corrupt) | corrupt a block header magic / free links / counts → detected →err; SOA slab-magic corruption → `SLAB_CORRUPT`; arena corruption (bad magic, mis-aligned `arBase`, **`arTileMap` popcount ≠ `arSlabUse`**) → `SOA_ARENA_CORRUPT ($17)`; repair → clean |
 | `_HeapWalk` | enumerate every block; `NO_MORE_ITEMS` at end; empty heap; `NULL` cursor start; walk after frees |
 | `_HeapCompact` | coalesces adjacent frees; releases empty slabs/arenas; live cells **prevent** release; idempotent second call |
 
@@ -352,14 +352,18 @@ in the matrix as "unreachable — documented".
 
 ### 9.8 Near-miss / negative (no crash)
 `__HeapSlabFromPtr` classification for interior, off-by-one, mid-cell, and foreign
-pointers; `_HeapFree`/`_HeapSize`/`_HeapReAlloc` on a pointer that belongs to no heap →
-error, **no crash**.
+pointers; a forged slab-magic chain with `slCellSz == 0` or `slClass ≥ SOA_NUM_CLASSES`
+is **rejected without a ÷0 trap** (the F2 guard); `_HeapFree`/`_HeapSize`/`_HeapReAlloc` on
+a pointer that belongs to no heap → error, **no crash**.
 
 ### 9.9 Stress / soak
 Fixed-seed LCG driving a mix of alloc/free/realloc across sizes `1..4096` over the machine
 heap and private heaps, interleaved `_HeapValidate`, run to arena creation and full
 release; assert invariants (`live_cells == 0 ⇒ all slabs empty & releasable`) and compare
-the committed-byte high-water mark against a recorded baseline.
+the committed-byte high-water mark against a recorded baseline. Include a **small private
+heap** that forces the arena **adaptive shrink** (the `nTiles → 1` retry taken when a
+full-size arena will not fit), and drive the empty-slab → empty-arena reclamation path to
+completion.
 
 ---
 

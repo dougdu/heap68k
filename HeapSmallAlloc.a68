@@ -128,10 +128,12 @@ _soaFillLp:
 	dbra	d0,_soaFillLp
 
 _soaStats:
-	; --- Statistics: one more live cell, requested bytes ---
+	; --- Statistics: one more live cell; add this cell's usable (class) bytes ---
 	addq.l	#1,scbLiveCells(a2)
-	move.l	lBytes,d0
-	add.l	d0,scbLiveReqBytes(a2)
+	movea.l	d3,a0				; A0 --> slab (d3 = slab pointer)
+	moveq	#0,d0
+	move.w	slCellSz(a0),d0			; usable/committed bytes for this cell
+	add.l	d0,scbLiveCellBytes(a2)
 	move.l	a4,d0				; return the cell pointer
 	bra.s	_soaExit
 

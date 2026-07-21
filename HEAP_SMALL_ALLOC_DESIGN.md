@@ -676,7 +676,7 @@ touching `heap.inc` (a shared header change invalidates all objects).
 
 ### 12.5 Observability — sid68k `!heap -p`
 The `!heap -p [handle]` command ([`HeapDebugExt.cpp`](../../sid68k/sid68k/HeapDebugExt.cpp))
-dumps the live SOA state: the SCB header (`scbLiveCells`, `scbLiveReqBytes`, `scbSlabCount`,
+dumps the live SOA state: the SCB header (`scbLiveCells`, `scbLiveCellBytes`, `scbSlabCount`,
 `scbArenaCount`), the arena table (base, block, tiles-used, `arTileMap`), and a per-class
 table built by **walking** the `scbPartial[c]`/`scbFull[c]` lists.
 
@@ -936,3 +936,4 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 | 2026-07-20 | Phase 0 sync | Synced `heap.inc` to the revised constants: `ARENA_SLABS` → `ARENA_MAX_SLABS` (32) + `ARENA_SLABS_DFLT` (4); added `SLAB_HDR_SIZE = $20`. No behavior change; ELF rebuild clean. Also documented `SOA_MIN_CLASS = 8` in §8 to match `heap.inc`. |
 | 2026-07-21 | Phases 1–5 | SOA implemented & validated under sim68k (`heapsmalltest.elf`, gated `SOA_ROUTE=0`): data structures/primitives (P1), allocation (P2), free + double-free/cross-heap (P3), realloc + `_HeapSize` class-size (P4), validate/walk/compact (P5). See the per-phase checklists above. |
 | 2026-07-21 | Phase 6 | **Default-on:** `SOA_ROUTE=1` (opt-out). Fixed the SCB-alloc recursion (`SCB_HDR_SIZE ≤ SOA_MAX`) via `HEAP_DISABLE_SMALL_POOL` on the SCB alloc + a per-call disable check in the `_HeapAlloc` gate. Caller audit clean (no `_HeapSize`/pointer-tagging consumers). Updated `HEAP_API.md` (flag, errors `$15`-`$17`, `hhSmallPool`, `_HeapSize` semantics, new §2.7). Made sid68k `HeapDebugExt.cpp` SOA-aware (structs + `-p` dump; `sid68k.exe` rebuilt clean via CMake/MSVC). Constants kept; efficiency ≥2× (≥4× ≤32B) confirmed by analysis. `heapsmalltest.elf` all 9 phases pass at `SOA_ROUTE=1`. |
+| 2026-07-21 | Review fixes | Code-review F1–F3: **F1** — `scbLiveReqBytes` (add-on-alloc only, monotonic) reworked into a symmetric **live** gauge and **renamed `scbLiveCellBytes`** — alloc adds `slCellSz`, free subtracts it (captured before any slab/arena release); `-p` label → "Live cell bytes". Validated: 39 live cells → 5880 = Σ(class size × live cells). **F2** — `__HeapSlabFromPtr` now rejects `slClass ≥ SOA_NUM_CLASSES` or `slCellSz == 0` **before** the `divu`, closing a ÷0-trap path in the "reject arbitrary pointers" gate. **F3** — `__HeapSlabCreate` first-clear-bit tile scan is now **bounded by `arSlabs`** (no bit-index wrap on a map/count desync). No regression (`heapsmalltest.elf` 9 phases pass). |

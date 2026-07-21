@@ -62,10 +62,16 @@ _slcNew:
 	movea.l d0,a1				; A1 --> new arena
 
 _slcHave:
-	; Claim the first clear bit in the tile bitmap
+	; Claim the first clear bit in the tile bitmap.  Bounded by arSlabs so a
+	; map/arSlabUse desync cannot scan past bit 31 and wrap mod 32 (F3).
 	move.l	arTileMap(a1),d2		; D2 = bitmap
 	moveq	#0,d3				; D3 = tile index
+	moveq	#0,d0
+	move.w	arSlabs(a1),d0			; D0 = tile count (scan bound)
+	andi.l	#$0000FFFF,d0
 _slcBit:
+	cmp.l	d0,d3
+	bhs	_slcFail			; no free tile within arSlabs -> corrupt
 	btst	d3,d2
 	beq.s	_slcGot
 	addq.l	#1,d3
@@ -170,8 +176,16 @@ __HeapSlabFromPtr PROC USES d1-d3/a0-a1, pMem:DWORD
 	sub.l	d1,d0				; pMem - slab
 	subi.l	#SLAB_HDR_SIZE,d0		; pMem - firstCell
 	blt	_sfpNo				; inside the header
+	; Class + cell-size sanity BEFORE the divide: a wild pointer can present a
+	; valid magic chain yet a corrupt/zero slCellSz, which would trap on
+	; divu #0 instead of cleanly rejecting.  This is the reject gate (F2).
+	move.w	slClass(a0),d3
+	andi.l	#$0000FFFF,d3
+	cmpi.l	#SOA_NUM_CLASSES,d3
+	bhs	_sfpNo				; slClass >= SOA_NUM_CLASSES -> reject
 	move.w	slCellSz(a0),d2
 	andi.l	#$0000FFFF,d2
+	beq	_sfpNo				; slCellSz == 0 -> reject (no divu #0)
 	divu	d2,d0				; low = index, high = remainder
 	move.l	d0,d3
 	swap	d3				; D3 low = remainder

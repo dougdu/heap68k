@@ -210,7 +210,7 @@ scbFlags        equ     $0C             	; reserved SOA-local flags
 scbPartial      equ     $10             	; 16 x long: per-class partial-slab list heads
 scbFull         equ     $50             	; 16 x long: per-class full-slab list heads
 scbLiveCells    equ     $90             	; live (allocated) cell count
-scbLiveReqBytes equ     $94             	; sum of requested bytes over live cells
+scbLiveCellBytes equ    $94             	; sum of usable (class) bytes over live cells
 scbSlabCount    equ     $98             	; number of live slabs
 scbArenaCount   equ     $9C             	; number of arenas
 SCB_HDR_SIZE    equ     $A0             	; size of the SCB

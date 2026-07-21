@@ -75,6 +75,8 @@ _sofAccept:
 	movea.l hhSmallPool(a0),a4		; A4 --> SCB
 	moveq	#0,d4
 	move.w	slClass(a2),d4			; D4 = class index
+	moveq	#0,d3
+	move.w	slCellSz(a2),d3			; D3 = usable bytes (capture before any release)
 
 	; --- debug fill on free (whole cell) BEFORE writing the control word (§10) ---
 	btst.b	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
@@ -143,6 +145,7 @@ _sofEmptyChk:
 
 _sofStats:
 	subq.l	#1,scbLiveCells(a4)		; one fewer live cell (§9.4)
+	sub.l	d3,scbLiveCellBytes(a4)		; deduct this cell's usable bytes (F1)
 	moveq	#-1,d0				; TRUE
 	bra.s	_sofExit
 
