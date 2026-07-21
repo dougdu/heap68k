@@ -1,6 +1,6 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** Phases A–5 complete — harness + kit + block-path + SOA + debug/validation + error-sweep suites validated (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors` green via `nmake test`); suite build-out (Phases 6–8) pending
+**Status:** Phases A–6 complete — harness + kit + block-path + SOA + debug/validation + error-sweep + stress/soak suites validated (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors`/`test_stress` green via `nmake test`); the stress suite found & fixed a real SOA bug (stale slab/arena magic in released memory). Suite build-out (Phases 7–8) pending
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
@@ -473,7 +473,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 3 | SOA suite integration | ✅ | [`test_soa.a68`](test_soa.a68) refactored onto the kit from `HeapSmallTest.a68` (9 phases); passes headless via `nmake test` (2026-07-21) |
 | 4 | Debug & validation suite | ✅ | [`test_debug.a68`](test_debug.a68) covers §9.6 (debug-fill alloc/free, tail-guard, auto-validate) + corrupt-and-detect (block magic, chain fwd-link, free-chain back-link, SOA slab/arena magic); passes via `nmake test` (2026-07-21) |
 | 5 | Error-code & near-miss coverage | ✅ | [`test_errors.a68`](test_errors.a68) triggers & asserts every code `$00`–`$17` (§9.7) + §9.8 near-miss classification, F2 ÷0 guard, and foreign-pointer API safety (no crash); passes via `nmake test` (2026-07-21) |
-| 6 | Stress / soak | ⬜ | `test_stress` (§9.9) fixed-seed mix + invariant checks + high-water compare; deterministic across runs |
+| 6 | Stress / soak | ✅ | [`test_stress.a68`](test_stress.a68) (§9.9) fixed-seed xorshift mix (alloc/free/realloc, 1..4096, machine SOA + private block heaps) + interleaved validate + drain invariants + arena adaptive-shrink + high-water baseline; deterministic. **Found & fixed a real SOA bug** (released slab/arena kept its magic → reused memory mis-ID'd as a cell). Passes via `nmake test` (2026-07-21) |
 | 7 | Runner polish & CI | ⬜ | one-command `nmake test`; decoded summary; nonzero exit on fail; port/timeout/teardown robust; README |
 | 8 | Coverage audit & backfill | ⬜ | every §9 row mapped to an implemented, passing case; gaps closed; tracker + changelog updated |
 
@@ -570,10 +570,24 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
       `_HeapFree`/`_HeapSize` on a foreign pointer return `INVALID_BLOCK` with no crash.
       Trap re-confirmed: a symbol named `pC` binds to the `PC` register even under `/Cx` → renamed `pCc`.
 
-### Phase 6 — Stress / soak  ⬜
-- [ ] `test_stress.a68`: fixed-seed LCG mix (alloc/free/realloc, sizes 1..4096, mixed
-      heaps) + interleaved validate + invariants + high-water compare.
-- [ ] Deterministic: identical `RESULT` across repeated runs.
+### Phase 6 — Stress / soak  ✅ (2026-07-21)
+- [x] [`test_stress.a68`](test_stress.a68): a fixed-seed xorshift-32 PRNG drives a deterministic
+      alloc/free/realloc mix (sizes 1..4096) over the SOA machine heap (slots 0..31) and a private
+      block heap (slots 32..63), with a per-block tag catching cross-block corruption and
+      `_HeapValidate` interleaved every 256 iterations.  After a full drain it asserts the
+      reclamation invariant (`scbLiveCells == 0` **and** `scbSlabCount == scbArenaCount == 0`),
+      a clean compact, and heapP coalescing back to one large block; a 12 KB heap then exercises
+      the arena **adaptive shrink** (4 → 1 tiles) and empty-arena reclamation; finally the
+      live-byte / live-count high-water marks are checked against recorded baselines.
+- [x] Deterministic: the exact high-water baselines are asserted every run, so an identical
+      `RESULT` (and the same peak) is reproduced across repeated runs (verified back-to-back).
+- [x] **Bug found & fixed** (the point of the soak): `__HeapSlabRelease`/`__HeapArenaRelease`
+      freed a tile/arena **without invalidating its `slMagic`/`arMagic`**, so once that memory was
+      reused by the block path a pointer that masked to the stale tile base was mis-recognized as a
+      cell by `__HeapSlabFromPtr` and routed to `__HeapSoaFree` — driving `scbLiveCells` negative
+      (−6) and mis-reporting `_HeapSize`.  Fix: clear `slMagic` on tile release and `arMagic` on
+      arena release.  Slab/arena reclamation counts were already correct; only the magic-based
+      recognition was fooled.
 
 ### Phase 7 — Runner polish & CI  ⬜
 - [ ] `nmake test` builds + runs + verdicts in one step; decoded summary table.
@@ -637,3 +651,4 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 2026-07-21 | **Phase 3 complete** — [`test_soa.a68`](test_soa.a68): refactored `HeapSmallTest.a68` onto the kit (`TEST_INIT`/`TEST_PASS`/`TEST_EPILOGUE` + `include heaptestkit.inc`); all 9 phases of SOA checks + the anchor-cell discipline preserved verbatim. Runs headless via the runner (`RESULT=00000000`); 5/5 green via `nmake test`. Retires the manual `sid68k` procedure for CI (kept in §10.3 for debugging). |
 | 2026-07-21 | **Phase 4 complete** — [`test_debug.a68`](test_debug.a68) (§9.6): debug-fill on alloc (`CDCDCDCD`) and free (`BAADF00D`, control-word-after-poison for cells; `HEAP_DISABLE_COALESCE_ON_FREE` so the free fill is always reached), tail-guard overrun → `TAIL_VALIDATION_FAILED`, auto-validate-on-call refuses a call on a corrupt heap, and corrupt-and-detect (block magic→`INVALID_BLOCK`, fwd link→`INVALID_NEXT_LINK`, free back-link→`INVALID_FPREV_LINK`, slab→`SLAB_CORRUPT`, arena→`SOA_ARENA_CORRUPT`) with repair-revalidate. 6/6 green via `nmake test`. Trap learned: `_HeapValidate` runs `_HeapValidateHandle` first (checks `hhHeapHead`→`$0F` and bucket heads→`$10`), so a magic corruption must target a **mid-chain** block to surface `INVALID_BLOCK`. |
 | 2026-07-21 | **Phase 5 complete** — [`test_errors.a68`](test_errors.a68) (§9.7/§9.8): triggers & asserts every heap error code `$00`–`$17` (all reachable — none unreachable) across API misuse, whole/single-block `_HeapValidate` corruptions, `_HeapValidateHandle` header corruptions, and SOA double-free/slab/arena, each repaired and re-validated; plus near-miss `__HeapSlabFromPtr` classification (off-by-one / mid-cell / foreign), the F2 ÷0 guard (`slCellSz == 0`, `slClass >= SOA_NUM_CLASSES`), and foreign-pointer `_HeapFree`/`_HeapSize` → `INVALID_BLOCK` with no crash. 7/7 green via `nmake test`. Re-hit the `pC`→`PC` register-name trap (renamed `pCc`). |
+| 2026-07-21 | **Phase 6 complete** — [`test_stress.a68`](test_stress.a68) (§9.9): fixed-seed xorshift-32 soak (alloc/free/realloc 1..4096 over the SOA machine heap + a private block heap), interleaved validate, tagged data-integrity, drain reclamation invariants (`scbLiveCells`/`scbSlabCount`/`scbArenaCount == 0`), arena adaptive-shrink (4→1) + empty-arena reclamation, and a deterministic live-byte/count high-water baseline (identical across runs). 8/8 green via `nmake test`. **Found & fixed a real SOA defect:** `__HeapSlabRelease`/`__HeapArenaRelease` left `slMagic`/`arMagic` intact on freed memory, so reused blocks were mis-recognized as cells by `__HeapSlabFromPtr` (drove `scbLiveCells` to −6, mis-reported `_HeapSize`); fix clears both magics on release. Reclamation counts themselves were already correct. |

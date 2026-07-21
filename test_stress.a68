@@ -1,0 +1,322 @@
+************************************************************************
+*  test_stress.a68 — Phase 6, §9.9 stress / soak.
+*
+*  A fixed-seed xorshift-32 PRNG drives a deterministic mix of
+*  alloc/free/realloc across sizes 1..4096 over the SOA machine heap and
+*  a private block heap, with interleaved _HeapValidate.  Per-block tags
+*  catch cross-block corruption.  After a full drain the SOA invariant
+*  (live cells == 0  =>  every slab/arena released) is asserted, a small
+*  private heap exercises the arena adaptive shrink (4 -> 1 tiles) and
+*  its empty-slab/arena reclamation, and the live-byte high-water mark is
+*  checked against a recorded baseline.  Being seed-driven the whole run
+*  is reproducible: RESULT and the high-water are identical every run.
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+	include heaptestkit.inc
+
+	.code
+
+HEAPBUFSIZE  equ $80000				; 512 KB self-contained machine heap
+HEAPP_SIZE   equ $20000				; 128 KB private block heap
+HEAPSM_SIZE  equ $3000				; 12 KB: too small for a 4-tile arena,
+						;   fits a 1-tile arena -> forces the shrink
+N_SLOTS	     equ 64				; live-allocation table slots
+SLOT_SPLIT   equ 32				; slots [0,32) -> machine heap, [32,64) -> private
+ITERS	     equ 3000				; stress iterations
+RNG_SEED     equ $12345678			; fixed seed -> deterministic run
+
+; Recorded high-water baselines (peak live requested bytes / count).  Seed-
+; and parameter-derived, so they double as a determinism + regression check.
+BASE_HW_BYTES equ $0001B614
+BASE_HW_COUNT equ 53
+
+start:
+	TEST_INIT	heapbuf,HEAPBUFSIZE-128
+
+	HCREATE	#HEAP_DISABLE_SMALL_POOL,#HEAPP_SIZE	; private block heap
+	move.l	d0,heapP
+
+	move.l	#RNG_SEED,rngState			; seed the PRNG
+	clr.l	curBytes
+	clr.l	curCount
+	clr.l	hwBytes
+	clr.l	hwCount
+	lea	slots,a0				; clear the live table
+	moveq	#(N_SLOTS*8/4)-1,d0
+_sclr:
+	clr.l	(a0)+
+	dbra	d0,_sclr
+
+*======================================================================
+* Phase 1 — the deterministic alloc/free/realloc storm
+*======================================================================
+	PHASE	1
+	move.l	#ITERS,d2
+_sloop:
+	bsr	_rng					; pick a slot
+	andi.l	#(N_SLOTS-1),d0
+	move.l	d0,curSlot
+	lea	slots,a2
+	lsl.l	#3,d0
+	adda.l	d0,a2					; A2 --> slots[i]
+	move.l	curSlot,d0				; A5 = the slot's heap
+	cmpi.l	#SLOT_SPLIT,d0
+	blo.s	_suseM
+	movea.l	heapP,a5
+	bra.s	_sheapok
+_suseM:
+	movea.l	hMachineHeap,a5
+_sheapok:
+	move.l	(a2),d0					; occupied?
+	bne	_socc
+
+	; ---- ALLOC into an empty slot ----
+	bsr	_rng
+	andi.l	#$FFF,d0
+	addq.l	#1,d0					; size 1..4096
+	move.l	d0,d3
+	HALLOC	a5,#0,d3
+	tst.l	d0
+	beq	_snext					; OOM is a valid outcome -> skip
+	move.l	d0,(a2)					; record ptr + size
+	move.l	d3,4(a2)
+	cmpi.l	#4,d3					; tag if it can hold one
+	blo.s	_sa_notag
+	movea.l	d0,a0
+	move.l	curSlot,d1
+	move.l	d1,(a0)
+_sa_notag:
+	move.l	curBytes,d0
+	add.l	d3,d0
+	move.l	d0,curBytes
+	addq.l	#1,curCount
+	bsr	_hwupd
+	bra	_snext
+
+_socc:
+	bsr	_rng					; occupied: free or realloc
+	btst	#0,d0
+	bne	_srealloc
+
+	; ---- FREE ----
+	move.l	4(a2),d3				; size
+	cmpi.l	#4,d3
+	blo.s	_sf_go
+	movea.l	(a2),a0					; verify the tag survived intact
+	EXPECT_EQV	$72,(a0),curSlot
+_sf_go:
+	HFREE	a5,(a2)
+	move.l	curBytes,d0
+	sub.l	d3,d0
+	move.l	d0,curBytes
+	subq.l	#1,curCount
+	clr.l	(a2)
+	bra	_snext
+
+_srealloc:
+	move.l	4(a2),d3				; old size
+	cmpi.l	#4,d3
+	blo.s	_sr_size
+	movea.l	(a2),a0					; verify the tag before moving
+	EXPECT_EQV	$73,(a0),curSlot
+_sr_size:
+	bsr	_rng
+	andi.l	#$FFF,d0
+	addq.l	#1,d0					; new size 1..4096
+	move.l	d0,d4
+	HREALLOC a5,#0,(a2),d4
+	tst.l	d0
+	beq	_snext					; failed grow -> original kept, skip
+	move.l	d0,(a2)					; update ptr
+	cmpi.l	#4,d4
+	blo.s	_sr_notag
+	movea.l	d0,a0
+	move.l	curSlot,d1
+	move.l	d1,(a0)
+_sr_notag:
+	move.l	curBytes,d0
+	sub.l	d3,d0					; -old
+	add.l	d4,d0					; +new
+	move.l	d0,curBytes
+	move.l	d4,4(a2)				; store new size
+	bsr	_hwupd
+
+_snext:
+	move.l	d2,d0					; interleaved validation every 256 iters
+	andi.l	#$FF,d0
+	bne.s	_snv
+	HVALIDATE hMachineHeap,#0
+	EXPECT_Z	$70
+	HVALIDATE heapP,#0
+	EXPECT_Z	$71
+_snv:
+	subq.l	#1,d2
+	bne	_sloop
+
+*======================================================================
+* Phase 2 — drain everything, then assert the reclamation invariants
+*======================================================================
+	PHASE	2
+	moveq	#0,d5					; free every live slot
+_sdrain:
+	lea	slots,a2
+	move.l	d5,d0
+	lsl.l	#3,d0
+	adda.l	d0,a2
+	move.l	(a2),d0
+	beq.s	_sdr_next				; empty
+	move.l	d5,d0					; slot's heap
+	cmpi.l	#SLOT_SPLIT,d0
+	blo.s	_sdrM
+	movea.l	heapP,a5
+	bra.s	_sdrhk
+_sdrM:
+	movea.l	hMachineHeap,a5
+_sdrhk:
+	move.l	4(a2),d3				; size
+	cmpi.l	#4,d3
+	blo.s	_sdr_free
+	movea.l	(a2),a0					; final tag check
+	move.l	d5,curSlot
+	EXPECT_EQV	$72,(a0),curSlot
+_sdr_free:
+	HFREE	a5,(a2)
+	clr.l	(a2)
+_sdr_next:
+	addq.l	#1,d5
+	cmpi.l	#N_SLOTS,d5
+	blo.s	_sdrain
+
+	HVALIDATE hMachineHeap,#0			; both heaps validate clean
+	EXPECT_Z	$74
+	HVALIDATE heapP,#0
+	EXPECT_Z	$75
+	; SOA invariant: live cells == 0 => no live slabs / arenas remain
+	movea.l	hMachineHeap,a0
+	movea.l	hhSmallPool(a0),a1			; the machine heap must have a SCB by now
+	EXPECT_NONZERO	$76,a1
+	move.l	scbSlabCount(a1),d0
+	EXPECT_ZERO	$78,d0
+	move.l	scbArenaCount(a1),d0
+	EXPECT_ZERO	$79,d0
+	move.l	scbLiveCells(a1),d0
+	EXPECT_ZERO	$77,d0
+	HCOMPACT hMachineHeap				; compact is a clean no-op now
+	HVALIDATE hMachineHeap,#0
+	EXPECT_Z	$7A
+	; the private block heap coalesced back to (nearly) one free block
+	HALLOC	heapP,#0,#$18000
+	EXPECT_NONZERO	$7B,d0
+	move.l	d0,pBig
+	HFREE	heapP,pBig
+
+*======================================================================
+* Phase 3 — small heap: arena adaptive shrink + empty-arena reclamation
+*======================================================================
+	PHASE	3
+	HCREATE	#0,#HEAPSM_SIZE				; too small for a 4-tile arena
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,heapSm
+	HALLOC	heapSm,#0,#32				; first cell -> arena create (shrinks 4->1)
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pCell
+	movea.l	heapSm,a0
+	movea.l	hhSmallPool(a0),a1
+	move.l	scbArenaCount(a1),d0
+	EXPECT_EQ	$81,d0,1
+	move.l	scbSlabCount(a1),d0
+	EXPECT_EQ	$82,d0,1
+	move.l	pCell,-(sp)				; the arena holds exactly one tile
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	movea.l	d0,a0
+	movea.l	slArena(a0),a1
+	moveq	#0,d0
+	move.w	arSlabs(a1),d0
+	EXPECT_EQ	$83,d0,1				; 1 tile => shrank from ARENA_SLABS_DFLT(4)
+	HFREE	heapSm,pCell				; last cell -> slab + arena released
+	movea.l	heapSm,a0
+	movea.l	hhSmallPool(a0),a1
+	move.l	scbArenaCount(a1),d0
+	EXPECT_ZERO	$84,d0
+	move.l	scbSlabCount(a1),d0
+	EXPECT_ZERO	$85,d0
+	HVALIDATE heapSm,#0
+	EXPECT_Z	$86
+
+*======================================================================
+* Phase 4 — high-water mark vs the recorded (deterministic) baseline
+*======================================================================
+	PHASE	4
+	EXPECT_EQ	$91,hwBytes,BASE_HW_BYTES
+	EXPECT_EQ	$92,hwCount,BASE_HW_COUNT
+	EXPECT_NONZERO	$93,hwBytes
+	EXPECT_LE	$94,hwCount,N_SLOTS
+
+	TEST_PASS
+	TEST_EPILOGUE
+
+*======================================================================
+*  Subroutines
+*======================================================================
+
+* xorshift-32: rngState = f(rngState); returns D0 = new state.  Uses only
+* immediate shifts (<=8) so it is 68000-clean.  Clobbers D0/D1; preserves
+* D2-D7/A0-A6.
+_rng:
+	move.l	rngState,d0
+	move.l	d0,d1
+	lsl.l	#8,d1
+	lsl.l	#5,d1					; d1 = x << 13
+	eor.l	d1,d0
+	move.l	d0,d1
+	lsr.l	#8,d1
+	lsr.l	#8,d1
+	lsr.l	#1,d1					; d1 = x >> 17
+	eor.l	d1,d0
+	move.l	d0,d1
+	lsl.l	#5,d1					; d1 = x << 5
+	eor.l	d1,d0
+	move.l	d0,rngState
+	rts
+
+* Raise the byte/count high-water marks to the current live totals.
+* Clobbers D0/D1; preserves everything else.
+_hwupd:
+	move.l	curBytes,d0
+	move.l	hwBytes,d1
+	cmp.l	d1,d0
+	bls.s	_hwu1
+	move.l	d0,hwBytes
+_hwu1:
+	move.l	curCount,d0
+	move.l	hwCount,d1
+	cmp.l	d1,d0
+	bls.s	_hwu2
+	move.l	d0,hwCount
+_hwu2:
+	rts
+
+*----- module .bss -----
+	.bss
+hMachineHeap	ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+heapP	ds.l	1
+heapSm	ds.l	1
+rngState ds.l	1
+curBytes ds.l	1
+curCount ds.l	1
+hwBytes	ds.l	1
+hwCount	ds.l	1
+curSlot	ds.l	1
+pBig	ds.l	1
+pCell	ds.l	1
+	.even
+slots	ds.b	N_SLOTS*8			; {ptr, size} per slot
+	.even
+heapbuf	ds.b	HEAPBUFSIZE
+	end

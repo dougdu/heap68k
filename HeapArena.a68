@@ -119,6 +119,9 @@ _arrFound:
 	move.l	arNext(a1),(a2)			; *slot = arena->arNext
 
 _arrFree:
+	clr.l	arMagic(a1)			; invalidate the descriptor before the block
+						;   returns to the heap, so reused memory can't
+						;   pose as an arena to __HeapSlabFromPtr
 	move.l	arBlock(a1),-(sp)		; free the underlying block
 	move.l	a0,-(sp)
 	jsr	_HeapFree

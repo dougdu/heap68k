@@ -217,6 +217,9 @@ __HeapSlabRelease PROC USES d2/a0-a3, hHeap:DWORD, slab:DWORD
 	movea.l hHeap,a0			; A0 --> heap header
 	movea.l slab,a1				; A1 --> slab
 	movea.l slArena(a1),a2			; A2 --> owning arena
+	clr.l	slMagic(a1)			; invalidate the tile: once this memory is
+						;   reused (block path) it must not be
+						;   mis-recognized as a cell by __HeapSlabFromPtr
 
 	; tile index = (slab - arBase) / SLAB_SIZE
 	move.l	a1,d0
