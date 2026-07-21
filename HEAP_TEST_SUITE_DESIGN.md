@@ -1,6 +1,6 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** Phases A–6 + 8 complete — full functional/SOA/debug/error/stress coverage plus the §9 edge-case backfill (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors`/`test_stress`/`test_edges` green via `nmake test`); the stress suite found & fixed a real SOA bug (stale slab/arena magic in released memory). Only Phase 7 (runner polish / CI / README) remains
+**Status:** All phases complete (A–8) — full functional / SOA / debug / error / stress coverage + the §9 edge-case backfill, run by a hardened one-step CI runner (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors`/`test_stress`/`test_edges` green via `nmake test`, exit 0). The stress suite found & fixed a real SOA bug (stale slab/arena magic in released memory).
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
@@ -424,6 +424,25 @@ For triage, not CI: `sim68k --gdb`; then `sid68k` (no argv); at `-` type
 `e<module>.elf` (loads image **and** DDT symbols + sets PC), `x`, `g,_tdone`, then inspect
 with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C2.)
 
+### 10.4 Running the suite (quick start)
+- **`nmake /f makefile-elf test`** — canonical one-step: build the module ELFs, run every
+  module, print the summary, and exit `0` iff all pass. This is the CI entry point.
+- `nmake /f makefile-elf tests` — build the module ELFs only.
+- `pwsh -File run-heap-tests.ps1` — build + run the default modules.
+- `pwsh -File run-heap-tests.ps1 -NoBuild -Modules test_stress` — run one module, no rebuild.
+- `pwsh -File run-heap-tests.ps1 -Port 4321 -TimeoutSec 40` — override the RSP port / watchdog.
+
+**Reading the summary.** A `PASS` row is `RESULT=00000000`. A `FAIL` row's `Note` decodes
+`RESULT=$0000PPCC` as `phase P, check 0xCC`, and `DETAIL` is the failing value / error code —
+look that phase+check up in `<module>.a68`. Other statuses: `TIMEOUT` (watchdog tripped —
+storm/hang), `NOSIM` (RSP port never opened), `NORESULT` (gdb emitted no `RESULT=` line, with a
+hint), `NOBUILD` (ELF missing). The process **exit code = number of non-passing modules**.
+
+**Prereqs** (the runner checks all three and aborts with exit `255` if any is missing):
+`sim68k.exe` (…`builds\win64\bin\Release`), `m68k-elf-gdb.exe` (`C:\SysGCC\m68k-elf\bin`), and
+`heaptest.gdb` beside the runner. Teardown is wrapped in `try/finally`, so every sim is killed
+even if the run aborts; each module also waits for the RSP port to be free before starting.
+
 ---
 
 ## 11. Build Integration
@@ -474,7 +493,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 4 | Debug & validation suite | ✅ | [`test_debug.a68`](test_debug.a68) covers §9.6 (debug-fill alloc/free, tail-guard, auto-validate) + corrupt-and-detect (block magic, chain fwd-link, free-chain back-link, SOA slab/arena magic); passes via `nmake test` (2026-07-21) |
 | 5 | Error-code & near-miss coverage | ✅ | [`test_errors.a68`](test_errors.a68) triggers & asserts every code `$00`–`$17` (§9.7) + §9.8 near-miss classification, F2 ÷0 guard, and foreign-pointer API safety (no crash); passes via `nmake test` (2026-07-21) |
 | 6 | Stress / soak | ✅ | [`test_stress.a68`](test_stress.a68) (§9.9) fixed-seed xorshift mix (alloc/free/realloc, 1..4096, machine SOA + private block heaps) + interleaved validate + drain invariants + arena adaptive-shrink + high-water baseline; deterministic. **Found & fixed a real SOA bug** (released slab/arena kept its magic → reused memory mis-ID'd as a cell). Passes via `nmake test` (2026-07-21) |
-| 7 | Runner polish & CI | ⬜ | one-command `nmake test`; decoded summary; nonzero exit on fail; port/timeout/teardown robust; README |
+| 7 | Runner polish & CI | ✅ | one-step `nmake test` (build+run+verdict, exit 0/n); generic `$PPCC`→"phase P, check 0xCC" decode; `try/finally` teardown + port-free wait; §10.4 quick-start added. (2026-07-21) |
 | 8 | Coverage audit & backfill | ✅ | [`test_edges.a68`](test_edges.a68) closes the §9 gaps — realloc NULL/0 + zero-on-grow, compact reclamation effect, walk block count, destroy-with-live-allocs, `_GetMachineHeaps` contents + truncation; §9.4 corrected. Passes via `nmake test` (2026-07-21) |
 
 ### Phase 0 — Harness bootstrap  ✅ (2026-07-21)
@@ -589,9 +608,17 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
       arena release.  Slab/arena reclamation counts were already correct; only the magic-based
       recognition was fooled.
 
-### Phase 7 — Runner polish & CI  ⬜
-- [ ] `nmake test` builds + runs + verdicts in one step; decoded summary table.
-- [ ] Robust port/timeout/teardown; nonzero exit on any failure; short README section.
+### Phase 7 — Runner polish & CI  ✅ (2026-07-21)
+- [x] One-step `nmake /f makefile-elf test` (the `test` target depends on `tests`, so make
+      builds the ELFs then runs the driver `-NoBuild`); prints the summary table and propagates
+      the driver's **exit code = number of non-passing modules** (0 = all green) for CI.
+- [x] **Decoded** summary: any non-zero `RESULT` is decoded generically as `phase P, check 0xCC`
+      (`Get-ResultNote`), with `$0000FFFF` as the "never reached `_tdone`" sentinel and an optional
+      per-module override table; no more "unknown code".  Robust teardown (`try/finally` always
+      kills the sim), a **port-free wait** before each module (never attach to a dying sim on a
+      stale port), and a `NORESULT` hint from the gdb output.  Quick-start documented in §10.4.
+- [ ] Not done (deferred): mirroring the `tests`/`test` targets into `makefile-coff` /
+      `makefile.macos` (COFF `ar` is broken on this host and macOS is not host-buildable — §14 R8).
 
 ### Phase 8 — Coverage audit & backfill  ✅ (2026-07-21)
 - [x] Walked the §9 matrix against every module; every row now has an implemented, passing case.
@@ -665,3 +692,4 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 2026-07-21 | **Phase 5 complete** — [`test_errors.a68`](test_errors.a68) (§9.7/§9.8): triggers & asserts every heap error code `$00`–`$17` (all reachable — none unreachable) across API misuse, whole/single-block `_HeapValidate` corruptions, `_HeapValidateHandle` header corruptions, and SOA double-free/slab/arena, each repaired and re-validated; plus near-miss `__HeapSlabFromPtr` classification (off-by-one / mid-cell / foreign), the F2 ÷0 guard (`slCellSz == 0`, `slClass >= SOA_NUM_CLASSES`), and foreign-pointer `_HeapFree`/`_HeapSize` → `INVALID_BLOCK` with no crash. 7/7 green via `nmake test`. Re-hit the `pC`→`PC` register-name trap (renamed `pCc`). |
 | 2026-07-21 | **Phase 6 complete** — [`test_stress.a68`](test_stress.a68) (§9.9): fixed-seed xorshift-32 soak (alloc/free/realloc 1..4096 over the SOA machine heap + a private block heap), interleaved validate, tagged data-integrity, drain reclamation invariants (`scbLiveCells`/`scbSlabCount`/`scbArenaCount == 0`), arena adaptive-shrink (4→1) + empty-arena reclamation, and a deterministic live-byte/count high-water baseline (identical across runs). 8/8 green via `nmake test`. **Found & fixed a real SOA defect:** `__HeapSlabRelease`/`__HeapArenaRelease` left `slMagic`/`arMagic` intact on freed memory, so reused blocks were mis-recognized as cells by `__HeapSlabFromPtr` (drove `scbLiveCells` to −6, mis-reported `_HeapSize`); fix clears both magics on release. Reclamation counts themselves were already correct. |
 | 2026-07-21 | **Phase 8 complete** — [`test_edges.a68`](test_edges.a68): coverage-audit backfill of the §9 edge cases the functional/stress suites left thin — `_HeapReAlloc` NULL→`INVALID_BLOCK` / size-0→minimal-alloc / `ZERO_MEMORY`-zeroes-grown-tail, `_HeapCompact` reclamation **effect** on a no-coalesce heap (fragment→merge→fit + return grows), `_HeapWalk` block enumeration **count** (5 + empty), `_HeapDestroy` with **live allocations** inside, and `_GetMachineHeaps` buffer **contents** + `N < count` **truncation** (no overrun). Corrected the design §9.4 realloc wording to match the strict implementation. 9/9 green via `nmake test`. Only Phase 7 (runner polish/CI/README) remains. |
+| 2026-07-21 | **Phase 7 complete** — runner hardening in [`run-heap-tests.ps1`](run-heap-tests.ps1): one-step `nmake test` (build+run+verdict, exit = #failures) confirmed; generic `$PPCC`→"phase P, check 0xCC" decode (`Get-ResultNote`) replacing the sparse lookup; `try/finally` teardown that always tears the sim down; a per-module **port-free wait** so gdb never attaches to a dying sim on a stale port; and a `NORESULT` hint. Added the §10.4 quick-start. Full suite still 9/9 green (exit 0). **All test-suite phases (A–8) are now complete.** |

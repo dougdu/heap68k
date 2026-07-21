@@ -10,9 +10,14 @@
     Exit code = number of non-passing modules (0 = all pass), for CI.
 
     Usage:
+      nmake /f makefile-elf test                    # canonical one-step: build + run + verdict (CI)
       pwsh -File run-heap-tests.ps1                 # build + run the default modules
-      pwsh -File run-heap-tests.ps1 -Modules stub   # a specific module
+      pwsh -File run-heap-tests.ps1 -Modules stub   # a single module
       pwsh -File run-heap-tests.ps1 -NoBuild        # skip the nmake build step
+      pwsh -File run-heap-tests.ps1 -Port 4321 -TimeoutSec 40
+
+    A FAIL row's Note decodes RESULT=$0000PPCC as "phase P, check 0xCC"; DETAIL is the
+    failing value/code (see the module source for that check).
 #>
 [CmdletBinding()]
 param(
@@ -33,11 +38,24 @@ foreach ($tool in @($Sim, $Gdb, $GdbScript)) {
     if (-not (Test-Path -LiteralPath $tool)) { Write-Error "missing: $tool"; exit 255 }
 }
 
-# $PPCC (module-scoped) / sentinel decode table — keep in step with the test modules.
+# Optional module-scoped overrides for specific $PPCC codes.  Any code not listed
+# here is decoded generically as "phase P, check 0xCC" (see Get-ResultNote), so this
+# table only needs entries where a friendlier message is genuinely worthwhile.
 $KnownCodes = @{
-    '0000FFFF'      = 'sentinel: did not reach _tdone (storm / hang / early-out)'
     'stub:00000101' = 'stub: machine heap handle is NULL'
     'stub:00000102' = 'stub: heap header magic != HEAP'
+}
+
+# Decode a non-zero RESULT into a human-readable note.  RESULT is $0000PPCC
+# (PP = 1-based phase, CC = check id within that phase); $0000FFFF is the
+# "never reached _tdone" sentinel written by TEST_INIT.
+function Get-ResultNote([string]$module, [string]$res) {
+    if ($res -eq '0000FFFF') { return 'sentinel: never reached _tdone (storm / hang / early-out)' }
+    if ($KnownCodes.ContainsKey("${module}:$res")) { return $KnownCodes["${module}:$res"] }
+    if ($KnownCodes.ContainsKey($res))             { return $KnownCodes[$res] }
+    $pp = [Convert]::ToInt32($res.Substring(4, 2), 16)
+    $cc = [Convert]::ToInt32($res.Substring(6, 2), 16)
+    return ('phase {0}, check 0x{1:X2}' -f $pp, $cc)
 }
 
 function Stop-AllSim {
@@ -57,6 +75,22 @@ function Wait-Port([int]$p, [int]$timeoutMs = 5000) {
     return $false
 }
 
+# Wait until the RSP port stops accepting connections, i.e. a previous sim has
+# fully released it, so we never attach gdb to a dying sim on a stale port.
+function Wait-PortFree([int]$p, [int]$timeoutMs = 3000) {
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
+        $c = [System.Net.Sockets.TcpClient]::new()
+        try {
+            if (-not $c.ConnectAsync('127.0.0.1', $p).Wait(150)) { return $true }   # timed out -> free
+            $c.Close()                                                             # still open -> wait
+        } catch { return $true }                                                   # refused/threw -> free
+        finally { $c.Dispose() }
+        Start-Sleep -Milliseconds 100
+    }
+    return $false
+}
+
 if (-not $NoBuild) {
     Write-Host "Building test ELFs (nmake /f makefile-elf tests)..."
     $buildLog = & nmake /f makefile-elf tests 2>&1
@@ -69,6 +103,7 @@ if (-not $NoBuild) {
 Stop-AllSim
 $results = @()
 
+try {
 foreach ($m in $Modules) {
     $elf = "$m.elf"
     if (-not (Test-Path -LiteralPath $elf)) {
@@ -77,6 +112,7 @@ foreach ($m in $Modules) {
     }
 
     Stop-AllSim
+    [void] (Wait-PortFree $Port 3000)
     $simOut = [System.IO.Path]::GetTempFileName()
     $simProc = Start-Process -FilePath $Sim -ArgumentList '--gdb', "$Port" `
                  -PassThru -WindowStyle Hidden -RedirectStandardOutput $simOut -RedirectStandardError "$simOut.err"
@@ -108,7 +144,10 @@ foreach ($m in $Modules) {
 
     $mt = [regex]::Match($out, 'RESULT=([0-9a-fA-F]{8})\s+DETAIL=([0-9a-fA-F]{8})')
     if (-not $mt.Success) {
-        $results += [pscustomobject]@{ Module=$m; Status='NORESULT'; Result='--------'; Detail='--------'; Note='no RESULT= line from gdb' }
+        $hint = ($out -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -First 1)
+        $note = 'no RESULT= line from gdb'
+        if ($hint) { $note = "$note ($hint)" }
+        $results += [pscustomobject]@{ Module=$m; Status='NORESULT'; Result='--------'; Detail='--------'; Note=$note }
         continue
     }
 
@@ -117,14 +156,14 @@ foreach ($m in $Modules) {
     if ($res -eq '00000000') {
         $results += [pscustomobject]@{ Module=$m; Status='PASS'; Result=$res; Detail=$det; Note='' }
     } else {
-        $note = $KnownCodes["${m}:$res"]
-        if (-not $note) { $note = $KnownCodes[$res] }
-        if (-not $note) { $note = 'unknown code (see the module source)' }
+        $note = Get-ResultNote $m $res
         $results += [pscustomobject]@{ Module=$m; Status='FAIL'; Result=$res; Detail=$det; Note=$note }
     }
 }
-
-Stop-AllSim
+}
+finally {
+    Stop-AllSim
+}
 
 Write-Host ''
 $results | Format-Table -AutoSize Module, Status, Result, Detail, Note | Out-String | Write-Host
