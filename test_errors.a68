@@ -1,0 +1,405 @@
+************************************************************************
+*  test_errors.a68 — Phase 5, §9.7 error-code sweep + §9.8 near-miss.
+*
+*  Triggers and asserts (via _HeapGetError) every reachable heap error
+*  code $00..$17, then exercises the near-miss / foreign-pointer paths
+*  that must reject *without crashing* (the F2 ÷0 guard included).
+*
+*  Check-id convention: for the sweep, the check id passed to EXPECT_ERR
+*  is the target error code, so a failing tResult = $0P_CC names the code
+*  whose trigger misfired and tDetail = the code actually returned.
+*  Setup asserts use id $F0.  The near-miss phase (5) uses ids 1..8.
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+	include heaptestkit.inc
+
+	extern	__MachineHeapHandle
+
+	.code
+
+HEAPBUFSIZE equ $80000				; 512 KB self-contained machine heap
+HSZ	    equ $8000				; 32 KB per private heap
+
+start:
+	TEST_INIT	heapbuf,HEAPBUFSIZE-128
+
+	HCREATE	#HEAP_DISABLE_SMALL_POOL,#HSZ		; block-path heap (API errors)
+	move.l	d0,heapB
+	HCREATE	#HEAP_DISABLE_SMALL_POOL,#HSZ		; block heap (whole/single validate)
+	move.l	d0,heapV
+	HCREATE	#HEAP_DISABLE_SMALL_POOL,#HSZ		; block heap (handle validate)
+	move.l	d0,heapH
+	HCREATE	#0,#HSZ					; SOA heap (cell/slab/arena errors)
+	move.l	d0,heapS
+	HCREATE	#HEAP_TAIL_CHECKING_ENABLED,#HSZ	; tail-guard heap
+	move.l	d0,heapT
+
+*======================================================================
+* Phase 1 — reachable codes via direct API use / misuse
+*======================================================================
+	PHASE	1
+	; $00 SUCCESS — a clean validate leaves __HeapError == SUCCESS
+	HVALIDATE heapB,#0
+	EXPECT_ERR	$00,HEAP_ERROR_SUCCESS
+	; $01 INVALID_PARAM — _HeapWalk with a NULL entry buffer
+	HWALK	heapB,#0
+	EXPECT_ERR	$01,HEAP_ERROR_INVALID_PARAM
+	; $02 INVALID_HANDLE — validate a mis-aligned (non-heap) handle
+	HVALIDATEH #$00000021
+	EXPECT_ERR	$02,HEAP_ERROR_INVALID_HANDLE
+	; $0B OUT_OF_MEMORY — request larger than the heap
+	HALLOC	heapB,#0,#$00100000
+	EXPECT_ZERO	$F0,d0
+	EXPECT_ERR	$0B,HEAP_ERROR_OUT_OF_MEMORY
+	; setup: two adjacent block allocations on heapB
+	HALLOC	heapB,#0,#64
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pX
+	HALLOC	heapB,#0,#64
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pW				; keeps pX from coalescing when freed
+	; $0A HANDLE_BLOCK_MISMATCH — size a heapB block against heapS
+	HSIZE	heapS,pW
+	EXPECT_ERR	$0A,HEAP_ERROR_HANDLE_BLOCK_MISMATCH
+	; $03 INVALID_BLOCK — free the same block twice
+	HFREE	heapB,pX
+	HFREE	heapB,pX
+	EXPECT_ERR	$03,HEAP_ERROR_INVALID_BLOCK
+	; $0E NO_MORE_ITEMS — walk heapB to the end
+	move.l	#0,tcursor
+_p1walk:
+	HWALK	heapB,#tcursor
+	tst.l	d0
+	bne	_p1walk
+	EXPECT_ERR	$0E,HEAP_ERROR_NO_MORE_ITEMS
+	; $0C NOT_INITIALIZED — machine handle momentarily cleared
+	move.l	__MachineHeapHandle,d5
+	clr.l	__MachineHeapHandle
+	jsr	_GetMachineHeap
+	move.l	d5,__MachineHeapHandle		; restore before asserting
+	EXPECT_ERR	$0C,HEAP_ERROR_NOT_INITIALIZED
+	; $0D INITIALIZED — re-init while already initialized (early-exits)
+	clr.l	-(sp)
+	clr.l	-(sp)
+	clr.l	-(sp)
+	jsr	_MachineHeapInitialize
+	adda.l	#12,sp
+	EXPECT_ERR	$0D,HEAP_ERROR_INITIALIZED
+	; $13 TAIL_VALIDATION_FAILED — overrun the debug tail guard
+	HALLOC	heapT,#0,#16
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pX
+	movea.l	pX,a0
+	move.b	#$00,16(a0)			; clobber the first guard byte
+	HFREE	heapT,pX
+	EXPECT_ERR	$13,HEAP_ERROR_TAIL_VALIDATION_FAILED
+	movea.l	pX,a0
+	move.b	#$AB,16(a0)			; repair the guard and free cleanly
+	HFREE	heapT,pX
+
+*======================================================================
+* Phase 2 — validate-detected corruptions (block chain / free chain /
+*           heap-end) on heapV
+*======================================================================
+	PHASE	2
+	HALLOC	heapV,#0,#48			; A (first block)
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pA
+	HALLOC	heapV,#0,#48			; B
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pB
+	HALLOC	heapV,#0,#48			; C (same class as A -> same free bucket)
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pCc
+	HALLOC	heapV,#0,#48			; D (separator keeping C from coalescing)
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pD
+	HVALIDATE heapV,#0			; baseline: the heap is clean
+	EXPECT_Z	$F1
+	; $05 INVALID_NEXT_LINK — skew B's forward link
+	movea.l	pB,a0
+	addi.l	#4,bhNext-BLK_HDR_SIZE(a0)
+	HVALIDATE heapV,#0
+	EXPECT_NZ	$05
+	EXPECT_ERR	$05,HEAP_ERROR_INVALID_NEXT_LINK
+	movea.l	pB,a0
+	subi.l	#4,bhNext-BLK_HDR_SIZE(a0)
+	HVALIDATE heapV,#0
+	EXPECT_Z	$F1
+	; $04 INVALID_PREV_LINK — skew B's back link
+	movea.l	pB,a0
+	addi.l	#4,bhPrev-BLK_HDR_SIZE(a0)
+	HVALIDATE heapV,#0
+	EXPECT_NZ	$04
+	EXPECT_ERR	$04,HEAP_ERROR_INVALID_PREV_LINK
+	movea.l	pB,a0
+	subi.l	#4,bhPrev-BLK_HDR_SIZE(a0)
+	HVALIDATE heapV,#0
+	EXPECT_Z	$F1
+	; $08 HEAPEND_BAD_MAGIC — corrupt the end-of-heap marker magic
+	movea.l	heapV,a0
+	move.l	hhSize(a0),d0
+	lea	0(a0,d0.l),a1			; A1 = heap + hhSize
+	suba.l	#BLK_HDR_SIZE,a1		; A1 = end marker
+	move.l	(a1),d5				; save marker magic
+	clr.l	(a1)				; corrupt it
+	HVALIDATE heapV,#0
+	EXPECT_NZ	$08
+	EXPECT_ERR	$08,HEAP_ERROR_HEAPEND_BAD_MAGIC
+	movea.l	heapV,a0
+	move.l	hhSize(a0),d0
+	lea	0(a0,d0.l),a1
+	suba.l	#BLK_HDR_SIZE,a1
+	move.l	d5,(a1)				; repair
+	HVALIDATE heapV,#0
+	EXPECT_Z	$F1
+	; $09 INVALID_HEAPEND — last block's size no longer reaches the marker
+	movea.l	heapV,a0
+	movea.l	hhHeapHead(a0),a1		; walk to the last block (bhNext == 0)
+_p2last:
+	move.l	bhNext(a1),d0
+	beq	_p2lastf
+	movea.l	d0,a1
+	bra	_p2last
+_p2lastf:
+	move.l	a1,pX				; stash last-block header for repair
+	move.l	bhSize(a1),d5			; save
+	addi.l	#BLK_HDR_SIZE,bhSize(a1)		; grow it past the marker
+	HVALIDATE heapV,#0
+	EXPECT_NZ	$09
+	EXPECT_ERR	$09,HEAP_ERROR_INVALID_HEAPEND
+	movea.l	pX,a1
+	move.l	d5,bhSize(a1)			; repair
+	HVALIDATE heapV,#0
+	EXPECT_Z	$F1
+	; free A -> it heads its bucket (bhFreePrev == 0)
+	HFREE	heapV,pA
+	; $06 INVALID_FPREV_LINK — corrupt the free head's back link
+	movea.l	pA,a0
+	move.l	#$DEADBEEF,bhFreePrev-BLK_HDR_SIZE(a0)
+	HVALIDATE heapV,#0
+	EXPECT_NZ	$06
+	EXPECT_ERR	$06,HEAP_ERROR_INVALID_FPREV_LINK
+	movea.l	pA,a0
+	clr.l	bhFreePrev-BLK_HDR_SIZE(a0)	; repair (head has no predecessor)
+	HVALIDATE heapV,#0
+	EXPECT_Z	$F1
+	; $07 BLOCK_NOT_FREE — a bucket member without its FREE flag
+	movea.l	pA,a0
+	bclr.b	#FLG_FREE_BIT,bhFlags-BLK_HDR_SIZE+3(a0)
+	HVALIDATE heapV,#0
+	EXPECT_NZ	$07
+	EXPECT_ERR	$07,HEAP_ERROR_BLOCK_NOT_FREE
+	movea.l	pA,a0
+	bset.b	#FLG_FREE_BIT,bhFlags-BLK_HDR_SIZE+3(a0)
+	HVALIDATE heapV,#0
+	EXPECT_Z	$F1
+	; free C into the same bucket -> chain head C -> A
+	HFREE	heapV,pCc
+	; $14 INVALID_FNXT_LINK — single-block validate of C, whose freeNext (A)
+	;     no longer links back to C
+	movea.l	pA,a0
+	move.l	bhFreePrev-BLK_HDR_SIZE(a0),d5	; save A.bhFreePrev (= C header)
+	move.l	#$DEADBEEF,bhFreePrev-BLK_HDR_SIZE(a0)
+	HVALIDATE heapV,pCc
+	EXPECT_NZ	$14
+	EXPECT_ERR	$14,HEAP_ERROR_INVALID_FNXT_LINK
+	movea.l	pA,a0
+	move.l	d5,bhFreePrev-BLK_HDR_SIZE(a0)	; repair
+	HVALIDATE heapV,pCc
+	EXPECT_Z	$F1
+
+*======================================================================
+* Phase 3 — header (handle) corruptions on heapH
+*======================================================================
+	PHASE	3
+	HALLOC	heapH,#0,#48			; A (hhHeapHead)
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pA
+	HALLOC	heapH,#0,#48			; B (freed later -> bucket head)
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pB
+	HALLOC	heapH,#0,#48			; C (separator)
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pCc
+	HVALIDATEH heapH
+	EXPECT_Z	$F1
+	; $11 HEADER_BAD_MAGIC — corrupt the heap header magic
+	movea.l	heapH,a0
+	move.l	hhMagic(a0),d5
+	clr.l	hhMagic(a0)
+	HVALIDATEH heapH
+	EXPECT_NZ	$11
+	EXPECT_ERR	$11,HEAP_HEADER_BAD_MAGIC
+	movea.l	heapH,a0
+	move.l	d5,hhMagic(a0)
+	HVALIDATEH heapH
+	EXPECT_Z	$F1
+	; $12 HEADER_INVALID_SIZE — hhSize no longer matches hhRequestSize
+	movea.l	heapH,a0
+	move.l	hhSize(a0),d5
+	addi.l	#BLK_HDR_SIZE,hhSize(a0)
+	HVALIDATEH heapH
+	EXPECT_NZ	$12
+	EXPECT_ERR	$12,HEAP_HEADER_INVALID_SIZE
+	movea.l	heapH,a0
+	move.l	d5,hhSize(a0)
+	HVALIDATEH heapH
+	EXPECT_Z	$F1
+	; $0F HEADER_BLOCK_HEADPTR_BAD — corrupt the first (hhHeapHead) block magic
+	movea.l	heapH,a0
+	movea.l	hhHeapHead(a0),a1
+	move.l	a1,pX
+	move.l	bhMagic(a1),d5
+	clr.l	bhMagic(a1)
+	HVALIDATEH heapH
+	EXPECT_NZ	$0F
+	EXPECT_ERR	$0F,HEAP_HEADER_BLOCK_HEADPTR_BAD
+	movea.l	pX,a1
+	move.l	d5,bhMagic(a1)
+	HVALIDATEH heapH
+	EXPECT_Z	$F1
+	; $10 HEADER_BLOCK_FREEPTR_BAD — corrupt a free bucket head's magic
+	HFREE	heapH,pB			; B becomes a bucket head (not hhHeapHead)
+	movea.l	pB,a1
+	suba.l	#BLK_HDR_SIZE,a1
+	move.l	bhMagic(a1),d5
+	clr.l	bhMagic(a1)
+	HVALIDATEH heapH
+	EXPECT_NZ	$10
+	EXPECT_ERR	$10,HEAP_HEADER_BLOCK_FREEPTR_BAD
+	movea.l	pB,a1
+	suba.l	#BLK_HDR_SIZE,a1
+	move.l	d5,bhMagic(a1)
+	HVALIDATEH heapH
+	EXPECT_Z	$F1
+
+*======================================================================
+* Phase 4 — SOA corruptions on heapS
+*======================================================================
+	PHASE	4
+	ANCHOR_CELL heapS,#24,pAnchor		; keep the class-2 slab alive
+	; $16 DOUBLE_FREE — free the same cell twice
+	HALLOC	heapS,#0,#24
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pCell
+	HFREE	heapS,pCell
+	HFREE	heapS,pCell
+	EXPECT_ERR	$16,HEAP_ERROR_DOUBLE_FREE
+	; $15 SLAB_CORRUPT — corrupt a live slab's magic
+	HALLOC	heapS,#0,#24
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pCell
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabX
+	movea.l	d0,a0
+	move.l	slMagic(a0),d5
+	clr.l	slMagic(a0)
+	HVALIDATE heapS,#0
+	EXPECT_NZ	$15
+	EXPECT_ERR	$15,HEAP_ERROR_SLAB_CORRUPT
+	movea.l	slabX,a0
+	move.l	d5,slMagic(a0)
+	HVALIDATE heapS,#0
+	EXPECT_Z	$F1
+	; $17 SOA_ARENA_CORRUPT — corrupt the owning arena's magic
+	movea.l	slabX,a0
+	movea.l	slArena(a0),a1
+	move.l	a1,arenaX
+	move.l	arMagic(a1),d5
+	clr.l	arMagic(a1)
+	HVALIDATE heapS,#0
+	EXPECT_NZ	$17
+	EXPECT_ERR	$17,HEAP_ERROR_SOA_ARENA_CORRUPT
+	movea.l	arenaX,a1
+	move.l	d5,arMagic(a1)
+	HVALIDATE heapS,#0
+	EXPECT_Z	$F1
+
+*======================================================================
+* Phase 5 — near-miss / foreign-pointer classification (no crash)
+*======================================================================
+	PHASE	5
+	; positive control: the real cell is recognized
+	move.l	pCell,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	EXPECT_NONZERO	1,d0
+	; off-by-one -> rejected (not cell-aligned)
+	move.l	pCell,d0
+	addq.l	#1,d0
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	EXPECT_ZERO	2,d0
+	; mid-cell (+4) -> rejected
+	move.l	pCell,d0
+	addq.l	#4,d0
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	EXPECT_ZERO	3,d0
+	; foreign pointer -> rejected (no SLAB magic at the masked base)
+	move.l	#foreignbuf,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	EXPECT_ZERO	4,d0
+	; F2 guard: a valid magic chain but slCellSz == 0 must reject, not ÷0-trap
+	movea.l	slabX,a0
+	move.w	slCellSz(a0),d5
+	clr.w	slCellSz(a0)
+	move.l	pCell,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	EXPECT_ZERO	5,d0
+	movea.l	slabX,a0
+	move.w	d5,slCellSz(a0)			; repair
+	; F2 guard: slClass >= SOA_NUM_CLASSES must reject
+	movea.l	slabX,a0
+	move.w	slClass(a0),d5
+	move.w	#SOA_NUM_CLASSES,slClass(a0)
+	move.l	pCell,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	EXPECT_ZERO	6,d0
+	movea.l	slabX,a0
+	move.w	d5,slClass(a0)			; repair
+	; foreign pointer through the public API -> error, no crash
+	HFREE	heapS,#foreignbuf
+	EXPECT_ERR	7,HEAP_ERROR_INVALID_BLOCK
+	HSIZE	heapS,#foreignbuf
+	EXPECT_ERR	8,HEAP_ERROR_INVALID_BLOCK
+
+	TEST_PASS
+	TEST_EPILOGUE
+
+*----- module .bss -----
+	.bss
+hMachineHeap	ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+heapB	ds.l	1
+heapV	ds.l	1
+heapH	ds.l	1
+heapS	ds.l	1
+heapT	ds.l	1
+pA	ds.l	1
+pB	ds.l	1
+pCc	ds.l	1
+pD	ds.l	1
+pW	ds.l	1
+pX	ds.l	1
+pCell	ds.l	1
+pAnchor	ds.l	1
+slabX	ds.l	1
+arenaX	ds.l	1
+tcursor	ds.l	1
+foreignbuf ds.l	8
+	.even
+heapbuf	ds.b	HEAPBUFSIZE
+	end

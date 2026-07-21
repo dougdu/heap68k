@@ -1,6 +1,6 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** Phases A–4 complete — harness + kit + block-path + SOA + debug/validation suites validated (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug` green via `nmake test`); suite build-out (Phases 5–8) pending
+**Status:** Phases A–5 complete — harness + kit + block-path + SOA + debug/validation + error-sweep suites validated (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors` green via `nmake test`); suite build-out (Phases 6–8) pending
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
@@ -472,7 +472,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 2 | Block-path functional suite | ✅ | [`test_create.a68`](test_create.a68) (§9.1) + [`test_block.a68`](test_block.a68) (§9.2–§9.5, SOA disabled) pass via `nmake test` (2026-07-21) |
 | 3 | SOA suite integration | ✅ | [`test_soa.a68`](test_soa.a68) refactored onto the kit from `HeapSmallTest.a68` (9 phases); passes headless via `nmake test` (2026-07-21) |
 | 4 | Debug & validation suite | ✅ | [`test_debug.a68`](test_debug.a68) covers §9.6 (debug-fill alloc/free, tail-guard, auto-validate) + corrupt-and-detect (block magic, chain fwd-link, free-chain back-link, SOA slab/arena magic); passes via `nmake test` (2026-07-21) |
-| 5 | Error-code & near-miss coverage | ⬜ | §9.7 every reachable code asserted; §9.8 near-miss/foreign pointers classified with **no crash** |
+| 5 | Error-code & near-miss coverage | ✅ | [`test_errors.a68`](test_errors.a68) triggers & asserts every code `$00`–`$17` (§9.7) + §9.8 near-miss classification, F2 ÷0 guard, and foreign-pointer API safety (no crash); passes via `nmake test` (2026-07-21) |
 | 6 | Stress / soak | ⬜ | `test_stress` (§9.9) fixed-seed mix + invariant checks + high-water compare; deterministic across runs |
 | 7 | Runner polish & CI | ⬜ | one-command `nmake test`; decoded summary; nonzero exit on fail; port/timeout/teardown robust; README |
 | 8 | Coverage audit & backfill | ⬜ | every §9 row mapped to an implemented, passing case; gaps closed; tracker + changelog updated |
@@ -553,9 +553,22 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
       — so a magic test must corrupt a **mid-chain** block (not the first) to surface
       `INVALID_BLOCK` from the chain walk.
 
-### Phase 5 — Error-code & near-miss coverage  ⬜
-- [ ] Trigger + assert every reachable error `$00`–`$17` (§9.7); mark unreachable codes.
-- [ ] Near-miss/foreign pointer classification (§9.8) — no crash on any bad pointer.
+### Phase 5 — Error-code & near-miss coverage  ✅ (2026-07-21)
+- [x] [`test_errors.a68`](test_errors.a68) triggers + asserts (via `_HeapGetError`) **every** code
+      `$00`–`$17` (§9.7): API misuse (`SUCCESS`, `INVALID_PARAM`, `INVALID_HANDLE`, `OUT_OF_MEMORY`,
+      `HANDLE_BLOCK_MISMATCH`, `INVALID_BLOCK`, `NO_MORE_ITEMS`, `NOT_INITIALIZED`, `INITIALIZED`,
+      `TAIL_VALIDATION_FAILED`); `_HeapValidate` chain/free-chain/heap-end corruptions
+      (`INVALID_PREV_LINK`, `INVALID_NEXT_LINK`, `HEAPEND_BAD_MAGIC`, `INVALID_HEAPEND`,
+      `INVALID_FPREV_LINK`, `BLOCK_NOT_FREE`, single-block `INVALID_FNXT_LINK`); `_HeapValidateHandle`
+      header corruptions (`HEADER_BAD_MAGIC`, `HEADER_INVALID_SIZE`, `HEADER_BLOCK_HEADPTR_BAD`,
+      `HEADER_BLOCK_FREEPTR_BAD`); and SOA (`DOUBLE_FREE`, `SLAB_CORRUPT`, `SOA_ARENA_CORRUPT`).
+      Each corruption is repaired and re-validated clean.  All `$00`–`$17` are reachable — none
+      documented as unreachable.
+- [x] §9.8 near-miss: `__HeapSlabFromPtr` rejects off-by-one, mid-cell, and foreign pointers
+      (recognizes the real cell as a positive control); the **F2 ÷0 guard** rejects a real magic
+      chain with `slCellSz == 0` and with `slClass >= SOA_NUM_CLASSES` **without trapping**; and
+      `_HeapFree`/`_HeapSize` on a foreign pointer return `INVALID_BLOCK` with no crash.
+      Trap re-confirmed: a symbol named `pC` binds to the `PC` register even under `/Cx` → renamed `pCc`.
 
 ### Phase 6 — Stress / soak  ⬜
 - [ ] `test_stress.a68`: fixed-seed LCG mix (alloc/free/realloc, sizes 1..4096, mixed
@@ -623,3 +636,4 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 2026-07-21 | **Phase 2 complete** — [`test_create.a68`](test_create.a68) (§9.1 lifecycle/handles) + [`test_block.a68`](test_block.a68) (§9.2–§9.5 block path via `HEAP_DISABLE_SMALL_POOL`: sizes/alignment/zero/OOM, double-free/cross-heap/NULL, coalesce vs. no-coalesce, realloc + in-place, validate/walk/compact). Added `EXPECT_EQV`/`EXPECT_NEV` value compares; 4/4 green via `nmake test`. Trap noted: a symbol named `pC` binds to the `PC` register (register names are case-insensitive even under `/Cx`) → renamed `pQ`. |
 | 2026-07-21 | **Phase 3 complete** — [`test_soa.a68`](test_soa.a68): refactored `HeapSmallTest.a68` onto the kit (`TEST_INIT`/`TEST_PASS`/`TEST_EPILOGUE` + `include heaptestkit.inc`); all 9 phases of SOA checks + the anchor-cell discipline preserved verbatim. Runs headless via the runner (`RESULT=00000000`); 5/5 green via `nmake test`. Retires the manual `sid68k` procedure for CI (kept in §10.3 for debugging). |
 | 2026-07-21 | **Phase 4 complete** — [`test_debug.a68`](test_debug.a68) (§9.6): debug-fill on alloc (`CDCDCDCD`) and free (`BAADF00D`, control-word-after-poison for cells; `HEAP_DISABLE_COALESCE_ON_FREE` so the free fill is always reached), tail-guard overrun → `TAIL_VALIDATION_FAILED`, auto-validate-on-call refuses a call on a corrupt heap, and corrupt-and-detect (block magic→`INVALID_BLOCK`, fwd link→`INVALID_NEXT_LINK`, free back-link→`INVALID_FPREV_LINK`, slab→`SLAB_CORRUPT`, arena→`SOA_ARENA_CORRUPT`) with repair-revalidate. 6/6 green via `nmake test`. Trap learned: `_HeapValidate` runs `_HeapValidateHandle` first (checks `hhHeapHead`→`$0F` and bucket heads→`$10`), so a magic corruption must target a **mid-chain** block to surface `INVALID_BLOCK`. |
+| 2026-07-21 | **Phase 5 complete** — [`test_errors.a68`](test_errors.a68) (§9.7/§9.8): triggers & asserts every heap error code `$00`–`$17` (all reachable — none unreachable) across API misuse, whole/single-block `_HeapValidate` corruptions, `_HeapValidateHandle` header corruptions, and SOA double-free/slab/arena, each repaired and re-validated; plus near-miss `__HeapSlabFromPtr` classification (off-by-one / mid-cell / foreign), the F2 ÷0 guard (`slCellSz == 0`, `slClass >= SOA_NUM_CLASSES`), and foreign-pointer `_HeapFree`/`_HeapSize` → `INVALID_BLOCK` with no crash. 7/7 green via `nmake test`. Re-hit the `pC`→`PC` register-name trap (renamed `pCc`). |
