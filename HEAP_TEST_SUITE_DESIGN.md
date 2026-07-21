@@ -1,6 +1,6 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** Phase A (this spec) complete — implementation not started
+**Status:** Phases A–0 complete — harness bootstrapped & validated (green / red / watchdog); suite build-out (Phases 1–8) pending
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
@@ -370,24 +370,30 @@ the committed-byte high-water mark against a recorded baseline.
 set pagination off
 set confirm off
 target remote :1234
+load
 break _tdone
-break _tfail
 continue
-printf "RESULT=%08x DETAIL=%08x\n", tResult, tDetail
+printf "RESULT=%08x DETAIL=%08x\n", *(unsigned int *)&tResult, *(unsigned int *)&tDetail
 kill
 quit
 ```
-`m68k-elf-gdb <module>.elf --batch -x heaptest.gdb` connects to the running sim, breaks at
-the convergence point, prints one parseable line, and exits (no hang).
+`m68k-elf-gdb <module>.elf -nx --batch -x heaptest.gdb` connects to the running sim,
+transfers the image with **`load`** (sim68k ignores the positional `[file]` under `--gdb`;
+`load` also sets `$pc` to the entry, `0x500`), breaks at **`_tdone` only** (on the fail
+path `_tfail` writes `tResult`/`tDetail` and *falls through* into `_tdone`, so the value is
+valid there for both the pass and fail paths), prints one parseable line, and exits (no
+hang). `-nx` skips `~/.gdbinit`; the pointer cast reads the value because the ELF symbols
+carry no C type. **Validated in Phase 0.**
 
 ### 10.2 `run-heap-tests.ps1` (driver)
 1. **Build** the test ELFs (`nmake /f makefile-elf tests`).
 2. For each module ELF:
-   a. free TCP `1234` (kill any stale `sim68k`);
-   b. start `sim68k --gdb <module>.elf` (async);
-   c. run `m68k-elf-gdb <module>.elf --batch -x heaptest.gdb`, capture stdout;
-   d. **watchdog:** cap the run (e.g. a few seconds) so a storm fails fast instead of
-      hanging;
+   a. kill any stale `sim68k` and free TCP `1234`;
+   b. start a fresh `sim68k --gdb <port>` (the program is **not** passed on the command
+      line — it is transferred by the gdb `load` in §10.1); wait for the RSP port to open;
+   c. run `m68k-elf-gdb <module>.elf -nx --batch -x heaptest.gdb`, capture stdout;
+   d. **watchdog:** `WaitForExit(timeout)`; on timeout kill gdb+sim → `TIMEOUT` (a storm
+      fails fast instead of hanging);
    e. parse `RESULT=`/`DETAIL=`; `0` → pass, else decode `$PPCC` + detail;
    f. tear down the sim.
 3. Print a **summary table** (module · result · code · detail · decoded meaning) and set
@@ -423,6 +429,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 ├─ heaptestkit.inc             ; macros + result convention (§8)
 ├─ heaptest.gdb                ; GDB batch command file (§10.1)
 ├─ run-heap-tests.ps1          ; runner / verdict / exit code (§10.2)
+├─ stub.a68                    ; Phase 0 bootstrap smoke test
 ├─ test_create.a68             ; lifecycle & handles
 ├─ test_block.a68              ; block-path API (SOA disabled)
 ├─ test_soa.a68               ; SOA path (supersedes HeapSmallTest.a68)
@@ -440,7 +447,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | Phase | Title | Status | Exit criteria |
 |------:|-------|:------:|---------------|
 | A | Analysis & this spec | ✅ | Spec reviewed & accepted |
-| 0 | Harness bootstrap | ⬜ | `heaptest.gdb` + `run-heap-tests.ps1` drive a trivial stub ELF end-to-end via `m68k-elf-gdb --batch`; `RESULT=0` parsed; exit code correct; storm watchdog works |
+| 0 | Harness bootstrap | ✅ | `heaptest.gdb` + `run-heap-tests.ps1` drive `stub.elf` end-to-end via `m68k-elf-gdb --batch`; green→exit 0, red→exit 1, watchdog→`TIMEOUT` all proven; `nmake test` green (2026-07-21) |
 | 1 | Kit & result convention | ⬜ | `heaptestkit.inc` macros (`TEST_INIT`, `EXPECT_*`, `H*` wrappers, safety helpers); one sample module builds & passes using only macros |
 | 2 | Block-path functional suite | ⬜ | `test_create` + `test_block` cover §9.1–§9.5 with the SOA **disabled**; all pass headless |
 | 3 | SOA suite integration | ⬜ | `HeapSmallTest.a68` refactored onto the kit as `test_soa`; passes via the automated runner (no manual `sid68k`) |
@@ -450,15 +457,25 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 7 | Runner polish & CI | ⬜ | one-command `nmake test`; decoded summary; nonzero exit on fail; port/timeout/teardown robust; README |
 | 8 | Coverage audit & backfill | ⬜ | every §9 row mapped to an implemented, passing case; gaps closed; tracker + changelog updated |
 
-### Phase 0 — Harness bootstrap  ⬜
-- [ ] Write `heaptest.gdb` (§10.1); confirm `m68k-elf-gdb --batch` connects to
-      `sim68k --gdb`, breaks at a symbol, prints a memory value, and exits cleanly.
-- [ ] Write a minimal `stub.a68` (init heap, `clr.l tResult`, `_tdone`) and prove
-      `RESULT=00000000` is parsed and the runner exits `0`; flip it to a forced fail and
-      prove nonzero exit + the failing code is surfaced.
-- [ ] Add the storm **watchdog** (bounded run time → fail, not hang) and stale-sim/port
-      cleanup to `run-heap-tests.ps1`.
-- [ ] Decide exit-code mechanism (PowerShell parse vs. gdb-python hook — §15 Q2).
+### Phase 0 — Harness bootstrap  ✅ (2026-07-21)
+- [x] [`heaptest.gdb`](heaptest.gdb) (§10.1): `m68k-elf-gdb -nx --batch` connects to
+      `sim68k --gdb`, `load`s the image (positional `[file]` is ignored under `--gdb`;
+      `load` sets `$pc` to entry `0x500`), breaks at `_tdone`, reads `tResult`/`tDetail`
+      via a pointer cast (ELF symbols carry no C type), and exits cleanly. Validated
+      against `heapsmalltest.elf` and `stub.elf`.
+- [x] [`stub.a68`](stub.a68) — minimal self-contained test (init machine heap; assert the
+      handle is non-NULL and the header magic is `'HEAP'`). Proven: `RESULT=00000000` →
+      runner exit `0` (green); a transient forced-fail variant → `RESULT=$000009EE`
+      surfaced with exit `1` (red).
+- [x] Storm **watchdog** + stale-sim/port cleanup in
+      [`run-heap-tests.ps1`](run-heap-tests.ps1): a transient never-reaches-`_tdone`
+      variant → `TIMEOUT` at the cutoff, gdb+sim torn down, exit `1`. Fresh sim per
+      module; socket-readiness wait on the RSP port.
+- [x] Exit-code mechanism decided: **PowerShell parses `RESULT=`** — this `m68k-elf-gdb`
+      build has **no Python** (its `.gdbinit` Python hook errors), so a gdb-python hook is
+      not viable (§15 Q2).
+- [x] [makefile-elf](makefile-elf) `tests`/`test` targets build `stub.elf` and run the
+      runner; `nmake /f makefile-elf test` is green under Windows PowerShell 5.1.
 
 ### Phase 1 — Kit & result convention  ⬜
 - [ ] `heaptestkit.inc`: `TEST_INIT` / `PHASE` / `TEST_PASS` / `TEST_EPILOGUE`.
@@ -508,7 +525,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 
 | # | Risk | Impact | Mitigation |
 |---|------|--------|-----------|
-| R1 | Bare test installs no vectors; a mid-run trap/BP storms the CPU | crash / hang | Break **only** at `_tdone`/`_tfail` (reached by `bra`, never a trap — C2); watchdog timeout; fresh sim per module |
+| R1 | Bare test installs no vectors; a mid-run trap/BP storms the CPU | crash / hang | Break **only** at `_tdone` (reached by `bra`, never a trap — C2; `_tfail` falls through into it); watchdog timeout; fresh sim per module |
 | R2 | Scripted `sid68k` hangs (no EOF exit; argv-load drops symbols) | CI hang | Use `m68k-elf-gdb --batch` (clean exit, ELF symbols) as the runner; `sid68k` is interactive-only (§10.3) |
 | R3 | Hardcoded addresses drift as tests change | brittle suite | Resolve `_tdone`/`tResult`/… **by symbol** in GDB (C5); zero addresses in the runner |
 | R4 | TCP `1234` contention / stale `sim68k` | flaky runs | Kill stale sim + free the port before each module; optional per-run port (§15 Q5) |
@@ -526,9 +543,9 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 - **Q1 — Module granularity:** a few area-grouped ELFs (recommended) vs. one omnibus ELF
   vs. one ELF per micro-test. Grouped modules balance isolation and launch overhead; the
   omnibus needs `$MMPPCC` global codes (§7).
-- **Q2 — Exit-code mechanism:** PowerShell parses `RESULT=` (portable, recommended) vs. a
-  `gdb`-python hook that raises `SystemExit(1)` on nonzero `tResult` (self-contained but
-  needs a python-enabled gdb). Also: emit a `.legend` decode table from each module?
+- **Q2 — Exit-code mechanism:** **Resolved (Phase 0): PowerShell parses `RESULT=`.** The
+  installed `m68k-elf-gdb` has **no Python**, so the gdb-python `SystemExit(1)` hook is not
+  available. Open sub-item: emit a `.legend` decode table from each module (Phase 7).
 - **Q3 — Console semihosting:** does sim68k expose a putchar/console device in its device
   window (`@0x0FF000`) that a bare ELF could write, letting tests print a human-readable
   `PASS`/`FAIL <code>` to the sim's stdout and drop the GDB memory-read step entirely?
@@ -536,8 +553,9 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 - **Q4 — Golden values vs. invariants:** how much to assert exact addresses/sizes (tight,
   but brittle across library changes) vs. structural invariants (robust). Recommend
   invariants + relative checks by default; reserve exact goldens for unit-level checks.
-- **Q5 — Parallelism:** does `sim68k --gdb` accept a configurable RSP port? If so, modules
-  can run in parallel on distinct ports; otherwise serialize on `1234`.
+- **Q5 — Parallelism:** `sim68k --gdb [port]` **does** accept a configurable RSP port
+  (confirmed in Phase 0 via [sim.cpp](../../sim68k/sim.cpp)), so modules can run in parallel
+  on distinct ports; the runner currently serializes on one port (its `-Port` parameter).
 - **Q6 — Legacy integration test:** migrate `HeapTest.a68` to run under a real CP/M image
   on sim68k (covering the base-page/BDOS path), or retire it once `test_block` supersedes
   its intent?
@@ -549,3 +567,4 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | Date | Change |
 |------|--------|
 | 2026-07-21 | Initial architecture & design: harness (GDB-batch runner + `heaptestkit.inc`), coverage matrix, phased plan & progress tracker. `m68k-elf-gdb` availability confirmed; sim68k `--gdb` RSP stub endorsed by its own banner. |
+| 2026-07-21 | **Phase 0 complete** — `heaptest.gdb`, [`stub.a68`](stub.a68), [`run-heap-tests.ps1`](run-heap-tests.ps1), and makefile `tests`/`test` targets. Validated green (exit 0), red (exit 1, code surfaced), and watchdog (`TIMEOUT`) end-to-end; `nmake test` green. Confirmed the gdb `load` model (positional file ignored under `--gdb`), the no-Python gdb (⇒ PowerShell exit-code parse), and the `_tdone`-only breakpoint. |

@@ -1,0 +1,73 @@
+************************************************************************
+*  stub.a68 — Phase 0 harness bootstrap smoke test
+************************************************************************
+*
+*  Minimal self-contained heap test that proves the automated harness
+*  end to end: initialize a machine heap in our own BSS (no CP/M base
+*  page), make a couple of trivial assertions, and converge on the
+*  shared result protocol (see HEAP_TEST_SUITE_DESIGN.md §7).
+*
+*  Result convention (read at the _tdone breakpoint by heaptest.gdb):
+*    tResult = 0          -> all checks passed
+*    tResult = $0000FFFF  -> sentinel (test did not complete)
+*    tResult = $0000PPCC  -> failing check code (also left in D7)
+*    tDetail              -> failing detail (also D6)
+*
+************************************************************************
+
+	.model	flat
+
+	include	heap.inc
+
+	.code
+
+HEAPBUFSIZE equ	$10000				; 64 KB self-contained heap buffer
+
+start:	; --- self-contained machine heap in our own BSS (no base page) ---
+	move.l	#heapbuf,d2			; heap start
+	move.l	#HEAPBUFSIZE-128,d1		; heap size (alignment/header slop)
+	move.l	d1,-(sp)			; heap size
+	move.l	d2,-(sp)			; heap start
+	clr.l	-(sp)				; no options
+	jsr	_MachineHeapInitialize
+	adda.l	#12,sp
+	move.l	d0,hMachineHeap
+
+	move.l	#$0000FFFF,tResult		; sentinel until we pass
+	moveq	#0,d6
+	moveq	#0,d7
+
+************************************************************************
+*  Phase 1 : the machine heap initialized to a valid handle
+************************************************************************
+	move.l	#$0101,d7			; handle must be non-NULL
+	move.l	hMachineHeap,d0
+	beq	_tfail
+	movea.l	d0,a0
+	move.l	#$0102,d7			; header magic must be 'HEAP'
+	cmpi.l	#HEAP_MAGIC,hhMagic(a0)
+	bne	_tfail
+
+************************************************************************
+*  All checks passed
+************************************************************************
+	clr.l	tResult
+	moveq	#0,d7
+	bra.s	_tdone
+
+_tfail:
+	move.l	d7,tResult
+	move.l	d6,tDetail
+
+_tdone:
+	jmp	_tdone
+
+	.bss
+hMachineHeap	ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+
+	.even
+heapbuf		ds.b	HEAPBUFSIZE
+
+	end

@@ -50,6 +50,17 @@ heapsmalltest.elf:  heapsmalltest.o libheap-elf.a
 	$(LD) -T $(LDSCRIPT) -Ttext 500 heapsmalltest.o -L $(LIBDIR) -lheap-elf -o $@ 
 	copy $@ $(BINDIR)
 
+# --- automated test suite (see HEAP_TEST_SUITE_DESIGN.md) ---
+TEST_ELFS = stub.elf
+
+tests: $(TEST_ELFS)
+
+test: tests
+	powershell -NoProfile -ExecutionPolicy Bypass -File run-heap-tests.ps1 -NoBuild
+
+stub.elf:  stub.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 stub.o -L $(LIBDIR) -lheap-elf -o $@
+
 # Dependencies for ELF objects
 GetMachineHeap.o: GetMachineHeap.a68
 GetMachineHeaps.o: GetMachineHeaps.a68
@@ -85,6 +96,7 @@ HeapWalk.o: HeapWalk.a68 heap.inc
 
 heaptest.o: heaptest.a68 heap.inc libheap-elf.a
 heapsmalltest.o: heapsmalltest.a68 heap.inc libheap-elf.a
+stub.o: stub.a68 heap.inc libheap-elf.a
 
 clean:
 	del *.68k
