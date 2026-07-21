@@ -1,6 +1,6 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** Phases A–1 complete — harness + `heaptestkit.inc` kit validated (`stub` + `test_kit` green via `nmake test`); suite build-out (Phases 2–8) pending
+**Status:** Phases A–3 complete — harness + kit + block-path + SOA suites validated (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa` green via `nmake test`); suite build-out (Phases 4–8) pending
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
@@ -271,6 +271,8 @@ pattern. Sketch (names illustrative; final syntax per asm68K macro rules):
 compares are **unsigned**)
 - `EXPECT_NONZERO code,src` / `EXPECT_ZERO code,src`
 - `EXPECT_EQ code,src,imm` / `EXPECT_NE code,src,imm`
+- `EXPECT_EQV code,src,val` / `EXPECT_NEV code,src,val` — compare against a **value**
+  operand (memory/register), e.g. a handle vs. `hMachineHeap`.
 - `EXPECT_GE/LE/LT code,src,imm`
 - `EXPECT_MAGIC code,src,magic` — assert a longword magic (`'HEAP'`, `'SCB '`, `'AREN'`,
   `'SLAB'`, `'BLKH'`).
@@ -467,8 +469,8 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | A | Analysis & this spec | ✅ | Spec reviewed & accepted |
 | 0 | Harness bootstrap | ✅ | `heaptest.gdb` + `run-heap-tests.ps1` drive `stub.elf` end-to-end via `m68k-elf-gdb --batch`; green→exit 0, red→exit 1, watchdog→`TIMEOUT` all proven; `nmake test` green (2026-07-21) |
 | 1 | Kit & result convention | ✅ | [`heaptestkit.inc`](heaptestkit.inc) (all macros) + [`test_kit.a68`](test_kit.a68) exercising every macro; builds `/Cx` and passes via `nmake test` (2026-07-21) |
-| 2 | Block-path functional suite | ⬜ | `test_create` + `test_block` cover §9.1–§9.5 with the SOA **disabled**; all pass headless |
-| 3 | SOA suite integration | ⬜ | `HeapSmallTest.a68` refactored onto the kit as `test_soa`; passes via the automated runner (no manual `sid68k`) |
+| 2 | Block-path functional suite | ✅ | [`test_create.a68`](test_create.a68) (§9.1) + [`test_block.a68`](test_block.a68) (§9.2–§9.5, SOA disabled) pass via `nmake test` (2026-07-21) |
+| 3 | SOA suite integration | ✅ | [`test_soa.a68`](test_soa.a68) refactored onto the kit from `HeapSmallTest.a68` (9 phases); passes headless via `nmake test` (2026-07-21) |
 | 4 | Debug & validation suite | ⬜ | `test_debug` covers §9.6 (debug-fill alloc/free, tail-guard, auto-validate) + corrupt-and-detect |
 | 5 | Error-code & near-miss coverage | ⬜ | §9.7 every reachable code asserted; §9.8 near-miss/foreign pointers classified with **no crash** |
 | 6 | Stress / soak | ⬜ | `test_stress` (§9.9) fixed-seed mix + invariant checks + high-water compare; deterministic across runs |
@@ -508,18 +510,34 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
       latent runner bug — `$sim`/`$Sim` (and `$gdb`/`$Gdb`) collided under PowerShell's
       case-insensitive variables, breaking the 2nd module; renamed to `$simProc`/`$gdbProc`.
 
-### Phase 2 — Block-path functional suite  ⬜
-- [ ] `test_create.a68`: §9.1 (init, get, create/destroy, validate-handle).
-- [ ] `test_block.a68` with `HEAP_DISABLE_SMALL_POOL`: §9.2–§9.5 on the block path
-      (sizes/flags/OOM/alignment; free/double-free/cross-heap/coalesce; realloc matrix &
-      in-place; size; walk; validate clean+corrupt; compact).
-- [ ] Both build in the `tests` target and pass via the runner.
+### Phase 2 — Block-path functional suite  ✅ (2026-07-21)
+- [x] [`test_create.a68`](test_create.a68): §9.1 — machine-heap init + `'HEAP'` magic +
+      usable-via-alloc; `_GetMachineHeap`/`_GetMachineHeaps` (active count 1→3→2 as heaps are
+      created/destroyed); `_HeapCreate` magic + distinct ids; `_HeapValidateHandle`
+      valid/corrupt/repaired; `_HeapDestroy` zeroes the header so the handle no longer validates.
+- [x] [`test_block.a68`](test_block.a68) on private heaps created with `HEAP_DISABLE_SMALL_POOL`
+      (every request takes the block path): §9.2 size / 32-byte alignment / `'BLKH'` magic /
+      zero-fill / OOM; §9.3 reuse, double-free → `INVALID_BLOCK`, cross-heap →
+      `HANDLE_BLOCK_MISMATCH`, NULL-free no-op, **coalesce vs. `HEAP_DISABLE_COALESCE_ON_FREE`**
+      (a big alloc fits only when the freed neighbours coalesce); §9.4 realloc grow/shrink +
+      `IN_PLACE_ONLY` (in-place shrink keeps the pointer; a move-requiring grow is refused,
+      original intact) + `_HeapSize`; §9.5 `_HeapValidate` clean + corrupt-block-magic detect +
+      repair, `_HeapWalk` to `NO_MORE_ITEMS`, `_HeapCompact`.
+- [x] Both build in the `tests` target and pass via `nmake test` (4/4 green). Added kit value
+      compares `EXPECT_EQV`/`EXPECT_NEV`.  Trap: a symbol named `pC` is parsed as the `PC`
+      register (register names are case-insensitive even under `/Cx`) — renamed to `pQ`.
 
-### Phase 3 — SOA suite integration  ⬜
-- [ ] Refactor `HeapSmallTest.a68` onto `heaptestkit.inc` → `test_soa.a68` (preserve every
-      existing check; keep the anchor-cell discipline).
-- [ ] Runs headless via `m68k-elf-gdb --batch` (retire the manual `sid68k`/hardcoded-address
-      procedure for CI; keep it in §10.3 for debugging).
+### Phase 3 — SOA suite integration  ✅ (2026-07-21)
+- [x] [`test_soa.a68`](test_soa.a68) — refactored `HeapSmallTest.a68` onto the kit: the init /
+      pass / epilogue boilerplate is now `TEST_INIT` / `TEST_PASS` / `TEST_EPILOGUE`, and it
+      `include`s `heaptestkit.inc`.  All 9 phases of SOA checks (size→class, SCB/arena/slab
+      primitives, `__HeapSlabFromPtr` recognition + near-miss, alloc/free/realloc, double-free,
+      debug-fill-on-free, Full↔Partial + empty-slab release, validate/compact/walk) and the
+      **anchor-cell discipline** are preserved verbatim — they test SOA internals the kit does
+      not wrap.
+- [x] Runs headless via `m68k-elf-gdb --batch` as a runner module (`RESULT=00000000`); the
+      manual `sid68k` procedure is retired for CI and kept in §10.3 for debugging.  The
+      standalone `HeapSmallTest.a68`/`heapsmalltest.elf` is retained (unchanged) as a reference.
 
 ### Phase 4 — Debug & validation suite  ⬜
 - [ ] `test_debug.a68`: debug-fill on alloc (`CDCDCDCD`) and on free (`BAADF00D`,
@@ -593,3 +611,5 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 2026-07-21 | Initial architecture & design: harness (GDB-batch runner + `heaptestkit.inc`), coverage matrix, phased plan & progress tracker. `m68k-elf-gdb` availability confirmed; sim68k `--gdb` RSP stub endorsed by its own banner. |
 | 2026-07-21 | **Phase 0 complete** — `heaptest.gdb`, [`stub.a68`](stub.a68), [`run-heap-tests.ps1`](run-heap-tests.ps1), and makefile `tests`/`test` targets. Validated green (exit 0), red (exit 1, code surfaced), and watchdog (`TIMEOUT`) end-to-end; `nmake test` green. Confirmed the gdb `load` model (positional file ignored under `--gdb`), the no-Python gdb (⇒ PowerShell exit-code parse), and the `_tdone`-only breakpoint. |
 | 2026-07-21 | **Phase 1 complete** — [`heaptestkit.inc`](heaptestkit.inc) macro kit (`TEST_*`, `EXPECT_*` incl. flag-based `EXPECT_Z/NZ`, `H*` wrappers, `ANCHOR_CELL`/`DIRTY_BODY`) via asm68K `LOCAL`/`&param&`/`SET`, plus [`test_kit.a68`](test_kit.a68) exercising every macro (6 phases; passes via `nmake test`). Learned: macro-emitted `.bss ds.l` trips `A2005` (modules declare shared vars directly). Fixed the runner's case-insensitive `$sim`/`$Sim` variable collision that broke multi-module runs (→ `$simProc`/`$gdbProc`). |
+| 2026-07-21 | **Phase 2 complete** — [`test_create.a68`](test_create.a68) (§9.1 lifecycle/handles) + [`test_block.a68`](test_block.a68) (§9.2–§9.5 block path via `HEAP_DISABLE_SMALL_POOL`: sizes/alignment/zero/OOM, double-free/cross-heap/NULL, coalesce vs. no-coalesce, realloc + in-place, validate/walk/compact). Added `EXPECT_EQV`/`EXPECT_NEV` value compares; 4/4 green via `nmake test`. Trap noted: a symbol named `pC` binds to the `PC` register (register names are case-insensitive even under `/Cx`) → renamed `pQ`. |
+| 2026-07-21 | **Phase 3 complete** — [`test_soa.a68`](test_soa.a68): refactored `HeapSmallTest.a68` onto the kit (`TEST_INIT`/`TEST_PASS`/`TEST_EPILOGUE` + `include heaptestkit.inc`); all 9 phases of SOA checks + the anchor-cell discipline preserved verbatim. Runs headless via the runner (`RESULT=00000000`); 5/5 green via `nmake test`. Retires the manual `sid68k` procedure for CI (kept in §10.3 for debugging). |

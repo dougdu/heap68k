@@ -111,6 +111,24 @@ EXPECT_NE MACRO code,src,imm
 	beq	_tfail
 	ENDM
 
+* Value compares (second operand is a memory/register value, not an immediate) —
+* for comparing two runtime values, e.g. a handle against hMachineHeap.
+EXPECT_EQV MACRO code,src,val
+	move.l	#((htk_ph shl 8) or (&code&)),d7
+	move.l	&src&,d0
+	move.l	d0,d6
+	cmp.l	&val&,d0
+	bne	_tfail
+	ENDM
+
+EXPECT_NEV MACRO code,src,val
+	move.l	#((htk_ph shl 8) or (&code&)),d7
+	move.l	&src&,d0
+	move.l	d0,d6
+	cmp.l	&val&,d0
+	beq	_tfail
+	ENDM
+
 EXPECT_MAGIC MACRO code,src,magic
 	move.l	#((htk_ph shl 8) or (&code&)),d7
 	move.l	&src&,d0

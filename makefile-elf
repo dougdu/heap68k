@@ -51,7 +51,7 @@ heapsmalltest.elf:  heapsmalltest.o libheap-elf.a
 	copy $@ $(BINDIR)
 
 # --- automated test suite (see HEAP_TEST_SUITE_DESIGN.md) ---
-TEST_ELFS = stub.elf test_kit.elf
+TEST_ELFS = stub.elf test_kit.elf test_create.elf test_block.elf test_soa.elf
 
 tests: $(TEST_ELFS)
 
@@ -63,6 +63,15 @@ stub.elf:  stub.o libheap-elf.a
 
 test_kit.elf:  test_kit.o libheap-elf.a
 	$(LD) -T $(LDSCRIPT) -Ttext 500 test_kit.o -L $(LIBDIR) -lheap-elf -o $@
+
+test_create.elf:  test_create.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test_create.o -L $(LIBDIR) -lheap-elf -o $@
+
+test_block.elf:  test_block.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test_block.o -L $(LIBDIR) -lheap-elf -o $@
+
+test_soa.elf:  test_soa.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test_soa.o -L $(LIBDIR) -lheap-elf -o $@
 
 # Dependencies for ELF objects
 GetMachineHeap.o: GetMachineHeap.a68
@@ -101,6 +110,9 @@ heaptest.o: heaptest.a68 heap.inc libheap-elf.a
 heapsmalltest.o: heapsmalltest.a68 heap.inc libheap-elf.a
 stub.o: stub.a68 heap.inc libheap-elf.a
 test_kit.o: test_kit.a68 heap.inc heaptestkit.inc libheap-elf.a
+test_create.o: test_create.a68 heap.inc heaptestkit.inc libheap-elf.a
+test_block.o: test_block.a68 heap.inc heaptestkit.inc libheap-elf.a
+test_soa.o: test_soa.a68 heap.inc heaptestkit.inc libheap-elf.a
 
 clean:
 	del *.68k

@@ -16,7 +16,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]] $Modules    = @('stub', 'test_kit'),
+    [string[]] $Modules    = @('stub', 'test_kit', 'test_create', 'test_block', 'test_soa'),
     [int]      $TimeoutSec = 20,        # per-module watchdog (storm/hang cutoff)
     [int]      $Port       = 1234,
     [switch]   $NoBuild
