@@ -1,6 +1,6 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** Phases A–0 complete — harness bootstrapped & validated (green / red / watchdog); suite build-out (Phases 1–8) pending
+**Status:** Phases A–1 complete — harness + `heaptestkit.inc` kit validated (`stub` + `test_kit` green via `nmake test`); suite build-out (Phases 2–8) pending
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
@@ -257,31 +257,45 @@ A macro layer that removes boilerplate while expanding to the **same** proven ex
 pattern. Sketch (names illustrative; final syntax per asm68K macro rules):
 
 **Lifecycle**
-- `TEST_INIT buf,size` — init the machine heap from an in-BSS buffer, set the `$0000FFFF`
+- `TEST_INIT hbuf,hsz` — init the machine heap from an in-BSS buffer, set the `$0000FFFF`
   sentinel, clear `D6/D7`.
-- `PHASE n` — set the current phase byte (used to compose `$PPCC`); optional trace store.
-- `TEST_PASS` — `clr.l tResult / moveq #0,d7`.
-- `TEST_EPILOGUE` — emit `_tfail` / `_tdone` and the shared `.bss` (`tResult`, `tDetail`,
-  and the caller's `heapbuf`).
+- `PHASE ph` — set the current phase byte (a reassignable `SET` symbol used to compose
+  `$PPCC`).
+- `TEST_PASS` — `clr.l tResult / moveq #0,d7 / bra _tdone`.
+- `TEST_EPILOGUE` — emit the `_tfail`/`_tdone` **code only**. The module declares the shared
+  result vars (`hMachineHeap`, `tResult`, `tDetail`) + its `heapbuf` **directly** in `.bss`
+  — asm68K raises `A2005` on `.bss` `ds.l` labels emitted from a macro (a two-pass
+  redefinition), so the kit cannot generate them.
 
-**Assertions** (each sets `D7=$PPCC`, `D6=detail`, `bne/... _tfail`)
-- `EXPECT_ZERO code,src` / `EXPECT_NONZERO code,src`
-- `EXPECT_EQ code,expected,actual` / `EXPECT_NE code,a,b`
-- `EXPECT_LT/LE/GE code,a,b`
-- `EXPECT_MAGIC code,addr,imm` — assert a longword magic (`'HEAP'`, `'SCB '`, `'AREN'`,
+**Value assertions** (each sets `D7=$PPCC`, `D6=detail`; branch to `_tfail` on failure;
+compares are **unsigned**)
+- `EXPECT_NONZERO code,src` / `EXPECT_ZERO code,src`
+- `EXPECT_EQ code,src,imm` / `EXPECT_NE code,src,imm`
+- `EXPECT_GE/LE/LT code,src,imm`
+- `EXPECT_MAGIC code,src,magic` — assert a longword magic (`'HEAP'`, `'SCB '`, `'AREN'`,
   `'SLAB'`, `'BLKH'`).
-- `EXPECT_ERR code,expErr` — call `_HeapGetError`, compare to an `HEAP_ERROR_*` value.
-- `EXPECT_FILL code,addr,len,pattern` — assert a debug-fill/zero pattern over a range.
+- `EXPECT_FILL code,addr,lenb,pat` — assert a longword pattern over `[addr, addr+lenb)`.
+
+**Flag assertions** (read the CCR the preceding `H*` call left — for status-in-Z APIs)
+- `EXPECT_Z code` / `EXPECT_NZ code` — place **immediately** after `HVALIDATE` /
+  `HVALIDATEH` (their trailing `ADDA` does not disturb CCR).
+
+**Error assertion**
+- `EXPECT_ERR code,experr` — call `_HeapGetError`, compare to a `HEAP_ERROR_*` value.
 
 **API-call wrappers** (push right-to-left, `jsr`, `adda.l #n,sp`, result in `D0`)
 - `HALLOC hHeap,flags,bytes` · `HFREE hHeap,pMem` · `HREALLOC hHeap,flags,pMem,bytes`
-- `HSIZE hHeap,pMem` · `HCREATE flags,size` · `HDESTROY hHeap`
+- `HSIZE hHeap,pMem` · `HCREATE opts,size` · `HDESTROY hHeap`
 - `HVALIDATE hHeap,pBlock` · `HVALIDATEH hHeap` · `HWALK hHeap,pEntry` · `HCOMPACT hHeap`
 
+Operands are passed verbatim, so the caller supplies `#` for immediates
+(`HALLOC hMachineHeap,#0,#16`). Macros clobber `D0/D1/D6/D7` (and `A0/A1` for the `H*`
+wrappers); keep live values in `D2-D5`/`A2-A5` or `.bss`.
+
 **Safety helpers** (encode the §4 C7 traps)
-- `ANCHOR_CELL hHeap,cls -> reg` — allocate a keep-alive cell so freeing the cell under
-  test does not empty+release its slab.
-- `DIRTY_BODY pMem,cls` — dirty only bytes `[4..cellSz)`, leaving the free-list control
+- `ANCHOR_CELL hHeap,bytes,dst` — allocate a keep-alive cell into `dst` so freeing the cell
+  under test does not empty+release its slab.
+- `DIRTY_BODY pMem,cellSz` — dirty only bytes `[4..cellSz)`, leaving the free-list control
   word intact (for zero-fill-on-realloc checks).
 
 ---
@@ -452,7 +466,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 |------:|-------|:------:|---------------|
 | A | Analysis & this spec | ✅ | Spec reviewed & accepted |
 | 0 | Harness bootstrap | ✅ | `heaptest.gdb` + `run-heap-tests.ps1` drive `stub.elf` end-to-end via `m68k-elf-gdb --batch`; green→exit 0, red→exit 1, watchdog→`TIMEOUT` all proven; `nmake test` green (2026-07-21) |
-| 1 | Kit & result convention | ⬜ | `heaptestkit.inc` macros (`TEST_INIT`, `EXPECT_*`, `H*` wrappers, safety helpers); one sample module builds & passes using only macros |
+| 1 | Kit & result convention | ✅ | [`heaptestkit.inc`](heaptestkit.inc) (all macros) + [`test_kit.a68`](test_kit.a68) exercising every macro; builds `/Cx` and passes via `nmake test` (2026-07-21) |
 | 2 | Block-path functional suite | ⬜ | `test_create` + `test_block` cover §9.1–§9.5 with the SOA **disabled**; all pass headless |
 | 3 | SOA suite integration | ⬜ | `HeapSmallTest.a68` refactored onto the kit as `test_soa`; passes via the automated runner (no manual `sid68k`) |
 | 4 | Debug & validation suite | ⬜ | `test_debug` covers §9.6 (debug-fill alloc/free, tail-guard, auto-validate) + corrupt-and-detect |
@@ -481,12 +495,18 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 - [x] [makefile-elf](makefile-elf) `tests`/`test` targets build `stub.elf` and run the
       runner; `nmake /f makefile-elf test` is green under Windows PowerShell 5.1.
 
-### Phase 1 — Kit & result convention  ⬜
-- [ ] `heaptestkit.inc`: `TEST_INIT` / `PHASE` / `TEST_PASS` / `TEST_EPILOGUE`.
-- [ ] Assertions: `EXPECT_ZERO/NONZERO/EQ/NE/LT/LE/GE/MAGIC/ERR/FILL`.
-- [ ] API wrappers: `HALLOC/HFREE/HREALLOC/HSIZE/HCREATE/HDESTROY/HVALIDATE/HVALIDATEH/HWALK/HCOMPACT`.
-- [ ] Safety helpers `ANCHOR_CELL`, `DIRTY_BODY` (encode the §4 C7 traps).
-- [ ] Port one existing SOA phase onto the macros as a smoke test; assembles `/Cx`, passes.
+### Phase 1 — Kit & result convention  ✅ (2026-07-21)
+- [x] [`heaptestkit.inc`](heaptestkit.inc): `TEST_INIT` / `PHASE` / `TEST_PASS` /
+      `TEST_EPILOGUE` (code-only; the module declares the shared `.bss` — a macro-emitted
+      `ds.l` trips asm68K `A2005`).  Uses `LOCAL` / `&param&` / `SET` per the asm68K reference.
+- [x] Value assertions `EXPECT_ZERO/NONZERO/EQ/NE/LT/LE/GE/MAGIC/FILL`; **flag** assertions
+      `EXPECT_Z`/`EXPECT_NZ` (added for the status-in-Z `_HeapValidate*` APIs); `EXPECT_ERR`.
+- [x] API wrappers `HALLOC/HFREE/HREALLOC/HSIZE/HCREATE/HDESTROY/HVALIDATE/HVALIDATEH/HWALK/HCOMPACT`.
+- [x] Safety helpers `ANCHOR_CELL`, `DIRTY_BODY` (encode the §4 C7 traps).
+- [x] [`test_kit.a68`](test_kit.a68) smoke test expands **every** macro across 6 phases;
+      assembles `/Cx` and passes (`tResult=0`) via `nmake test` (alongside `stub`). Fixed a
+      latent runner bug — `$sim`/`$Sim` (and `$gdb`/`$Gdb`) collided under PowerShell's
+      case-insensitive variables, breaking the 2nd module; renamed to `$simProc`/`$gdbProc`.
 
 ### Phase 2 — Block-path functional suite  ⬜
 - [ ] `test_create.a68`: §9.1 (init, get, create/destroy, validate-handle).
@@ -572,3 +592,4 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 |------|--------|
 | 2026-07-21 | Initial architecture & design: harness (GDB-batch runner + `heaptestkit.inc`), coverage matrix, phased plan & progress tracker. `m68k-elf-gdb` availability confirmed; sim68k `--gdb` RSP stub endorsed by its own banner. |
 | 2026-07-21 | **Phase 0 complete** — `heaptest.gdb`, [`stub.a68`](stub.a68), [`run-heap-tests.ps1`](run-heap-tests.ps1), and makefile `tests`/`test` targets. Validated green (exit 0), red (exit 1, code surfaced), and watchdog (`TIMEOUT`) end-to-end; `nmake test` green. Confirmed the gdb `load` model (positional file ignored under `--gdb`), the no-Python gdb (⇒ PowerShell exit-code parse), and the `_tdone`-only breakpoint. |
+| 2026-07-21 | **Phase 1 complete** — [`heaptestkit.inc`](heaptestkit.inc) macro kit (`TEST_*`, `EXPECT_*` incl. flag-based `EXPECT_Z/NZ`, `H*` wrappers, `ANCHOR_CELL`/`DIRTY_BODY`) via asm68K `LOCAL`/`&param&`/`SET`, plus [`test_kit.a68`](test_kit.a68) exercising every macro (6 phases; passes via `nmake test`). Learned: macro-emitted `.bss ds.l` trips `A2005` (modules declare shared vars directly). Fixed the runner's case-insensitive `$sim`/`$Sim` variable collision that broke multi-module runs (→ `$simProc`/`$gdbProc`). |

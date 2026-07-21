@@ -1,0 +1,107 @@
+************************************************************************
+*  test_kit.a68 — Phase 1 smoke test for heaptestkit.inc.
+*
+*  Exercises every kit macro at least once in a passing scenario, so a
+*  clean assemble + tResult == 0 proves the kit is well-formed.
+*  Self-contained (in-BSS heap, no CP/M base page).
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+	include heaptestkit.inc
+
+	.code
+
+HEAPBUFSIZE equ $20000				; 128 KB self-contained heap
+
+start:
+	TEST_INIT	heapbuf,HEAPBUFSIZE-128
+
+*----- Phase 1: machine heap initialized correctly -----
+	PHASE	1
+	EXPECT_NONZERO	1,hMachineHeap		; handle non-null
+	EXPECT_NE	2,hMachineHeap,0	; (same, exercising EXPECT_NE)
+	movea.l	hMachineHeap,a0
+	EXPECT_MAGIC	3,(a0),HEAP_MAGIC	; header magic 'HEAP'
+	HVALIDATEH	hMachineHeap
+	EXPECT_Z	4			; handle validates (Z set)
+	HVALIDATE	hMachineHeap,#0		; whole-heap validate
+	EXPECT_Z	5			; heap validates (Z set)
+
+*----- Phase 2: small alloc round-trip with zero-fill -----
+	PHASE	2
+	HALLOC	hMachineHeap,#HEAP_ZERO_MEMORY,#16
+	EXPECT_NONZERO	1,d0			; alloc succeeded
+	move.l	d0,cellP
+	EXPECT_FILL	2,cellP,16,0		; ZERO_MEMORY -> whole cell zeroed
+	HSIZE	hMachineHeap,cellP
+	EXPECT_EQ	3,d0,16			; usable (class) size == 16
+	EXPECT_GE	4,d0,16			; >= 16
+	EXPECT_LE	5,d0,16			; <= 16
+	EXPECT_LT	6,d0,17			; < 17
+	HFREE	hMachineHeap,cellP
+
+*----- Phase 3: cross-class realloc -----
+	PHASE	3
+	HALLOC	hMachineHeap,#0,#16
+	EXPECT_NONZERO	1,d0
+	move.l	d0,cellP
+	HREALLOC hMachineHeap,#0,cellP,#40	; 16 -> 40 (class 1 -> class 4)
+	EXPECT_NONZERO	2,d0
+	move.l	d0,cellP
+	HSIZE	hMachineHeap,cellP
+	EXPECT_EQ	3,d0,40			; new usable size == 40
+	HFREE	hMachineHeap,cellP
+
+*----- Phase 4: anchor + dirty-body + double-free detection -----
+	PHASE	4
+	ANCHOR_CELL hMachineHeap,#16,anchP	; keep the class-16 slab alive
+	EXPECT_NONZERO	1,anchP
+	HALLOC	hMachineHeap,#0,#16
+	EXPECT_NONZERO	2,d0
+	move.l	d0,cellP
+	DIRTY_BODY cellP,16			; dirty [4..16), control word intact
+	HFREE	hMachineHeap,cellP
+	HFREE	hMachineHeap,cellP		; double free (anchP keeps slab live)
+	EXPECT_ERR	3,HEAP_ERROR_DOUBLE_FREE
+	HFREE	hMachineHeap,anchP
+
+*----- Phase 5: private heap create / walk / compact / destroy -----
+	PHASE	5
+	HCREATE	#0,#4096			; _HeapCreate(options=0, size=4096)
+	EXPECT_NONZERO	1,d0
+	move.l	d0,privH
+	clr.l	walkE
+_kwalk:
+	HWALK	privH,#walkE			; enumerate blocks to the end
+	tst.l	d0
+	bne.s	_kwalk
+	EXPECT_ERR	2,HEAP_ERROR_NO_MORE_ITEMS
+	HCOMPACT privH				; coalesce (return value ignored)
+	HVALIDATE privH,#0
+	EXPECT_Z	3			; still valid after compaction
+	HDESTROY privH
+
+*----- Phase 6: flag-based non-zero + zeroed-value assertions -----
+	PHASE	6
+	moveq	#1,d0				; Z clear
+	EXPECT_NZ	1			; assert Z clear
+	clr.l	walkE
+	EXPECT_ZERO	2,walkE			; assert a zeroed value
+
+	TEST_PASS
+	TEST_EPILOGUE
+
+*----- module .bss: shared result vars + test vars + heap buffer -----
+	.bss
+hMachineHeap	ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+cellP	ds.l	1
+privH	ds.l	1
+walkE	ds.l	1
+anchP	ds.l	1
+	.even
+heapbuf	ds.b	HEAPBUFSIZE
+	end

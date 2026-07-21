@@ -16,7 +16,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]] $Modules    = @('stub'),
+    [string[]] $Modules    = @('stub', 'test_kit'),
     [int]      $TimeoutSec = 20,        # per-module watchdog (storm/hang cutoff)
     [int]      $Port       = 1234,
     [switch]   $NoBuild
@@ -78,32 +78,32 @@ foreach ($m in $Modules) {
 
     Stop-AllSim
     $simOut = [System.IO.Path]::GetTempFileName()
-    $sim = Start-Process -FilePath $Sim -ArgumentList '--gdb', "$Port" `
-             -PassThru -NoNewWindow -RedirectStandardOutput $simOut -RedirectStandardError "$simOut.err"
+    $simProc = Start-Process -FilePath $Sim -ArgumentList '--gdb', "$Port" `
+                 -PassThru -WindowStyle Hidden -RedirectStandardOutput $simOut -RedirectStandardError "$simOut.err"
 
     if (-not (Wait-Port $Port 5000)) {
-        try { $sim | Stop-Process -Force } catch { }
+        try { $simProc | Stop-Process -Force } catch { }
         Remove-Item $simOut, "$simOut.err" -ErrorAction SilentlyContinue
         $results += [pscustomobject]@{ Module=$m; Status='NOSIM'; Result='--------'; Detail='--------'; Note="RSP port $Port did not open" }
         continue
     }
 
     $gdbOut = [System.IO.Path]::GetTempFileName()
-    $gdb = Start-Process -FilePath $Gdb -ArgumentList $elf, '-nx', '--batch', '-x', $GdbScript `
-             -PassThru -NoNewWindow -RedirectStandardOutput $gdbOut -RedirectStandardError "$gdbOut.err"
+    $gdbProc = Start-Process -FilePath $Gdb -ArgumentList $elf, '-nx', '--batch', '-x', $GdbScript `
+             -PassThru -WindowStyle Hidden -RedirectStandardOutput $gdbOut -RedirectStandardError "$gdbOut.err"
 
-    $exited = $gdb.WaitForExit($TimeoutSec * 1000)
+    $exited = $gdbProc.WaitForExit($TimeoutSec * 1000)
     if (-not $exited) {
-        try { $gdb | Stop-Process -Force } catch { }
-        try { $sim | Stop-Process -Force } catch { }
+        try { $gdbProc | Stop-Process -Force } catch { }
+        try { $simProc | Stop-Process -Force } catch { }
         Remove-Item $simOut, "$simOut.err", $gdbOut, "$gdbOut.err" -ErrorAction SilentlyContinue
         $results += [pscustomobject]@{ Module=$m; Status='TIMEOUT'; Result='--------'; Detail='--------'; Note="watchdog > $TimeoutSec s (storm/hang)" }
         continue
     }
-    $gdb.WaitForExit()   # ensure redirected streams are flushed
+    $gdbProc.WaitForExit()   # ensure redirected streams are flushed
 
     $out = (Get-Content $gdbOut -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content "$gdbOut.err" -Raw -ErrorAction SilentlyContinue)
-    try { $sim | Stop-Process -Force } catch { }
+    try { $simProc | Stop-Process -Force } catch { }
     Remove-Item $simOut, "$simOut.err", $gdbOut, "$gdbOut.err" -ErrorAction SilentlyContinue
 
     $mt = [regex]::Match($out, 'RESULT=([0-9a-fA-F]{8})\s+DETAIL=([0-9a-fA-F]{8})')
