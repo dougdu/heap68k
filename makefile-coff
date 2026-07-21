@@ -26,10 +26,12 @@ INCDIR    =C:\git\worm68k\include
 HEAP_COFF_OBJS = GetMachineHeap.obj GetMachineHeaps.obj \
 	   HeapAlloc.obj HeapAutoValidateFlagCheck.obj HeapCoalesce.obj HeapCompact.obj \
 	   HeapCreate.obj HeapDestroy.obj HeapFree.obj HeapGetError.obj HeapInitialize.obj \
-	   HeapReAlloc.obj HeapSize.obj HeapUnlinkFromBlockChain.obj \
+	   HeapReAlloc.obj HeapSize.obj HeapStats.obj HeapUnlinkFromBlockChain.obj \
 	   HeapUnlinkFromFreeBlockChain.obj HeapValidate.obj \
 	   HeapValidateHandle.obj HeapWalk.obj HeapData.obj \
-	   HeapDebugFillOnFree.obj HeapInvalidateBlockHeader.obj
+	   HeapDebugFillOnFree.obj HeapInvalidateBlockHeader.obj \
+	   HeapSmallCtl.obj HeapArena.obj HeapSlab.obj HeapSmallAlloc.obj HeapSmallFree.obj \
+	   HeapSmallReAlloc.obj HeapSmallValidate.obj HeapSmallCompact.obj HeapSmallWalk.obj
 
 all: libheap-coff.a heaptest.cof
 
@@ -59,11 +61,21 @@ HeapInitialize.obj: HeapInitialize.a68 heap.inc
 HeapInvalidateBlockHeader.obj: HeapInvalidateBlockHeader.a68 heap.inc
 HeapReAlloc.obj: HeapReAlloc.a68 heap.inc
 HeapSize.obj: HeapSize.a68 heap.inc
+HeapStats.obj: HeapStats.a68 heap.inc
 HeapUnlinkFromBlockChain.obj: HeapUnlinkFromBlockChain.a68 heap.inc
 HeapUnlinkFromFreeBlockChain.obj: HeapUnlinkFromFreeBlockChain.a68 heap.inc
 HeapValidate.obj: HeapValidate.a68 heap.inc
 HeapValidateHandle.obj: HeapValidateHandle.a68 heap.inc
 HeapWalk.obj: HeapWalk.a68 heap.inc
+HeapSmallCtl.obj: HeapSmallCtl.a68 heap.inc
+HeapArena.obj: HeapArena.a68 heap.inc
+HeapSlab.obj: HeapSlab.a68 heap.inc
+HeapSmallAlloc.obj: HeapSmallAlloc.a68 heap.inc
+HeapSmallFree.obj: HeapSmallFree.a68 heap.inc
+HeapSmallReAlloc.obj: HeapSmallReAlloc.a68 heap.inc
+HeapSmallValidate.obj: HeapSmallValidate.a68 heap.inc
+HeapSmallCompact.obj: HeapSmallCompact.a68 heap.inc
+HeapSmallWalk.obj: HeapSmallWalk.a68 heap.inc
 
 # Test program for libheap-coff.a
 heaptest.obj: heaptest.a68 heap.inc libheap-coff.a

@@ -46,6 +46,30 @@ _HeapSize PROC USES d1/a0-a1, hHeap:DWORD, pMem:DWORD
 	adda.l 	#8,sp
 	bne.s 	_hsError			; Validation failed
 
+	IF SOA_ROUTE
+	; ---- Small Object Allocator: a cell reports its class size ----
+	; A cell's usable size is its size-class value (design §7/§16 Q3, like
+	; malloc_usable_size).  Recognize pMem as a slab cell; if owned by this
+	; heap, return slCellSz.  Otherwise fall through to the block path with
+	; A0 (heap) intact (__HeapSlabFromPtr preserves A0/A1).
+	move.l 	pMem,-(sp)
+	jsr 	__HeapSlabFromPtr		; D0 = owning slab, or 0
+	adda.l 	#4,sp
+	tst.l 	d0
+	beq.s 	_hsNotCell			; not a cell -> block path
+	movea.l d0,a1				; A1 --> slab
+	move.l 	slFlags(a1),d0			; ownership: slId vs hhId
+	andi.l 	#HEAP_ID_MASK,d0
+	move.l 	hhFlags(a0),d1
+	andi.l 	#HEAP_ID_MASK,d1
+	cmp.l 	d1,d0
+	bne 	_hsInvalidHeap			; cell not owned by this heap
+	moveq 	#0,d0
+	move.w 	slCellSz(a1),d0			; D0 = class (usable) size
+	bra 	_hsExit
+_hsNotCell:
+	ENDIF
+
 	movea.l	pMem,a1 			; A1 --> memory block
 	suba.l 	#BLK_HDR_SIZE,a1 		; A1 --> block header
 

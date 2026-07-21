@@ -1,0 +1,237 @@
+************************************************************************
+*  HeapSlab
+************************************************************************
+*
+*  Small Object Allocator (SOA) slab management.  A slab is one
+*  SLAB_SIZE-aligned tile carved from an arena, serving one size class.
+*  Phase 1: primitives only (no public-API routing).
+*
+*    __HeapSlabCreate  - claim + format a new slab tile
+*    __HeapSlabFromPtr - recognize a cell pointer -> owning slab (or 0)
+*    __HeapSlabRelease - reclaim a slab tile (and its arena if empty)
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern	__HeapSoaClassTbl
+
+	.code
+
+************************************************************************
+*  __HeapSlabCreate
+*
+*  hHeap : DWORD - heap handle
+*  cls   : DWORD - size-class index (0..SOA_NUM_CLASSES-1)
+*
+*  Finds (or creates) an arena with a free tile, formats a slab of the
+*  requested class, builds its intrusive free list, and returns the
+*  tile pointer.  Returns D0 = slab pointer, or NULL (0) on failure.
+*  The slab is NOT linked into any class list (the caller does that).
+************************************************************************
+__HeapSlabCreate PROC USES d2-d5/a0-a4, hHeap:DWORD, cls:DWORD
+	movea.l hHeap,a0			; A0 --> heap header
+
+	; Ensure the SCB exists
+	move.l	a0,-(sp)
+	jsr	__HeapScbGetOrCreate
+	adda.l	#4,sp
+	tst.l	d0
+	beq	_slcFail
+	movea.l d0,a2				; A2 --> SCB
+
+	; Find an arena that still has a free tile
+	movea.l scbArenaHead(a2),a1
+_slcFind:
+	cmpa.l	#0,a1
+	beq.s	_slcNew
+	move.w	arSlabUse(a1),d0
+	cmp.w	arSlabs(a1),d0
+	blt.s	_slcHave			; arSlabUse < arSlabs -> free tile
+	movea.l arNext(a1),a1
+	bra.s	_slcFind
+_slcNew:
+	move.l	#ARENA_SLABS_DFLT,-(sp)
+	move.l	a0,-(sp)
+	jsr	__HeapArenaCreate
+	adda.l	#8,sp
+	tst.l	d0
+	beq	_slcFail
+	movea.l d0,a1				; A1 --> new arena
+
+_slcHave:
+	; Claim the first clear bit in the tile bitmap
+	move.l	arTileMap(a1),d2		; D2 = bitmap
+	moveq	#0,d3				; D3 = tile index
+_slcBit:
+	btst	d3,d2
+	beq.s	_slcGot
+	addq.l	#1,d3
+	bra.s	_slcBit
+_slcGot:
+	bset	d3,d2
+	move.l	d2,arTileMap(a1)
+	addq.w	#1,arSlabUse(a1)
+	; tile = arBase + index*SLAB_SIZE
+	move.l	d3,d4
+	mulu	#SLAB_SIZE,d4
+	movea.l arBase(a1),a4
+	adda.l	d4,a4				; A4 --> tile (slab header)
+	move.l	a1,d5				; D5 = arena ptr (for slArena)
+	addq.l	#1,scbSlabCount(a2)
+
+	; --- Format the slab header ---
+	move.l	#SLAB_MAGIC,slMagic(a4)
+	move.l	hhFlags(a0),d0
+	andi.l	#HEAP_ID_MASK,d0		; heap id (high word), flags = 0
+	move.l	d0,slFlags(a4)
+	move.l	cls,d2				; D2 = class index
+	move.w	d2,slClass(a4)
+	; cellSz = __HeapSoaClassTbl[cls]
+	lea	__HeapSoaClassTbl,a1
+	move.l	d2,d0
+	add.l	d0,d0				; cls*2 (word entries)
+	move.w	(a1,d0.l),d1			; D1 = cell size
+	move.w	d1,slCellSz(a4)
+	andi.l	#$0000FFFF,d1			; clean 16-bit value for divu/adda
+	; slTotal = (SLAB_SIZE - SLAB_HDR_SIZE) / cellSz
+	move.l	#SLAB_SIZE-SLAB_HDR_SIZE,d0
+	divu	d1,d0
+	andi.l	#$0000FFFF,d0			; quotient = total cell count
+	move.w	d0,slTotal(a4)
+	move.w	d0,slFree(a4)
+	clr.w	slFreeHd(a4)			; free-list head index = 0
+	move.l	d5,slArena(a4)
+	clr.l	slNext(a4)
+	clr.l	slPrev(a4)
+
+	; --- Build the intrusive free list 0->1->...->(total-1)->NIL ---
+	lea	slCells(a4),a1			; A1 --> cell[0]
+	moveq	#0,d3				; D3 = i
+_slcFL:
+	move.w	d3,d2
+	addq.w	#1,d2				; i+1
+	cmp.w	slTotal(a4),d2			; i+1 < total ?
+	blt.s	_slcFLnext
+	move.w	#SOA_NIL_INDEX,d2		; last cell -> NIL
+_slcFLnext:
+	move.w	d2,cellNextIdx(a1)
+	move.w	#SOA_FREE_TAG,cellFreeTag(a1)
+	adda.l	d1,a1				; advance to next cell
+	addq.w	#1,d3
+	cmp.w	slTotal(a4),d3
+	blt.s	_slcFL
+
+	move.l	a4,d0				; return the slab pointer
+	bra.s	_slcExit
+_slcFail:
+	clr.l	d0
+_slcExit:
+	ENDP
+
+************************************************************************
+*  __HeapSlabFromPtr
+*
+*  pMem : DWORD - a candidate user pointer
+*
+*  Recognizes whether pMem is an SOA cell by masking to its slab base
+*  and validating the load-bearing chain: slab magic, arena back-magic,
+*  arena-range containment, cell-size modulus, and cell index range.
+*  This is recognition ONLY; heap ownership (slId) is checked separately
+*  by the caller.  Returns D0 = owning slab pointer, or NULL (0).
+************************************************************************
+__HeapSlabFromPtr PROC USES d1-d3/a0-a1, pMem:DWORD
+	move.l	pMem,d0
+	beq	_sfpNo				; NULL
+	move.l	d0,d1
+	andi.l	#NOT(SLAB_SIZE_MASK),d1		; D1 = slab base (masked)
+	movea.l d1,a0				; A0 --> candidate slab
+	cmpi.l	#SLAB_MAGIC,slMagic(a0)
+	bne	_sfpNo
+	movea.l slArena(a0),a1			; A1 --> candidate arena
+	cmpi.l	#AREN_MAGIC,arMagic(a1)
+	bne	_sfpNo
+
+	; arBase <= slab < arBase + arSlabs*SLAB_SIZE
+	move.l	arBase(a1),d2			; D2 = arBase
+	cmp.l	d2,d1
+	blo	_sfpNo				; slab < arBase
+	move.w	arSlabs(a1),d0
+	andi.l	#$0000FFFF,d0
+	mulu	#SLAB_SIZE,d0			; span
+	add.l	d2,d0				; end = arBase + span
+	cmp.l	d0,d1
+	bhs	_sfpNo				; slab >= end
+
+	; offset = pMem - firstCell : >=0, multiple of cellSz, index < total
+	move.l	pMem,d0
+	sub.l	d1,d0				; pMem - slab
+	subi.l	#SLAB_HDR_SIZE,d0		; pMem - firstCell
+	blt	_sfpNo				; inside the header
+	move.w	slCellSz(a0),d2
+	andi.l	#$0000FFFF,d2
+	divu	d2,d0				; low = index, high = remainder
+	move.l	d0,d3
+	swap	d3				; D3 low = remainder
+	andi.l	#$0000FFFF,d3
+	bne	_sfpNo				; not cell-aligned
+	andi.l	#$0000FFFF,d0			; D0 = cell index
+	cmp.w	slTotal(a0),d0
+	bhs	_sfpNo				; index >= total
+
+	move.l	a0,d0				; recognized -> return slab
+	bra.s	_sfpExit
+_sfpNo:
+	clr.l	d0
+_sfpExit:
+	ENDP
+
+************************************************************************
+*  __HeapSlabRelease
+*
+*  hHeap : DWORD - heap handle
+*  slab  : DWORD - slab tile to reclaim
+*
+*  Clears the slab's tile bit, decrements the arena/slab counts, and
+*  releases the whole arena when it becomes empty.  The caller must
+*  have already unlinked the slab from any class list.
+*  Returns D0 = nonzero on success.
+************************************************************************
+__HeapSlabRelease PROC USES d2/a0-a3, hHeap:DWORD, slab:DWORD
+	movea.l hHeap,a0			; A0 --> heap header
+	movea.l slab,a1				; A1 --> slab
+	movea.l slArena(a1),a2			; A2 --> owning arena
+
+	; tile index = (slab - arBase) / SLAB_SIZE
+	move.l	a1,d0
+	sub.l	arBase(a2),d0
+	divu	#SLAB_SIZE,d0
+	andi.l	#$0000FFFF,d0			; D0 = tile index
+
+	; Clear the tile bit and decrement counts
+	move.l	arTileMap(a2),d2
+	bclr	d0,d2
+	move.l	d2,arTileMap(a2)
+	subq.w	#1,arSlabUse(a2)
+
+	move.l	hhSmallPool(a0),d0
+	beq.s	_slrCheck			; no SCB (defensive)
+	movea.l d0,a3
+	subq.l	#1,scbSlabCount(a3)
+
+_slrCheck:
+	tst.w	arSlabUse(a2)			; arena now empty?
+	bne.s	_slrOk
+	move.l	a2,-(sp)			; release the whole arena
+	move.l	a0,-(sp)
+	jsr	__HeapArenaRelease
+	adda.l	#8,sp
+	bra.s	_slrExit			; D0 = release result
+_slrOk:
+	moveq	#-1,d0				; success
+_slrExit:
+	ENDP
+
+	end

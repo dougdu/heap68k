@@ -53,6 +53,35 @@ _HeapAlloc PROC USES d1-d3/a0-a4, hHeap:DWORD, lFlags:DWORD, lBytes:DWORD
 	adda.l 	#8,sp
 	bne 	_haErrorExit1			; Validation failed
 
+	IF SOA_ROUTE
+	; ---- Small Object Allocator fast path (design §7/§9.3) ----
+	; Route requests of 1..SOA_MAX bytes to the SOA unless the heap has
+	; the small pool disabled or tail-checking enabled (tail checking
+	; needs the block path's per-allocation guard band).  On any SOA
+	; failure we fall through to the block allocator, unchanged.
+	move.l 	lBytes,d1			; N
+	beq.s 	_haSoaSkip			; 0 bytes -> block path
+	cmpi.l 	#SOA_MAX,d1
+	bhi.s 	_haSoaSkip			; > SOA_MAX -> block path
+	btst.b 	#FLG_HEAP_DISABLE_SMALL_POOL-8,hhFlags+2(a0) ; per-heap opt-out (bit 10)
+	bne.s 	_haSoaSkip
+	move.l 	lFlags,d1			; per-CALL opt-out: the SOA's own SCB
+	btst.l 	#FLG_HEAP_DISABLE_SMALL_POOL,d1	; allocation passes this to force a block
+	bne.s 	_haSoaSkip			; (also breaks the SCB-alloc recursion)
+	btst.b 	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	bne.s 	_haSoaSkip
+	move.l 	lBytes,-(sp)			; lBytes
+	move.l 	lFlags,-(sp)			; lFlags
+	move.l 	a0,-(sp)			; hHeap
+	jsr 	__HeapSoaAlloc
+	adda.l 	#12,sp
+	tst.l 	d0
+	beq.s 	_haSoaSkip			; SOA exhausted -> block path
+	movea.l d0,a0				; A0 --> allocated cell
+	bra 	_haExit
+_haSoaSkip:
+	ENDIF
+
 	; Begin allocation
 	move.l 	lBytes,d1 			; Get count of bytes to allocate
 

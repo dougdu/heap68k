@@ -1,0 +1,150 @@
+************************************************************************
+*  HeapSmallReAlloc
+************************************************************************
+*
+*  Small Object Allocator (SOA) reallocation path.  Phase 4.
+*
+*    __HeapSoaReAlloc - reallocate a cell (pMem) to a new size, per the
+*                       transition matrix in design section 9.6.
+*
+*  The caller (_HeapReAlloc, when SOA_ROUTE is on) has already recognized
+*  pMem as a cell of `slab` via __HeapSlabFromPtr and verified that the
+*  slab is owned by hHeap.  The ORIGINAL block is therefore always a cell;
+*  this routine covers the cell-origin transitions:
+*
+*    same class (small, class unchanged) : keep the existing cell and
+*        return pMem.  Per section 9.6/S3 a same-class grow does NOT honor
+*        HEAP_ZERO_MEMORY (no per-cell request size is stored, so the
+*        "new" bytes cannot be identified).
+*    different class (small) : allocate a new cell from the SOA, copy the
+*        preserved bytes, free the old cell.
+*    small -> large : allocate a block (a > SOA_MAX request always takes
+*        the block path), copy, free the old cell.
+*
+*  HEAP_REALLOC_IN_PLACE_ONLY (per-call flag or per-heap default): only the
+*  same-class case can be satisfied without movement; every move fails with
+*  HEAP_ERROR_OUT_OF_MEMORY and leaves the original cell untouched.
+*
+*  The new region is filled/zeroed by the underlying allocator, so when
+*  HEAP_ZERO_MEMORY is requested a cross-class/large grow gets its exposed
+*  tail zeroed for free; only same-class growth is exempt (above).
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap  : DWORD - heap handle owning the cell
+*  lFlags : DWORD - realloc flags (HEAP_ZERO_MEMORY / IN_PLACE_ONLY)
+*  slab   : DWORD - the cell's owning slab (from __HeapSlabFromPtr)
+*  pMem   : DWORD - pointer to the cell being reallocated
+*  lBytes : DWORD - requested new size in bytes
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  D0 = pointer to the reallocated region, or 0 on failure.  On failure
+*  the original cell is preserved and __HeapError describes the cause.
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern	__HeapSoaSizeToClass
+	extern	__HeapError
+
+	.code
+
+__HeapSoaReAlloc PROC USES d2-d4/a2-a3, hHeap:DWORD, lFlags:DWORD, slab:DWORD, pMem:DWORD, lBytes:DWORD
+	movea.l slab,a2				; A2 --> current slab
+	moveq	#0,d2
+	move.w	slCellSz(a2),d2			; D2 = current cell (class) size
+
+	; --- classify the new size against the current class ---
+	move.l	lBytes,d0
+	beq.s	_sorMove			; realloc to 0 -> minimal block (move)
+	cmpi.l	#SOA_MAX,d0
+	bhi.s	_sorMove			; > SOA_MAX -> large -> move to a block
+	jsr	__HeapSoaSizeToClass		; D0 = new class (trashes D0/CCR only)
+	moveq	#0,d1
+	move.w	slClass(a2),d1			; D1 = current class
+	cmp.l	d1,d0
+	bne.s	_sorMove			; different class -> reallocate
+
+	; --- same class: keep the cell (no ZERO_MEMORY on grow, section 9.6) ---
+	move.l	pMem,d0				; return the original pointer
+	bra	_sorExit
+
+_sorMove:
+	; --- a move is required: forbidden when in-place-only is requested ---
+	move.l	lFlags,d0
+	btst.l	#FLG_HEAP_REALLOC_IN_PLACE_ONLY,d0
+	bne	_sorInPlaceFail
+	movea.l hHeap,a0
+	btst.b	#FLG_HEAP_REALLOC_IN_PLACE_ONLY,hhFlags+3(a0)
+	bne	_sorInPlaceFail
+
+	; --- allocate the new region: a cell for a small size, else a block ---
+	move.l	lBytes,d0
+	beq.s	_sorAllocBlk			; 0 -> block path (minimal block)
+	cmpi.l	#SOA_MAX,d0
+	bhi.s	_sorAllocBlk			; large -> block path
+	move.l	lBytes,-(sp)			; small -> straight from the SOA
+	move.l	lFlags,-(sp)
+	move.l	hHeap,-(sp)
+	jsr	__HeapSoaAlloc			; -> new cell (or 0 on exhaustion)
+	adda.l	#12,sp
+	bra.s	_sorGotNew
+_sorAllocBlk:
+	move.l	lBytes,-(sp)
+	move.l	lFlags,-(sp)
+	move.l	hHeap,-(sp)
+	jsr	_HeapAlloc			; -> new block (or 0)
+	adda.l	#12,sp
+
+_sorGotNew:
+	tst.l	d0
+	beq.s	_sorAllocFail			; OOM -> original cell preserved
+	movea.l d0,a3				; A3 --> new region (survives the free)
+
+	; --- copy min(lBytes, curSz) bytes  pMem -> new ---
+	move.l	lBytes,d4			; D4 = new size
+	cmp.l	d2,d4				; min(lBytes, curSz)
+	bcs.s	_sorHaveCnt			; lBytes < curSz -> copy lBytes
+	move.l	d2,d4				; else copy curSz (all old data)
+_sorHaveCnt:
+	tst.l	d4
+	beq.s	_sorCopyDone			; nothing to copy
+	movea.l pMem,a0				; A0 --> source (old cell)
+	movea.l a3,a1				; A1 --> destination (new region)
+	subq.l	#1,d4				; adjust for dbra
+_sorCopyLp:
+	move.b	(a0)+,(a1)+
+	dbra	d4,_sorCopyLp
+	sub.l	#$10000,d4			; decrement high word (32-bit count)
+	bcc.s	_sorCopyLp
+
+_sorCopyDone:
+	; --- free the original cell straight back to the SOA ---
+	move.l	pMem,-(sp)
+	move.l	slab,-(sp)
+	move.l	hHeap,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	a3,d0				; return the new pointer
+	bra.s	_sorExit
+
+_sorAllocFail:
+	moveq	#0,d0				; allocator already set __HeapError
+	bra.s	_sorExit
+
+_sorInPlaceFail:
+	move.l	#HEAP_ERROR_OUT_OF_MEMORY,__HeapError
+	moveq	#0,d0				; movement disallowed -> fail
+
+_sorExit:
+	ENDP
+
+	end

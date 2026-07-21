@@ -1,0 +1,1222 @@
+************************************************************************
+*  HeapSmallTest
+************************************************************************
+*
+*  Phase 1 unit test for the SOA data-structure primitives.  Exercises
+*  size->class mapping, SCB create, arena create, slab create + free
+*  list, and pointer recognition (__HeapSlabFromPtr).  No public-API
+*  routing is involved.
+*
+*  Result convention (inspect in the debugger / sim68k):
+*    tResult = 0          -> all checks passed
+*    tResult = $0000FFFF  -> sentinel (test did not complete)
+*    tResult = $00PPCC..  -> failing check code (also left in D7)
+*    tDetail              -> failing detail (e.g. the size n), also D6
+*
+************************************************************************
+
+	.model	flat
+
+	include	heap.inc
+
+	extern	__HeapSoaSizeToClass
+	extern	__HeapSoaClassTbl
+	extern	__HeapError
+
+	.code
+
+HEAPBUFSIZE equ	$40000				; 256 KB self-contained heap buffer
+
+TOTAL16 equ	(SLAB_SIZE-SLAB_HDR_SIZE)/16	; cells in a 16-byte class slab
+TOTAL8  equ	(SLAB_SIZE-SLAB_HDR_SIZE)/8	; cells in an 8-byte class slab
+TOTAL256 equ	(SLAB_SIZE-SLAB_HDR_SIZE)/256	; cells in a 256-byte class slab
+
+start:	; --- self-contained machine heap in our own BSS (no CP/M base page) ---
+	move.l	#heapbuf,d2			; heap start
+	move.l	#HEAPBUFSIZE-128,d1		; heap size (slop for alignment/headers)
+	move.l	d1,-(sp)			; heap size
+	move.l	d2,-(sp)			; heap start
+	clr.l	-(sp)				; no options
+	jsr	_MachineHeapInitialize
+	adda.l	#12,sp
+	move.l	d0,hMachineHeap
+
+	move.l	#$0000FFFF,tResult		; sentinel until we pass
+	moveq	#0,d6
+	moveq	#0,d7
+
+************************************************************************
+*  Phase 1 : __HeapSoaSizeToClass for every n in 1..SOA_MAX
+************************************************************************
+	move.l	#1,d2				; D2 = n
+_p1loop:
+	move.l	d2,d6				; detail = n
+	move.l	d2,d0
+	jsr	__HeapSoaSizeToClass
+	move.l	d0,d3				; D3 = class
+	move.l	#$0101,d7			; class must be >= 0
+	bmi	_tfail
+	move.l	#$0102,d7			; class must be < SOA_NUM_CLASSES
+	cmpi.l	#SOA_NUM_CLASSES,d3
+	bge	_tfail
+	; tbl[class] >= n
+	lea	__HeapSoaClassTbl,a0
+	move.l	d3,d0
+	add.l	d0,d0
+	move.w	(a0,d0.l),d1
+	andi.l	#$0000FFFF,d1
+	move.l	#$0103,d7			; tbl[class] must be >= n
+	cmp.l	d2,d1
+	blt	_tfail
+	; class>0 => tbl[class-1] < n
+	tst.l	d3
+	beq.s	_p1next
+	move.l	d3,d0
+	subq.l	#1,d0
+	add.l	d0,d0
+	move.w	(a0,d0.l),d1
+	andi.l	#$0000FFFF,d1
+	move.l	#$0104,d7			; tbl[class-1] must be < n
+	cmp.l	d2,d1
+	bge	_tfail
+_p1next:
+	addq.l	#1,d2
+	cmpi.l	#SOA_MAX,d2
+	ble	_p1loop
+	moveq	#0,d6				; clear detail for later phases
+
+************************************************************************
+*  Phase 2 : __HeapScbGetOrCreate
+************************************************************************
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapScbGetOrCreate
+	adda.l	#4,sp
+	move.l	d0,scbPtr
+	move.l	#$0201,d7			; SCB not NULL
+	tst.l	d0
+	beq	_tfail
+	movea.l d0,a0
+	move.l	#$0202,d7			; scbMagic == 'SCB '
+	cmpi.l	#SCB_MAGIC,scbMagic(a0)
+	bne	_tfail
+	move.l	#$0203,d7			; scbHeap == mh
+	move.l	scbHeap(a0),d0
+	cmp.l	hMachineHeap,d0
+	bne	_tfail
+	move.l	#$0204,d7			; hhSmallPool(mh) == scb
+	movea.l hMachineHeap,a1
+	move.l	hhSmallPool(a1),d0
+	cmp.l	scbPtr,d0
+	bne	_tfail
+	move.l	hMachineHeap,-(sp)		; idempotent
+	jsr	__HeapScbGetOrCreate
+	adda.l	#4,sp
+	move.l	#$0205,d7			; second call returns same SCB
+	cmp.l	scbPtr,d0
+	bne	_tfail
+
+************************************************************************
+*  Phase 3 : __HeapArenaCreate
+************************************************************************
+	move.l	#ARENA_SLABS_DFLT,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapArenaCreate
+	adda.l	#8,sp
+	move.l	d0,arenaPtr
+	move.l	#$0301,d7			; arena not NULL
+	tst.l	d0
+	beq	_tfail
+	movea.l d0,a0
+	move.l	#$0302,d7			; arMagic == 'AREN'
+	cmpi.l	#AREN_MAGIC,arMagic(a0)
+	bne	_tfail
+	move.l	#$0303,d7			; arBase SLAB_SIZE-aligned
+	move.l	arBase(a0),d0
+	andi.l	#SLAB_SIZE_MASK,d0
+	bne	_tfail
+	move.l	#$0304,d7			; arBase-ar >= AREN_HDR_SIZE
+	move.l	arBase(a0),d0
+	sub.l	arenaPtr,d0
+	cmpi.l	#AREN_HDR_SIZE,d0
+	blt	_tfail
+	move.l	#$0305,d7			; arSlabs == DFLT
+	move.w	arSlabs(a0),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#ARENA_SLABS_DFLT,d0
+	bne	_tfail
+	move.l	#$0306,d7			; arSlabUse == 0
+	move.w	arSlabUse(a0),d0
+	andi.l	#$0000FFFF,d0
+	bne	_tfail
+	move.l	#$0307,d7			; arTileMap == 0
+	move.l	arTileMap(a0),d0
+	bne	_tfail
+	move.l	#$0308,d7			; scbArenaHead == arena
+	movea.l scbPtr,a1
+	move.l	scbArenaHead(a1),d0
+	cmp.l	arenaPtr,d0
+	bne	_tfail
+
+************************************************************************
+*  Phase 4 : __HeapSlabCreate (class 1 = 16 bytes, thorough)
+************************************************************************
+	move.l	#1,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSlabCreate
+	adda.l	#8,sp
+	move.l	d0,slabPtr
+	move.l	#$0401,d7			; slab not NULL
+	tst.l	d0
+	beq	_tfail
+	movea.l d0,a0
+	move.l	#$0402,d7			; slab SLAB_SIZE-aligned
+	move.l	d0,d1
+	andi.l	#SLAB_SIZE_MASK,d1
+	bne	_tfail
+	move.l	#$0403,d7			; slMagic == 'SLAB'
+	cmpi.l	#SLAB_MAGIC,slMagic(a0)
+	bne	_tfail
+	move.l	#$0404,d7			; slClass == 1
+	move.w	slClass(a0),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#1,d0
+	bne	_tfail
+	move.l	#$0405,d7			; slCellSz == 16
+	move.w	slCellSz(a0),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#16,d0
+	bne	_tfail
+	move.l	#$0406,d7			; slTotal == 4064/16
+	move.w	slTotal(a0),d0
+	andi.l	#$0000FFFF,d0
+	move.l	d0,total
+	cmpi.l	#TOTAL16,d0
+	bne	_tfail
+	move.l	#$0407,d7			; slFree == slTotal
+	move.w	slFree(a0),d1
+	andi.l	#$0000FFFF,d1
+	cmp.l	d0,d1
+	bne	_tfail
+	move.l	#$0408,d7			; slFreeHd == 0
+	move.w	slFreeHd(a0),d0
+	andi.l	#$0000FFFF,d0
+	bne	_tfail
+	move.l	#$0409,d7			; slId == heap id
+	move.l	slFlags(a0),d0
+	andi.l	#HEAP_ID_MASK,d0
+	movea.l hMachineHeap,a1
+	move.l	hhFlags(a1),d1
+	andi.l	#HEAP_ID_MASK,d1
+	cmp.l	d1,d0
+	bne	_tfail
+	move.l	#$040A,d7			; slArena == arena
+	move.l	slArena(a0),d0
+	cmp.l	arenaPtr,d0
+	bne	_tfail
+	move.l	#$040B,d7			; arSlabUse == 1
+	movea.l arenaPtr,a1
+	move.w	arSlabUse(a1),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#1,d0
+	bne	_tfail
+
+	; --- walk the intrusive free list ---
+	movea.l slabPtr,a0
+	move.w	slFreeHd(a0),d2			; D2 = current index
+	andi.l	#$0000FFFF,d2
+	moveq	#0,d3				; D3 = node count
+	move.l	total,d4			; D4 = expected count
+_p4walk:
+	cmpi.w	#SOA_NIL_INDEX,d2
+	beq.s	_p4walkend
+	move.l	#$040C,d7			; index < total
+	cmp.l	d4,d2
+	bge	_tfail
+	move.l	d2,d0
+	mulu	#16,d0				; index*cellSz
+	lea	slCells(a0),a1
+	adda.l	d0,a1				; A1 --> cell
+	move.l	#$040D,d7			; cell freeTag present
+	move.w	cellFreeTag(a1),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#SOA_FREE_TAG,d0
+	bne	_tfail
+	move.w	cellNextIdx(a1),d2
+	andi.l	#$0000FFFF,d2
+	addq.l	#1,d3
+	move.l	#$040E,d7			; no runaway (count <= total)
+	cmp.l	d4,d3
+	bgt	_tfail
+	bra.s	_p4walk
+_p4walkend:
+	move.l	#$040F,d7			; node count == total
+	cmp.l	d4,d3
+	bne	_tfail
+
+************************************************************************
+*  Phase 4b : class 0 (8 bytes) and class 15 (256 bytes)
+************************************************************************
+	move.l	#0,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSlabCreate
+	adda.l	#8,sp
+	move.l	#$0420,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l d0,a0
+	move.l	#$0421,d7
+	cmpi.l	#SLAB_MAGIC,slMagic(a0)
+	bne	_tfail
+	move.l	#$0422,d7
+	move.w	slCellSz(a0),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#8,d0
+	bne	_tfail
+	move.l	#$0423,d7
+	move.w	slTotal(a0),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#TOTAL8,d0
+	bne	_tfail
+
+	move.l	#15,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSlabCreate
+	adda.l	#8,sp
+	move.l	d0,slab15
+	move.l	#$0430,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l d0,a0
+	move.l	#$0431,d7
+	cmpi.l	#SLAB_MAGIC,slMagic(a0)
+	bne	_tfail
+	move.l	#$0432,d7
+	move.w	slCellSz(a0),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#256,d0
+	bne	_tfail
+	move.l	#$0433,d7
+	move.w	slTotal(a0),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#TOTAL256,d0
+	bne	_tfail
+
+************************************************************************
+*  Phase 5 : __HeapSlabFromPtr  (slab15: cellSz 256, total 15)
+************************************************************************
+	; cell 0 -> slab15
+	move.l	slab15,d0
+	addi.l	#SLAB_HDR_SIZE,d0
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0501,d7
+	cmp.l	slab15,d0
+	bne	_tfail
+	; middle cell (index 7)
+	move.l	slab15,d0
+	addi.l	#SLAB_HDR_SIZE+7*256,d0
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0502,d7
+	cmp.l	slab15,d0
+	bne	_tfail
+	; last cell (index 14)
+	move.l	slab15,d0
+	addi.l	#SLAB_HDR_SIZE+14*256,d0
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0503,d7
+	cmp.l	slab15,d0
+	bne	_tfail
+	; NULL -> 0
+	clr.l	-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0504,d7
+	tst.l	d0
+	bne	_tfail
+	; header pointer -> 0
+	move.l	slab15,d0
+	addi.l	#SLAB_HDR_SIZE-4,d0
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0505,d7
+	tst.l	d0
+	bne	_tfail
+	; interior (offset +1, not cell-aligned) -> 0
+	move.l	slab15,d0
+	addi.l	#SLAB_HDR_SIZE+1,d0
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0506,d7
+	tst.l	d0
+	bne	_tfail
+	; out of range (index == total) -> 0
+	move.l	slab15,d0
+	addi.l	#SLAB_HDR_SIZE+15*256,d0
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0507,d7
+	tst.l	d0
+	bne	_tfail
+	; foreign pointer (test data, outside the heap) -> 0
+	move.l	#tResult,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0508,d7
+	tst.l	d0
+	bne	_tfail
+
+************************************************************************
+*  Phase 6 : __HeapSoaAlloc (allocation path)
+************************************************************************
+	; --- 6a: basic class-1 (16B) allocation ---
+	move.l	#16,-(sp)			; n
+	clr.l	-(sp)				; flags
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,cellA
+	move.l	#$0601,d7			; alloc not NULL
+	tst.l	d0
+	beq	_tfail
+	move.l	cellA,-(sp)			; recognized as a cell?
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0602,d7			; recognized -> slab
+	tst.l	d0
+	beq	_tfail
+	movea.l d0,a0
+	move.l	#$0603,d7			; slab class == 1
+	move.w	slClass(a0),d1
+	andi.l	#$0000FFFF,d1
+	cmpi.l	#1,d1
+	bne	_tfail
+	movea.l scbPtr,a1
+	move.l	#$0604,d7			; scbPartial[1] == this slab
+	move.l	scbPartial+1*4(a1),d1
+	cmp.l	d0,d1
+	bne	_tfail
+	move.l	#$0605,d7			; live cells == 1
+	move.l	scbLiveCells(a1),d1
+	cmpi.l	#1,d1
+	bne	_tfail
+
+	; --- 6b: second class-1 allocation is adjacent ---
+	move.l	#16,-(sp)
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,cellB
+	move.l	#$0611,d7			; not NULL
+	tst.l	d0
+	beq	_tfail
+	move.l	#$0612,d7			; cellB - cellA == 16 (one cell)
+	sub.l	cellA,d0
+	cmpi.l	#16,d0
+	bne	_tfail
+	movea.l scbPtr,a1
+	move.l	#$0613,d7			; live cells == 2
+	move.l	scbLiveCells(a1),d1
+	cmpi.l	#2,d1
+	bne	_tfail
+
+	; --- 6c: zero-fill overwrites a dirtied cell (class 3 = 32B) ---
+	move.l	#32,-(sp)			; n, no zero
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	#$0621,d7			; P0 not NULL
+	tst.l	d0
+	beq	_tfail
+	addi.l	#32,d0				; P1 = P0 + cellSz (next free cell)
+	movea.l d0,a1
+	move.l	a1,cls3p1			; remember expected P1
+	; Dirty the cell body but NOT its first 4 bytes (the free-list
+	; control word lives there while the cell is free); this proves the
+	; zero-fill covers the whole cell without corrupting the free list.
+	addq.l	#4,a1
+	moveq	#(32-4)/4-1,d1			; 7 longwords of $FFFFFFFF
+_p6dirty:
+	move.l	#$FFFFFFFF,(a1)+
+	dbra	d1,_p6dirty
+	move.l	#32,-(sp)			; alloc with zero -> must reuse P1
+	move.l	#HEAP_ZERO_MEMORY,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	#$0622,d7			; P1' not NULL
+	tst.l	d0
+	beq	_tfail
+	move.l	#$0623,d7			; P1' == P1 (free-list order)
+	cmp.l	cls3p1,d0
+	bne	_tfail
+	movea.l d0,a1				; verify all 32 bytes are zero
+	move.l	#$0624,d7
+	moveq	#8-1,d1
+_p6zchk:
+	tst.l	(a1)+
+	bne	_tfail
+	dbra	d1,_p6zchk
+
+	; --- 6d: fill a class-15 slab to full -> Partial->Full + new slab ---
+	move.l	#256,-(sp)			; first alloc creates slab A
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	#$0631,d7
+	tst.l	d0
+	beq	_tfail
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabFull			; slab A
+	move.l	#TOTAL256-1,d5			; allocate the remaining cells (D5 survives)
+_p6fill:
+	move.l	#256,-(sp)
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	#$0632,d7
+	tst.l	d0
+	beq	_tfail
+	subq.l	#1,d5
+	bne	_p6fill
+	movea.l scbPtr,a1			; slab A is full now
+	move.l	#$0633,d7			; scbPartial[15] empty
+	move.l	scbPartial+15*4(a1),d1
+	bne	_tfail
+	move.l	#$0634,d7			; scbFull[15] == A
+	move.l	scbFull+15*4(a1),d1
+	cmp.l	slabFull,d1
+	bne	_tfail
+	move.l	#256,-(sp)			; next alloc -> new slab B on partial
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	#$0635,d7
+	tst.l	d0
+	beq	_tfail
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0636,d7			; new slab != A
+	cmp.l	slabFull,d0
+	beq	_tfail
+	movea.l scbPtr,a1
+	move.l	#$0637,d7			; scbPartial[15] now non-empty
+	move.l	scbPartial+15*4(a1),d1
+	beq	_tfail
+	move.l	#$0638,d7			; scbPartial[15] == new slab B
+	cmp.l	d0,d1
+	bne	_tfail
+
+	; --- 6e: every class maps correctly through the alloc path ---
+	moveq	#0,d4				; D4 = cls (survives calls)
+_p6sweep:
+	lea	__HeapSoaClassTbl,a0		; n = class size for this class
+	move.l	d4,d0
+	add.l	d0,d0
+	move.w	(a0,d0.l),d0
+	andi.l	#$0000FFFF,d0
+	move.l	d0,-(sp)
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d4,d6				; detail = cls
+	move.l	#$0651,d7			; alloc not NULL
+	tst.l	d0
+	beq	_tfail
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0652,d7			; recognized as a cell
+	tst.l	d0
+	beq	_tfail
+	movea.l d0,a0
+	move.l	#$0653,d7			; slab class == cls
+	move.w	slClass(a0),d0
+	andi.l	#$0000FFFF,d0
+	cmp.l	d4,d0
+	bne	_tfail
+	addq.l	#1,d4
+	cmpi.l	#SOA_NUM_CLASSES,d4
+	blt	_p6sweep
+	moveq	#0,d6				; clear detail
+
+************************************************************************
+*  Phase 7 : __HeapSoaFree (free path)
+************************************************************************
+	; --- 7a: round-trip alloc -> free -> re-alloc reuses the cell ---
+	move.l	#24,-(sp)			; class 2 (24 bytes)
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,cellRT
+	move.l	#$0701,d7			; alloc not NULL
+	tst.l	d0
+	beq	_tfail
+	move.l	cellRT,-(sp)			; find its slab
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabRT
+	move.l	#$0702,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l scbPtr,a1			; snapshot live-cell count
+	move.l	scbLiveCells(a1),d5		; D5 = live before free
+	move.l	cellRT,-(sp)			; free the cell
+	move.l	slabRT,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	#$0703,d7			; free returns TRUE (-1)
+	cmpi.l	#-1,d0
+	bne	_tfail
+	movea.l scbPtr,a1			; live count decremented by 1
+	move.l	scbLiveCells(a1),d0
+	addq.l	#1,d0
+	move.l	#$0704,d7
+	cmp.l	d5,d0
+	bne	_tfail
+	movea.l cellRT,a0			; cell marked free (freeTag)
+	move.w	cellFreeTag(a0),d0
+	andi.l	#$0000FFFF,d0
+	move.l	#$0705,d7
+	cmpi.l	#SOA_FREE_TAG,d0
+	bne	_tfail
+	move.l	#24,-(sp)			; re-alloc same class -> LIFO reuse
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	#$0706,d7			; reused pointer == freed cell
+	cmp.l	cellRT,d0
+	bne	_tfail
+
+	; --- 7b: double free is detected ---
+	move.l	cellRT,-(sp)			; free once (ok)
+	move.l	slabRT,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	#$0711,d7
+	cmpi.l	#-1,d0
+	bne	_tfail
+	move.l	cellRT,-(sp)			; free again (double free)
+	move.l	slabRT,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	#$0712,d7			; returns FALSE (0)
+	tst.l	d0
+	bne	_tfail
+	move.l	__HeapError,d0			; error code == DOUBLE_FREE
+	move.l	#$0713,d7
+	cmpi.l	#HEAP_ERROR_DOUBLE_FREE,d0
+	bne	_tfail
+
+	; --- 7c: debug-fill on free writes BAADFOOD then the control word ---
+	move.l	#$8000,-(sp)			; 32 KB private heap, debug-fill on
+	move.l	#HEAP_ENABLE_DEBUG_FILL,-(sp)
+	jsr	_HeapCreate
+	adda.l	#8,sp
+	move.l	d0,heapD
+	move.l	#$0721,d7
+	tst.l	d0
+	beq	_tfail
+	move.l	#40,-(sp)			; anchor cell keeps the slab alive so
+	clr.l	-(sp)				; freeing the test cell below does NOT
+	move.l	heapD,-(sp)			; empty+release (and debug-refill) the
+	jsr	__HeapSoaAlloc			; whole arena, which would clobber it
+	adda.l	#12,sp
+	move.l	#$0726,d7
+	tst.l	d0
+	beq	_tfail
+	move.l	#40,-(sp)			; class 4 (40 bytes) test cell
+	clr.l	-(sp)
+	move.l	heapD,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,cellD
+	move.l	#$0722,d7
+	tst.l	d0
+	beq	_tfail
+	move.l	cellD,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabD
+	move.l	cellD,-(sp)			; free it (debug fill on free)
+	move.l	slabD,-(sp)
+	move.l	heapD,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	#$0723,d7
+	cmpi.l	#-1,d0
+	bne	_tfail
+	movea.l cellD,a0			; control word survived the fill
+	move.w	cellFreeTag(a0),d0
+	andi.l	#$0000FFFF,d0
+	move.l	#$0724,d7
+	cmpi.l	#SOA_FREE_TAG,d0
+	bne	_tfail
+	movea.l cellD,a0			; body (offsets 4..39) == BAADFOOD
+	addq.l	#4,a0
+	moveq	#(40-4)/4-1,d4
+_p7dbgchk:
+	move.l	(a0)+,d0
+	move.l	#$0725,d7
+	cmpi.l	#BAADFOOD,d0
+	bne	_tfail
+	dbra	d4,_p7dbgchk
+
+	; --- 7d/7e: full->partial on free, then empty-slab release ---
+	move.l	#$8000,-(sp)			; 32 KB private heap
+	clr.l	-(sp)
+	jsr	_HeapCreate
+	adda.l	#8,sp
+	move.l	d0,heapF
+	move.l	#$0731,d7
+	tst.l	d0
+	beq	_tfail
+	moveq	#0,d4				; fill a class-15 slab (D4 = i)
+_p7fill:
+	move.l	#256,-(sp)
+	clr.l	-(sp)
+	move.l	heapF,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	#$0732,d7
+	tst.l	d0
+	beq	_tfail
+	tst.l	d4				; capture the slab from the first cell
+	bne.s	_p7filln
+	move.l	d0,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabF
+_p7filln:
+	addq.l	#1,d4
+	cmpi.l	#TOTAL256,d4
+	blt	_p7fill
+	movea.l heapF,a0			; HF's SCB
+	move.l	hhSmallPool(a0),d0
+	move.l	d0,scbF
+	movea.l d0,a1
+	move.l	#$0733,d7			; full slab is on scbFull[15]
+	move.l	scbFull+15*4(a1),d0
+	cmp.l	slabF,d0
+	bne	_tfail
+	move.l	#$0734,d7			; scbPartial[15] empty
+	move.l	scbPartial+15*4(a1),d0
+	bne	_tfail
+	move.l	slabF,d0			; free cell 0 -> Full->Partial
+	addi.l	#SLAB_HDR_SIZE,d0
+	move.l	d0,-(sp)
+	move.l	slabF,-(sp)
+	move.l	heapF,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	#$0735,d7
+	cmpi.l	#-1,d0
+	bne	_tfail
+	movea.l scbF,a1
+	move.l	#$0736,d7			; now on scbPartial[15]
+	move.l	scbPartial+15*4(a1),d0
+	cmp.l	slabF,d0
+	bne	_tfail
+	move.l	#$0737,d7			; scbFull[15] empty
+	move.l	scbFull+15*4(a1),d0
+	bne	_tfail
+	moveq	#1,d4				; free cells 1..TOTAL256-1
+_p7empty:
+	move.l	d4,d0
+	mulu	#256,d0
+	addi.l	#SLAB_HDR_SIZE,d0
+	add.l	slabF,d0
+	move.l	d0,-(sp)
+	move.l	slabF,-(sp)
+	move.l	heapF,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	#$0738,d7
+	cmpi.l	#-1,d0
+	bne	_tfail
+	addq.l	#1,d4
+	cmpi.l	#TOTAL256,d4
+	blt	_p7empty
+	movea.l scbF,a1				; slab + its sole arena now released
+	move.l	#$0739,d7			; live cells back to 0
+	move.l	scbLiveCells(a1),d0
+	bne	_tfail
+	move.l	#$073A,d7			; slab count 0
+	move.l	scbSlabCount(a1),d0
+	bne	_tfail
+	move.l	#$073B,d7			; arena count 0
+	move.l	scbArenaCount(a1),d0
+	bne	_tfail
+	move.l	#$073C,d7			; arena list empty
+	move.l	scbArenaHead(a1),d0
+	bne	_tfail
+	move.l	#$073D,d7			; class-15 partial list empty
+	move.l	scbPartial+15*4(a1),d0
+	bne	_tfail
+
+	; --- 7f: slId identifies the owning heap (cross-heap discriminator) ---
+	movea.l hMachineHeap,a0
+	move.l	hhFlags(a0),d5
+	andi.l	#HEAP_ID_MASK,d5		; D5 = machine-heap id
+	movea.l heapF,a0
+	move.l	hhFlags(a0),d4
+	andi.l	#HEAP_ID_MASK,d4		; D4 = HF id
+	move.l	#$0741,d7			; the two heap ids differ
+	cmp.l	d4,d5
+	beq	_tfail
+	movea.l slabRT,a0			; a machine-heap slab
+	move.l	slFlags(a0),d0
+	andi.l	#HEAP_ID_MASK,d0
+	move.l	#$0742,d7			; slId == owning (machine) heap id
+	cmp.l	d5,d0
+	bne	_tfail
+	move.l	#$0743,d7			; slId != the other heap's id
+	cmp.l	d4,d0
+	beq	_tfail
+	moveq	#0,d6				; clear detail
+
+************************************************************************
+*  Phase 8 : __HeapSoaReAlloc (realloc path)
+************************************************************************
+	; --- 8a: same-class realloc keeps the cell and preserves data ---
+	move.l	#20,-(sp)			; anchor (class 2) keeps that slab
+	clr.l	-(sp)				; alive across cellRA's free in 8b
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,anchRA
+	move.l	#$0801,d7			; anchor alloc ok
+	tst.l	d0
+	beq	_tfail
+	move.l	#20,-(sp)			; cellRA: 20 bytes -> class 2 (24)
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,cellRA
+	move.l	#$0802,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l cellRA,a0			; stamp a known pattern
+	move.l	#$11223344,(a0)
+	move.l	#$55667788,4(a0)
+	move.l	cellRA,-(sp)			; slabRA = cellRA's slab
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabRA
+	move.l	#$0803,d7
+	tst.l	d0
+	beq	_tfail
+	move.l	#24,-(sp)			; realloc 20 -> 24 (still class 2)
+	move.l	cellRA,-(sp)
+	move.l	slabRA,-(sp)
+	clr.l	-(sp)				; no flags
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaReAlloc
+	adda.l	#20,sp
+	move.l	#$0804,d7			; same class -> same pointer
+	cmp.l	cellRA,d0
+	bne	_tfail
+	movea.l cellRA,a0			; data intact
+	move.l	#$0805,d7
+	cmpi.l	#$11223344,(a0)
+	bne	_tfail
+	move.l	#$0806,d7
+	cmpi.l	#$55667788,4(a0)
+	bne	_tfail
+
+	; --- 8b: cross-class grow moves to a bigger cell, copies, frees old ---
+	move.l	#100,-(sp)			; realloc 24 -> 100 (class 2 -> class 10)
+	move.l	cellRA,-(sp)
+	move.l	slabRA,-(sp)
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaReAlloc
+	adda.l	#20,sp
+	move.l	d0,qA
+	move.l	#$0811,d7			; got a new region
+	tst.l	d0
+	beq	_tfail
+	move.l	#$0812,d7			; it moved (different address)
+	cmp.l	cellRA,d0
+	beq	_tfail
+	movea.l qA,a0				; preserved bytes copied over
+	move.l	#$0813,d7
+	cmpi.l	#$11223344,(a0)
+	bne	_tfail
+	move.l	#$0814,d7
+	cmpi.l	#$55667788,4(a0)
+	bne	_tfail
+	move.l	qA,-(sp)			; the new region is a class-10 cell
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0815,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l d0,a1
+	moveq	#0,d0
+	move.w	slCellSz(a1),d0
+	move.l	#$0816,d7			; class 10 cell size = 112 bytes
+	cmpi.l	#112,d0
+	bne	_tfail
+	movea.l cellRA,a0			; the old cell was freed (freeTag set)
+	move.w	cellFreeTag(a0),d0
+	andi.l	#$0000FFFF,d0
+	move.l	#$0817,d7
+	cmpi.l	#SOA_FREE_TAG,d0
+	bne	_tfail
+
+	; --- 8c: large realloc moves the cell to a block, copies data ---
+	move.l	#32,-(sp)			; cellRB: 32 bytes -> class 3
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,cellRB
+	move.l	#$0821,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l cellRB,a0
+	move.l	#$AABBCCDD,(a0)			; pattern
+	move.l	cellRB,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabRB
+	move.l	#500,-(sp)			; realloc 32 -> 500 (> SOA_MAX -> block)
+	move.l	cellRB,-(sp)
+	move.l	slabRB,-(sp)
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaReAlloc
+	adda.l	#20,sp
+	move.l	d0,qA
+	move.l	#$0822,d7			; got a region
+	tst.l	d0
+	beq	_tfail
+	move.l	qA,-(sp)			; it is NOT a cell (it's a block)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	#$0823,d7
+	tst.l	d0
+	bne	_tfail
+	movea.l qA,a0				; data preserved
+	move.l	#$0824,d7
+	cmpi.l	#$AABBCCDD,(a0)
+	bne	_tfail
+
+	; --- 8d: IN_PLACE_ONLY on a move fails; original preserved ---
+	move.l	#16,-(sp)			; cellRC: 16 bytes -> class 1
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,cellRC
+	move.l	#$0831,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l cellRC,a0
+	move.l	#$DEADBEEF,(a0)
+	move.l	cellRC,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	d0,slabRC
+	clr.l	__HeapError			; clear before the expected failure
+	move.l	#200,-(sp)			; realloc 16 -> 200 with IN_PLACE_ONLY
+	move.l	cellRC,-(sp)
+	move.l	slabRC,-(sp)
+	move.l	#HEAP_REALLOC_IN_PLACE_ONLY,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaReAlloc
+	adda.l	#20,sp
+	move.l	#$0832,d7			; returns NULL (no movement allowed)
+	tst.l	d0
+	bne	_tfail
+	move.l	__HeapError,d0			; error == OUT_OF_MEMORY
+	move.l	#$0833,d7
+	cmpi.l	#HEAP_ERROR_OUT_OF_MEMORY,d0
+	bne	_tfail
+	movea.l cellRC,a0			; original untouched (still live)
+	move.w	cellFreeTag(a0),d0
+	andi.l	#$0000FFFF,d0
+	move.l	#$0834,d7			; not marked free
+	cmpi.l	#SOA_FREE_TAG,d0
+	beq	_tfail
+	move.l	#$0835,d7			; data intact
+	cmpi.l	#$DEADBEEF,(a0)
+	bne	_tfail
+
+	; --- 8e: same-class realloc succeeds in place even with IN_PLACE_ONLY ---
+	move.l	#12,-(sp)			; realloc 16 -> 12 (still class 1)
+	move.l	cellRC,-(sp)
+	move.l	slabRC,-(sp)
+	move.l	#HEAP_REALLOC_IN_PLACE_ONLY,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaReAlloc
+	adda.l	#20,sp
+	move.l	#$0836,d7			; same class -> same pointer, in place
+	cmp.l	cellRC,d0
+	bne	_tfail
+	moveq	#0,d6				; clear detail
+
+************************************************************************
+*  Phase 9 : SOA validation, compaction, and cell walk
+************************************************************************
+	; --- 9a: validate passes on the populated machine heap ---
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaValidate
+	adda.l	#4,sp
+	move.l	#$0901,d7			; a well-formed small pool validates
+	tst.l	d0
+	bne	_tfail
+
+	; --- 9b: a corrupted slab magic is detected, then repair re-validates ---
+	movea.l slabRA,a0			; a live machine-heap slab (class 2)
+	move.l	slMagic(a0),d5			; save the real magic
+	clr.l	slMagic(a0)			; corrupt it
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaValidate
+	adda.l	#4,sp
+	move.l	#$0911,d7			; corruption is caught (non-zero)
+	tst.l	d0
+	beq	_tfail
+	move.l	#$0912,d7			; reported as a slab-corrupt error
+	cmpi.l	#HEAP_ERROR_SLAB_CORRUPT,d0
+	bne	_tfail
+	movea.l slabRA,a0			; repair the magic
+	move.l	d5,slMagic(a0)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaValidate
+	adda.l	#4,sp
+	move.l	#$0913,d7			; validates cleanly again
+	tst.l	d0
+	bne	_tfail
+
+	; --- 9c: compact on the machine heap succeeds and leaves it valid ---
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaCompact
+	adda.l	#4,sp
+	move.l	#$0921,d7			; compact reports success (-1)
+	cmpi.l	#-1,d0
+	bne	_tfail
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapSoaValidate
+	adda.l	#4,sp
+	move.l	#$0922,d7			; still valid after compaction
+	tst.l	d0
+	bne	_tfail
+
+	; --- 9d: eager release + compact drive the pool stats to zero ---
+	move.l	#$4000,-(sp)			; private heap heapG
+	clr.l	-(sp)
+	jsr	_HeapCreate
+	adda.l	#8,sp
+	move.l	d0,heapG
+	move.l	#$0931,d7
+	tst.l	d0
+	beq	_tfail
+	move.l	#48,-(sp)			; class 5 (48 bytes) cell A
+	clr.l	-(sp)
+	move.l	heapG,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,gcA
+	move.l	#$0932,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l heapG,a0			; SCB now exists
+	move.l	hhSmallPool(a0),d0
+	move.l	d0,scbG
+	move.l	#48,-(sp)			; cell B
+	clr.l	-(sp)
+	move.l	heapG,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,gcB
+	move.l	#$0933,d7
+	tst.l	d0
+	beq	_tfail
+	move.l	#48,-(sp)			; cell C
+	clr.l	-(sp)
+	move.l	heapG,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	move.l	d0,gcC
+	move.l	#$0934,d7
+	tst.l	d0
+	beq	_tfail
+	movea.l scbG,a1				; three live cells now
+	move.l	#$0935,d7
+	cmpi.l	#3,scbLiveCells(a1)
+	bne	_tfail
+	move.l	gcA,-(sp)			; free all three -> eager release
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	gcA,-(sp)
+	move.l	d0,-(sp)
+	move.l	heapG,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	gcB,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	gcB,-(sp)
+	move.l	d0,-(sp)
+	move.l	heapG,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	move.l	gcC,-(sp)
+	jsr	__HeapSlabFromPtr
+	adda.l	#4,sp
+	move.l	gcC,-(sp)
+	move.l	d0,-(sp)
+	move.l	heapG,-(sp)
+	jsr	__HeapSoaFree
+	adda.l	#12,sp
+	movea.l scbG,a1
+	move.l	#$0936,d7			; live cells back to zero
+	tst.l	scbLiveCells(a1)
+	bne	_tfail
+	move.l	#$0937,d7			; arenas eagerly released
+	tst.l	scbArenaCount(a1)
+	bne	_tfail
+	move.l	heapG,-(sp)			; compact is a clean no-op now
+	jsr	__HeapSoaCompact
+	adda.l	#4,sp
+	move.l	#$0938,d7
+	cmpi.l	#-1,d0
+	bne	_tfail
+	move.l	heapG,-(sp)			; and the empty pool still validates
+	jsr	__HeapSoaValidate
+	adda.l	#4,sp
+	move.l	#$0939,d7
+	tst.l	d0
+	bne	_tfail
+
+	; --- 9e: walk enumerates exactly the live cells ---
+	move.l	#$4000,-(sp)			; private heap heapW
+	clr.l	-(sp)
+	jsr	_HeapCreate
+	adda.l	#8,sp
+	move.l	d0,heapW
+	move.l	#$0941,d7
+	tst.l	d0
+	beq	_tfail
+	moveq	#0,d5				; D5 = XOR of allocated pointers
+	moveq	#4,d4				; allocate 4 class-6 (56-byte) cells
+	move.l	#$0942,d7
+_t9eAlloc:
+	move.l	#56,-(sp)
+	clr.l	-(sp)
+	move.l	heapW,-(sp)
+	jsr	__HeapSoaAlloc
+	adda.l	#12,sp
+	tst.l	d0
+	beq	_tfail
+	eor.l	d0,d5				; fold into the checksum
+	subq.l	#1,d4
+	bne.s	_t9eAlloc
+	move.l	d5,wSum				; stash the allocated-set checksum
+	lea	walkCur,a0			; zero the walk cursor
+	clr.l	swArena(a0)
+	clr.l	swTile(a0)
+	clr.l	swCell(a0)
+	moveq	#0,d5				; D5 = XOR of walked pointers
+	moveq	#0,d4				; D4 = walk count
+_t9eWalk:
+	move.l	#walkCur,-(sp)
+	move.l	heapW,-(sp)
+	jsr	__HeapSoaWalk
+	adda.l	#8,sp
+	tst.l	d0
+	beq.s	_t9eWalkDone
+	eor.l	d0,d5
+	addq.l	#1,d4
+	bra.s	_t9eWalk
+_t9eWalkDone:
+	move.l	#$0943,d7			; exactly four cells enumerated
+	cmpi.l	#4,d4
+	bne	_tfail
+	move.l	#$0944,d7			; and precisely the ones we allocated
+	move.l	wSum,d0
+	cmp.l	d0,d5
+	bne	_tfail
+	moveq	#0,d6				; clear detail
+
+************************************************************************
+*  All checks passed
+************************************************************************
+	clr.l	tResult
+	moveq	#0,d7
+	bra.s	_tdone
+
+_tfail:
+	move.l	d7,tResult
+	move.l	d6,tDetail
+
+_tdone:
+	jmp	_tdone
+
+	.bss
+
+hMachineHeap	ds.l	1
+scbPtr		ds.l	1
+arenaPtr	ds.l	1
+slabPtr		ds.l	1
+slab15		ds.l	1
+cellA		ds.l	1
+cellB		ds.l	1
+slabFull	ds.l	1
+cls3p1		ds.l	1
+cellRT		ds.l	1
+slabRT		ds.l	1
+heapD		ds.l	1
+cellD		ds.l	1
+slabD		ds.l	1
+heapF		ds.l	1
+scbF		ds.l	1
+slabF		ds.l	1
+anchRA		ds.l	1
+cellRA		ds.l	1
+slabRA		ds.l	1
+cellRB		ds.l	1
+slabRB		ds.l	1
+cellRC		ds.l	1
+slabRC		ds.l	1
+qA		ds.l	1
+heapG		ds.l	1
+scbG		ds.l	1
+gcA		ds.l	1
+gcB		ds.l	1
+gcC		ds.l	1
+heapW		ds.l	1
+wSum		ds.l	1
+walkCur		ds.l	3
+total		ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+
+	.even
+heapbuf		ds.b	HEAPBUFSIZE
+
+	end

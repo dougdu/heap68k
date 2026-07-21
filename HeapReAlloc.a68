@@ -80,6 +80,36 @@ _HeapReAlloc PROC USES d1-d4/a0-a4, hHeap:DWORD, lFlags:DWORD, pMem:DWORD, lByte
 	move.l 	pMem,a1 			; Get memory pointer
 	cmpa.l 	#0,a1 				; NULL pointer?
 	beq 	_hrInvalidBlock			; Yes, treat as invalid block pointer
+
+	IF SOA_ROUTE
+	; ---- Small Object Allocator: reallocate a cell (design §9.6) ----
+	; Recognize pMem as a slab cell; if it is one owned by this heap, hand
+	; the whole realloc to __HeapSoaReAlloc (same-class keep, cross-class or
+	; large move).  Otherwise fall through to the block realloc path with
+	; A1 still = pMem.  __HeapSlabFromPtr preserves A0 (heap) and A1 (pMem).
+	move.l 	pMem,-(sp)
+	jsr 	__HeapSlabFromPtr		; D0 = owning slab, or 0
+	adda.l 	#4,sp
+	tst.l 	d0
+	beq 	_hrNotCell			; not a cell -> block path
+	movea.l d0,a1				; A1 --> slab
+	move.l 	slFlags(a1),d1			; recognized: check ownership (slId vs hhId)
+	andi.l 	#HEAP_ID_MASK,d1
+	move.l 	hhFlags(a0),d0
+	andi.l 	#HEAP_ID_MASK,d0
+	cmp.l 	d0,d1
+	bne 	_hrInvalidHeap			; cell not owned by this heap
+	move.l 	lBytes,-(sp)			; realloc the cell
+	move.l 	pMem,-(sp)
+	move.l 	a1,-(sp)			; slab
+	move.l 	lFlags,-(sp)
+	move.l 	a0,-(sp)			; hHeap
+	jsr 	__HeapSoaReAlloc
+	adda.l 	#20,sp
+	bra 	_hrExit				; D0 = new ptr / 0 (error set)
+_hrNotCell:
+	ENDIF
+
 	suba.l 	#BLK_HDR_SIZE,a1 		; Get pointer to block
 
 	; Validate that the pointer is aligned as we expect

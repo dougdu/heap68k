@@ -27,13 +27,15 @@ BINDIR    =C:\git\worm68k\bin
 HEAP_ELF_OBJS = GetMachineHeap.o GetMachineHeaps.o \
 	   HeapAlloc.o HeapAutoValidateFlagCheck.o HeapCoalesce.o HeapCompact.o \
 	   HeapCreate.o HeapDestroy.o HeapFree.o HeapGetError.o HeapInitialize.o \
-	   HeapReAlloc.o HeapSize.o HeapUnlinkFromBlockChain.o \
+	   HeapReAlloc.o HeapSize.o HeapStats.o HeapUnlinkFromBlockChain.o \
 	   HeapUnlinkFromFreeBlockChain.o HeapValidate.o \
 	   HeapValidateHandle.o HeapWalk.o HeapData.o \
-	   HeapDebugFillOnFree.o HeapInvalidateBlockHeader.o
+	   HeapDebugFillOnFree.o HeapInvalidateBlockHeader.o \
+	   HeapSmallCtl.o HeapArena.o HeapSlab.o HeapSmallAlloc.o HeapSmallFree.o \
+	   HeapSmallReAlloc.o HeapSmallValidate.o HeapSmallCompact.o HeapSmallWalk.o
 
 
-all: libheap-elf.a heaptest.elf
+all: libheap-elf.a heaptest.elf heapsmalltest.elf
 
 libheap-elf.a: $(HEAP_ELF_OBJS)
 	$(AR) -rscv $@ $**
@@ -42,6 +44,10 @@ libheap-elf.a: $(HEAP_ELF_OBJS)
 
 heaptest.elf:  heaptest.o libheap-elf.a
 	$(LD) -T $(LDSCRIPT) -Ttext 500 heaptest.o -L $(LIBDIR) -lheap-elf -o $@ 
+	copy $@ $(BINDIR)
+
+heapsmalltest.elf:  heapsmalltest.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 heapsmalltest.o -L $(LIBDIR) -lheap-elf -o $@ 
 	copy $@ $(BINDIR)
 
 # Dependencies for ELF objects
@@ -61,6 +67,16 @@ HeapInitialize.o: HeapInitialize.a68 heap.inc
 HeapInvalidateBlockHeader.o: HeapInvalidateBlockHeader.a68 heap.inc
 HeapReAlloc.o: HeapReAlloc.a68 heap.inc
 HeapSize.o: HeapSize.a68 heap.inc
+HeapStats.o: HeapStats.a68 heap.inc
+HeapSmallCtl.o: HeapSmallCtl.a68 heap.inc
+HeapArena.o: HeapArena.a68 heap.inc
+HeapSlab.o: HeapSlab.a68 heap.inc
+HeapSmallAlloc.o: HeapSmallAlloc.a68 heap.inc
+HeapSmallFree.o: HeapSmallFree.a68 heap.inc
+HeapSmallReAlloc.o: HeapSmallReAlloc.a68 heap.inc
+HeapSmallValidate.o: HeapSmallValidate.a68 heap.inc
+HeapSmallCompact.o: HeapSmallCompact.a68 heap.inc
+HeapSmallWalk.o: HeapSmallWalk.a68 heap.inc
 HeapUnlinkFromBlockChain.o: HeapUnlinkFromBlockChain.a68 heap.inc
 HeapUnlinkFromFreeBlockChain.o: HeapUnlinkFromFreeBlockChain.a68 heap.inc
 HeapValidate.o: HeapValidate.a68 heap.inc
@@ -68,6 +84,7 @@ HeapValidateHandle.o: HeapValidateHandle.a68 heap.inc
 HeapWalk.o: HeapWalk.a68 heap.inc
 
 heaptest.o: heaptest.a68 heap.inc libheap-elf.a
+heapsmalltest.o: heapsmalltest.a68 heap.inc libheap-elf.a
 
 clean:
 	del *.68k

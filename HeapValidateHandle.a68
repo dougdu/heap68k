@@ -81,8 +81,23 @@ hvhNextBucket:
 	addq.l 	#4,d1				; Advance to next bucket
 	cmpi.l 	#HEAP_NUM_FREE_BUCKETS*4,d1	; All buckets checked?
 	bne.s 	hvhCheckFreeBuckets		; No, continue
-	; All buckets valid; Z=1 from cmpi, branch to exit
-	bra.s 	hvhExit				; Success — all bucket heads valid
+	; All buckets valid — optionally sanity-check the small pool, then succeed
+	IF SOA_ROUTE
+	move.l 	hhSmallPool(a0),a1		; if the small pool exists it must be 'SCB '
+	cmpa.l 	#0,a1
+	beq.s 	hvhSuccess
+	cmpi.l 	#SCB_MAGIC,scbMagic(a1)
+	bne.s 	hvhBadScb
+	ENDIF
+hvhSuccess:
+	moveq 	#0,d0				; Z=1: the handle is valid
+	bra.s 	hvhExit
+
+	IF SOA_ROUTE
+hvhBadScb:					; small pool present but not an 'SCB '
+	move.l 	#HEAP_ERROR_SLAB_CORRUPT,__HeapError
+	bra.s 	hvhExit
+	ENDIF
 
 hvhInvalidFreeChainHead:			; The free block chain head pointer is invalid
 	move.l 	#HEAP_HEADER_BLOCK_FREEPTR_BAD,__HeapError

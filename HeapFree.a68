@@ -48,6 +48,33 @@ _HeapFree PROC USES d1-d2/a0-a2, hHeap:DWORD, pMem:DWORD
 	move.l 	pMem,d1				; Get pMem
         beq  	_hfSuccess                 	; Return if NULL
 
+	IF SOA_ROUTE
+	; ---- Small Object Allocator discrimination (design §9.4) ----
+	; Recognize pMem as a slab cell; if so verify ownership and route to
+	; the SOA free path.  Otherwise fall through to the block free path.
+	; __HeapSlabFromPtr preserves D1 (= pMem) so the block path below is
+	; reached with D1 intact.
+	move.l 	pMem,-(sp)
+	jsr 	__HeapSlabFromPtr		; D0 = owning slab, or 0
+	adda.l 	#4,sp
+	tst.l 	d0
+	beq.s 	_hfNotCell			; not a cell -> block path
+	movea.l d0,a1				; A1 --> slab
+	move.l 	slFlags(a1),d1			; recognized: check ownership (slId vs hhId)
+	andi.l 	#HEAP_ID_MASK,d1
+	move.l 	hhFlags(a0),d2
+	andi.l 	#HEAP_ID_MASK,d2
+	cmp.l 	d2,d1
+	bne 	_hfInvalidHeap			; cell not owned by this heap
+	move.l 	pMem,-(sp)			; free the cell
+	move.l 	a1,-(sp)			; slab
+	move.l 	a0,-(sp)			; hHeap
+	jsr 	__HeapSoaFree
+	adda.l 	#12,sp
+	bra 	_hfExit				; D0 = result (-1 ok / 0 double-free)
+_hfNotCell:
+	ENDIF
+
 	; Adjust pointer to start of block header
         sub.l  #BLK_HDR_SIZE,d1                 ; Point at block header
 

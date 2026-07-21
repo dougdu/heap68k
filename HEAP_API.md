@@ -10,6 +10,7 @@
    - 2.4 [End-of-Heap Marker](#24-end-of-heap-marker)
    - 2.5 [Segregated Free Lists](#25-segregated-free-lists)
    - 2.6 [Global Data](#26-global-data)
+   - 2.7 [Small Object Allocator (SOA)](#27-small-object-allocator-soa)
 3. [Heap Flags](#3-heap-flags)
 4. [Error Codes](#4-error-codes)
 5. [Public API](#5-public-api)
@@ -106,7 +107,7 @@ Defined at offset 0 from the heap handle. Size: `HEAP_HDR_SIZE` = `$40` (64 byte
 | `$0C` | `hhSize` | long | Actual total heap size including all headers |
 | `$10` | `hhHeapHead` | long | Pointer to first block in the physical block chain |
 | `$14`–`$38` | `hhFreeHead0`–`hhFreeHead9` | 10 × long | Segregated free-list heads (one per size bucket) |
-| `$3C` | `hhReserved` | long | Reserved; zeroed on creation |
+| `$3C` | `hhSmallPool` | long | Pointer to this heap's Small Object Allocator control block (SCB), or NULL until first small allocation (§2.7). Zeroed on creation. Formerly `hhReserved`. |
 
 The heap handle returned by `_MachineHeapInitialize` and `_HeapCreate` is a pointer to this structure.
 
@@ -173,6 +174,50 @@ Three longword variables live in `HeapData.a68`:
 
 ---
 
+### 2.7 Small Object Allocator (SOA)
+
+Small requests are expensive for the block allocator: every allocation carries a
+32-byte header and is rounded up to a 32-byte boundary, so a 1-byte request costs a
+64-byte footprint. The **Small Object Allocator** is a slab/segregated-fit sub-allocator
+layered on top of the block allocator to serve small requests densely. It is **on by
+default**; opt out per heap (or per call) with `FLG_HEAP_DISABLE_SMALL_POOL`.
+
+**Routing.** `_HeapAlloc` sends a request to the SOA when *all* of the following hold:
+`1 ≤ lBytes ≤ SOA_MAX` (256), the heap does **not** have `FLG_HEAP_DISABLE_SMALL_POOL`
+set, the call does not pass that flag, and the heap does **not** have
+`FLG_HEAP_ENABLE_TAIL_CHECK` set (tail checking needs the block path's guard band). If
+the SOA cannot satisfy the request (its parent heap is exhausted), `_HeapAlloc` falls
+back to the block path transparently.
+
+**Size classes.** A request maps to one of 16 size classes:
+`8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256` bytes. A cell is
+the class size (≥ the request); there is no per-block header, so overhead is a fraction
+of a bit-per-cell of slab metadata.
+
+**Structures.** Each heap that uses the SOA gets a lazily created **SCB** (small-pool
+control block), stored in the heap header's `hhSmallPool` field (the former reserved
+slot). The SCB owns a list of **arenas** — `SLAB_SIZE`-aligned (4 KB) tile regions
+carved from ordinary parent-heap blocks — and per-class lists of partially-used and
+full **slabs**. A slab is one 4 KB tile divided into equal cells with an intrusive
+free list; the free path releases a slab (and its arena, once empty) back to the block
+allocator eagerly. The SCB, arenas, and slabs are described by the `'SCB '`, `'AREN'`,
+and `'SLAB'` magics respectively.
+
+**Consequences for callers.**
+- **Alignment.** Cells are **8-byte aligned** (block allocations remain 32-byte
+  aligned). All addresses are even, so word/long access is safe. Do not assume small
+  allocations have more than 8-byte alignment or tag their low 5 bits.
+- **`_HeapSize`.** For a cell, `_HeapSize` returns the **class (usable) size**, not the
+  original request (analogous to `malloc_usable_size`). Block allocations still return
+  the exact requested size. See §5.7.
+- **`_HeapFree` / `_HeapReAlloc`.** Recognize and handle cells transparently; a cell
+  freed to the wrong heap is reported as `HEAP_ERROR_HANDLE_BLOCK_MISMATCH`, and a
+  repeat free as `HEAP_ERROR_DOUBLE_FREE`.
+- **Debugging.** `_HeapValidate` deep-checks the SOA; `_HeapCompact` releases any empty
+  slabs/arenas. The internal `__HeapSoaWalk` enumerates live cells for tooling.
+
+---
+
 ## 3. Heap Flags
 
 Flags are stored in the low word of `hhFlags` in the heap header. Each flag is a bit position; the corresponding mask constant is `1 shl FLG_...`.
@@ -189,6 +234,7 @@ Flags are stored in the low word of `hhFlags` in the heap header. Each flag is a
 | 7 | `FLG_HEAP_ENABLE_TAGGING` | `HEAP_ALLOCATION_TAGGING_ENABLED` | Reserved for future use (tagging not yet implemented). |
 | 8 | `FLG_HEAP_DISABLE_COALESCING` | `HEAP_DISABLE_COALESCE_ON_FREE` | Skip coalescing on `_HeapFree`. `_HeapCompact` will coalesce explicitly. |
 | 9 | `FLG_HEAP_TRAP_ON_ERROR` | `HEAP_TRAP_ON_ERROR` | Reserved. Intended to issue a `TRAP` instruction on detecting heap corruption instead of returning an error code. |
+| 10 | `FLG_HEAP_DISABLE_SMALL_POOL` | `HEAP_DISABLE_SMALL_POOL` | Opt out of the Small Object Allocator (§2.7). When set on a heap, all requests use the block allocator regardless of size. May also be passed at call time to `_HeapAlloc` to force a single allocation onto the block path. |
 
 Flags passed to `_HeapAlloc`, `_HeapReAlloc`, etc. at call time override the corresponding heap-level flags for that call only. The heap-level flags persist across calls.
 
@@ -221,6 +267,9 @@ Error codes are stored in `__HeapError` and retrieved via `_HeapGetError`. Most 
 | `$12` | `HEAP_HEADER_INVALID_SIZE` | `hhSize` cannot be derived from `hhRequestSize` |
 | `$13` | `HEAP_ERROR_TAIL_VALIDATION_FAILED` | Buffer-overrun tail guard was modified |
 | `$14` | `HEAP_ERROR_INVALID_FNXT_LINK` | Free-chain forward-link is incorrect |
+| `$15` | `HEAP_ERROR_SLAB_CORRUPT` | Small-pool slab header, free list, or class list is inconsistent (§2.7) |
+| `$16` | `HEAP_ERROR_DOUBLE_FREE` | Small-pool cell was already free when `_HeapFree` was called |
+| `$17` | `HEAP_ERROR_SOA_ARENA_CORRUPT` | Small-pool control block or arena descriptor is inconsistent (§2.7) |
 
 ---
 
@@ -315,7 +364,12 @@ PROTO  , hHeap:DWORD, lFlags:DWORD, lBytes:DWORD
 
 **Errors**: `HEAP_ERROR_OUT_OF_MEMORY` if no sufficiently large free block exists.
 
-**Allocation algorithm**:
+**Small Object Allocator**: When routing conditions are met (`1 ≤ lBytes ≤ 256`, small
+pool not disabled on the heap or the call, tail checking off), the request is served by
+the SOA as an 8-byte-aligned cell instead of a 32-byte block (§2.7). On SOA exhaustion
+of the parent heap, allocation falls back to the block algorithm below.
+
+**Allocation algorithm** (block path):
 
 1. Run `__HeapAutoValidateFlagCheck` per the heap's flags.
 2. Round `lBytes` up to the next `BLK_HDR_SIZE` boundary; add `BLK_HDR_SIZE` for the header. If tail checking is enabled, also add `HEAP_TAIL_SIZE` (32 bytes) before alignment.
@@ -429,7 +483,13 @@ PROTO  , hHeap:DWORD, pMem:DWORD
 
 **Errors**: `HEAP_ERROR_INVALID_BLOCK`, `HEAP_ERROR_HANDLE_BLOCK_MISMATCH`.
 
-**Notes**: Returns the *requested* byte count, not the *actual* block size (which is always a multiple of `BLK_HDR_SIZE` and may include tail-guard space). This is the same value that was passed as `lBytes` to the most recent `_HeapAlloc` or `_HeapReAlloc`.
+**Notes**: For a **block** allocation, returns the *requested* byte count, not the
+*actual* block size (which is always a multiple of `BLK_HDR_SIZE` and may include
+tail-guard space) — the same value passed as `lBytes` to the most recent `_HeapAlloc`
+or `_HeapReAlloc`. For a **Small Object Allocator cell** (§2.7), no per-cell request
+size is stored, so `_HeapSize` returns the **class (usable) size** — the smallest class
+value ≥ the original request (analogous to `malloc_usable_size`). Callers must not
+assume `_HeapSize` echoes the exact request for small allocations.
 
 ---
 
@@ -872,8 +932,11 @@ Parameters are pushed right-to-left. The assembler validates the parameter count
 
 9. **Free-block ordering within buckets**: change bucket insertion from LIFO to address-ordered (ascending), enabling simple address-based coalescing without needing to walk the physical chain — the predecessor and successor in the free chain would always be adjacent in memory. This trades insertion cost (O(n) scan within bucket) for potentially simpler coalescing paths.
 
-10. **Per-allocation size classes with no internal fragmentation for power-of-2 sizes**: allocations that are exact powers of two (or common sizes like 12, 24, 48 bytes) could be served from dedicated slab-like pools where blocks are always the same size, eliminating split overhead and internal fragmentation for those size classes.
+10. **`_HeapCompact` return value for data area**: currently `_HeapCompact` returns the largest free block's *total* size minus `BLK_HDR_SIZE`. Returning both the total and the usable size (accounting for tail-guard space) would give callers a more accurate picture of the maximum allocation they can make.
 
-11. **`_HeapCompact` return value for data area**: currently `_HeapCompact` returns the largest free block's *total* size minus `BLK_HDR_SIZE`. Returning both the total and the usable size (accounting for tail-guard space) would give callers a more accurate picture of the maximum allocation they can make.
+11. **Heap serialization / snapshot**: an API to dump the complete heap state (header, all block headers, free lists) to a linear buffer, suitable for crash dump analysis or heap state transfer across a reset.
 
-12. **Heap serialization / snapshot**: an API to dump the complete heap state (header, all block headers, free lists) to a linear buffer, suitable for crash dump analysis or heap state transfer across a reset.
+> **Implemented:** *Per-allocation size classes with no internal fragmentation for
+> small sizes* — served by the Small Object Allocator (§2.7), which uses dedicated
+> slab pools of equal-size cells (8–256 bytes) with no per-cell header, eliminating the
+> 32-byte block overhead and split fragmentation for small allocations.

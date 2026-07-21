@@ -3,6 +3,7 @@
 	include	heap.inc
 
 	extern _HeapGetError
+	extern __HeapStats
 
 	.code
 
@@ -49,6 +50,7 @@ start:	; Get the pointer to the base page
 	adda.l 	#12,sp
 	move.l  d0,hDefaultHeap
 
+	bra 	ttP0Stats		; Phase 0: measure first, then resume
 ttHeapCreate:
 	move.l 	#400,-(sp)
 	move.l 	#HEAP_FLAGS,-(sp)
@@ -179,6 +181,34 @@ done: 	jmp 	done
 
 _ErrorEnd: jmp _ErrorEnd
 
+ttP0Stats:
+	; Allocate a representative mix of small blocks from the machine heap,
+	; then snapshot statistics so requested-vs-committed waste is visible.
+	moveq 	#8,d3			; D3 = number of allocations
+	movea.l #P0Sizes,a3		; A3 --> size table
+	movea.l #P0Blocks,a4		; A4 --> saved-handle table
+
+ttP0AllocLoop:
+	move.l 	(a3)+,-(sp)		; Push next size
+	clr.l 	-(sp)			; No flags
+	move.l 	hDefaultHeap,-(sp)	; From the machine heap
+	jsr 	_HeapAlloc
+	adda.l 	#12,sp
+	move.l 	d0,(a4)+		; Save the returned handle
+	subq.l 	#1,d3			; One fewer to do
+	bne.s 	ttP0AllocLoop
+
+	; Capture heap statistics into P0Stats
+	move.l 	#P0Stats,-(sp)		; Push &P0Stats
+	move.l 	hDefaultHeap,-(sp)	; Push heap handle
+	jsr 	__HeapStats
+	adda.l 	#8,sp
+
+	bra 	ttHeapCreate		; Resume the original test flow
+
+P0Sizes:
+	dc.l 	1,8,16,24,48,64,100,200
+
 	.bss
 
 HeapEntry	ds.l 	1
@@ -196,5 +226,8 @@ blk3		ds.l 	1
 blk4		ds.l 	1
 
 _PrivateHeap1	ds.l	1
+
+P0Blocks	ds.l 	8		; Phase 0: saved small-alloc handles
+P0Stats		ds.b 	HEAP_STATS_SIZE	; Phase 0: __HeapStats output buffer
 
 	end

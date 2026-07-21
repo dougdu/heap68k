@@ -42,6 +42,13 @@ _HeapCompact PROC USES d1-d2/a0-a1, hHeap:DWORD
 	adda.l 	#8,sp
 	bne 	_hcpError			; Validation failed
 
+	IF SOA_ROUTE
+	move.l 	hHeap,-(sp)			; release fully-empty SOA slabs/arenas
+	jsr 	__HeapSoaCompact
+	adda.l 	#4,sp
+	movea.l hHeap,a0			; reload A0 (SoaCompact used it as scratch)
+	ENDIF
+
 	btst.b 	#FLG_HEAP_DISABLE_COALESCING-8,hhFlags+2(a0) ; Coalescing disabled? (bit 8 in flags word)
 	beq.s	_hcpNoCoalesce 			; Coalescing enabled — heap already coalesced on every free; skip pass
 

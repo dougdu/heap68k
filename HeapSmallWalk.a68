@@ -1,0 +1,126 @@
+************************************************************************
+*  HeapSmallWalk
+************************************************************************
+*
+*  Small Object Allocator (SOA) live-cell enumeration.  Phase 5.
+*
+*    __HeapSoaWalk - return the next allocated cell of a heap, one per
+*                    call, using a small caller-provided cursor.
+*
+*  This is the SOA "extended walk" companion to _HeapWalk (which already
+*  enumerates the arena/SCB blocks in its coarse mode, since those are
+*  ordinary blocks of the parent heap).  A cell is reported when it is
+*  NOT on its slab's free list.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap   : DWORD - heap handle to enumerate
+*  pCursor : DWORD - pointer to a 3-longword cursor {swArena, swTile,
+*                    swCell}.  Zero the whole cursor to begin a walk,
+*                    then call repeatedly with it unchanged.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  D0 = pointer to the next allocated cell, or 0 when enumeration is
+*  complete (HeapGetError then returns HEAP_ERROR_NO_MORE_ITEMS).
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern	__HeapError
+
+	.code
+
+__HeapSoaWalk PROC USES d2-d5/a2-a5, hHeap:DWORD, pCursor:DWORD
+	movea.l hHeap,a0
+	move.l	hhSmallPool(a0),d0
+	beq	_sowNoMore			; no small pool
+	movea.l d0,a2				; A2 --> SCB
+	movea.l pCursor,a3			; A3 --> cursor
+	movea.l swArena(a3),a4			; A4 = current arena
+	cmpa.l	#0,a4
+	bne.s	_sowHaveArena
+	movea.l scbArenaHead(a2),a4		; first call: start at the head arena
+	cmpa.l	#0,a4
+	beq	_sowNoMore
+	move.l	a4,swArena(a3)
+	clr.l	swTile(a3)
+	clr.l	swCell(a3)
+_sowHaveArena:
+	move.l	swTile(a3),d2			; D2 = tile index
+	move.l	swCell(a3),d3			; D3 = cell index
+_sowTile:
+	move.w	arSlabs(a4),d0
+	andi.l	#$0000FFFF,d0
+	cmp.l	d0,d2
+	bhs.s	_sowNextArena			; tiles exhausted in this arena
+	move.l	arTileMap(a4),d0
+	btst	d2,d0
+	beq.s	_sowSkipTile			; tile not live
+	move.l	d2,d0				; slab = arBase + t*SLAB_SIZE
+	mulu	#SLAB_SIZE,d0
+	movea.l arBase(a4),a5
+	adda.l	d0,a5				; A5 --> slab
+	moveq	#0,d4
+	move.w	slTotal(a5),d4			; D4 = slTotal
+_sowCell:
+	cmp.l	d4,d3				; cell index past the end?
+	bhs.s	_sowSkipTile			; yes -> next tile
+	; --- is cell D3 on the slab free list (i.e. not allocated)? ---
+	moveq	#0,d5
+	move.w	slFreeHd(a5),d5
+	andi.l	#$0000FFFF,d5			; D5 = free-list walk index
+_sowChk:
+	cmpi.l	#SOA_NIL_INDEX,d5
+	beq.s	_sowAlloc			; end of free list -> D3 is allocated
+	cmp.l	d3,d5
+	beq.s	_sowCellNext			; D3 is free -> skip it
+	moveq	#0,d0
+	move.w	slCellSz(a5),d0
+	mulu	d5,d0				; d5 * cellSz
+	lea	slCells(a5),a0
+	adda.l	d0,a0				; A0 --> cell[d5]
+	moveq	#0,d5
+	move.w	cellNextIdx(a0),d5
+	andi.l	#$0000FFFF,d5
+	bra.s	_sowChk
+_sowAlloc:
+	moveq	#0,d0				; allocated cell -> its address
+	move.w	slCellSz(a5),d0
+	mulu	d3,d0				; d3 * cellSz
+	lea	slCells(a5),a1
+	adda.l	d0,a1				; A1 --> cell[d3]
+	addq.l	#1,d3				; resume after this cell
+	move.l	d2,swTile(a3)
+	move.l	d3,swCell(a3)
+	move.l	a1,d0				; return the cell pointer
+	bra.s	_sowExit
+_sowCellNext:
+	addq.l	#1,d3
+	bra.s	_sowCell
+_sowSkipTile:
+	addq.l	#1,d2				; next tile; restart cell scan
+	moveq	#0,d3
+	bra.s	_sowTile
+_sowNextArena:
+	movea.l arNext(a4),a4
+	move.l	a4,swArena(a3)			; persist for the next call
+	moveq	#0,d2
+	moveq	#0,d3
+	cmpa.l	#0,a4
+	beq.s	_sowNoMore
+	bra.s	_sowTile
+_sowNoMore:
+	move.l	#HEAP_ERROR_NO_MORE_ITEMS,__HeapError
+	moveq	#0,d0				; enumeration complete
+_sowExit:
+	ENDP
+
+	end

@@ -1,0 +1,133 @@
+************************************************************************
+*  HeapArena
+************************************************************************
+*
+*  Small Object Allocator (SOA) arena management.  An arena is a
+*  regular heap block whose usable tile area is aligned up to a
+*  SLAB_SIZE boundary; the leading slack holds the arena descriptor.
+*  Phase 1: primitives only (no public-API routing).
+*
+*    __HeapArenaCreate  - allocate + format a new arena
+*    __HeapArenaRelease - unlink + free an arena
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	.code
+
+************************************************************************
+*  __HeapArenaCreate
+*
+*  hHeap  : DWORD - heap handle
+*  nTiles : DWORD - desired tiles (clamped to >=1; adaptive down to 1
+*                   if the parent heap cannot satisfy the request)
+*
+*  Returns D0 = arena descriptor pointer, or NULL (0) on failure.
+************************************************************************
+__HeapArenaCreate PROC USES d2-d4/a0-a2, hHeap:DWORD, nTiles:DWORD
+	movea.l hHeap,a0			; A0 --> heap header
+
+	; The arena must be linked into the heap's SCB
+	move.l	a0,-(sp)
+	jsr	__HeapScbGetOrCreate
+	adda.l	#4,sp
+	tst.l	d0
+	beq	_arcFail
+	movea.l d0,a2				; A2 --> SCB
+
+	move.l	nTiles,d2			; D2 = tiles wanted
+	moveq	#1,d0				; ...clamped to at least 1
+	cmp.l	d0,d2
+	bge.s	_arcTry
+	move.l	d0,d2
+
+_arcTry:
+	; Request (nTiles+1)*SLAB_SIZE so the descriptor + alignment fit
+	move.l	d2,d3
+	addq.l	#1,d3
+	mulu	#SLAB_SIZE,d3			; D3 = (nTiles+1)*SLAB_SIZE
+	move.l	d3,-(sp)			; lBytes
+	clr.l	-(sp)				; no flags
+	move.l	a0,-(sp)			; hHeap
+	jsr	_HeapAlloc
+	adda.l	#12,sp
+	tst.l	d0
+	bne.s	_arcGot
+	; Allocation failed: adaptive shrink to a single-slab arena
+	cmpi.l	#1,d2
+	beq	_arcFail			; already minimal -> give up
+	moveq	#1,d2
+	bra.s	_arcTry
+
+_arcGot:
+	movea.l d0,a1				; A1 --> block data (B) = descriptor
+	; arBase = roundup(B + AREN_HDR_SIZE, SLAB_SIZE)
+	move.l	d0,d4
+	addi.l	#AREN_HDR_SIZE+SLAB_SIZE-1,d4
+	andi.l	#NOT(SLAB_SIZE_MASK),d4		; D4 = arBase (longword mask)
+
+	; Format the arena descriptor at B
+	move.l	#AREN_MAGIC,arMagic(a1)
+	move.l	a1,arBlock(a1)			; underlying block ptr = B
+	move.l	scbArenaHead(a2),arNext(a1)	; link at head of arena list
+	move.l	a1,scbArenaHead(a2)
+	move.l	d4,arBase(a1)
+	move.w	d2,arSlabs(a1)			; tile count
+	clr.w	arSlabUse(a1)
+	clr.l	arTileMap(a1)
+	addq.l	#1,scbArenaCount(a2)
+	move.l	a1,d0				; return descriptor
+	bra.s	_arcExit
+
+_arcFail:
+	clr.l	d0
+_arcExit:
+	ENDP
+
+************************************************************************
+*  __HeapArenaRelease
+*
+*  hHeap : DWORD - heap handle
+*  arena : DWORD - arena descriptor to release
+*
+*  Unlinks the arena from the SCB list and frees its underlying block.
+*  Returns D0 = nonzero on success, 0 on failure.
+************************************************************************
+__HeapArenaRelease PROC USES d1/a0-a2, hHeap:DWORD, arena:DWORD
+	movea.l hHeap,a0			; A0 --> heap header
+	movea.l arena,a1			; A1 --> arena
+	move.l	hhSmallPool(a0),d0
+	beq	_arrFail
+	movea.l d0,a2				; A2 --> SCB
+	subq.l	#1,scbArenaCount(a2)
+
+	; Unlink the arena from the scbArenaHead singly-linked list
+	lea	scbArenaHead(a2),a2		; A2 = &slot to update
+_arrWalk:
+	move.l	(a2),d0				; D0 = current arena
+	beq.s	_arrFree			; not found (defensive) -> just free
+	move.l	arena,d1
+	cmp.l	d1,d0
+	beq.s	_arrFound
+	movea.l d0,a2
+	lea	arNext(a2),a2			; A2 = &current->arNext
+	bra.s	_arrWalk
+_arrFound:
+	move.l	arNext(a1),(a2)			; *slot = arena->arNext
+
+_arrFree:
+	move.l	arBlock(a1),-(sp)		; free the underlying block
+	move.l	a0,-(sp)
+	jsr	_HeapFree
+	adda.l	#8,sp
+	bra.s	_arrExit			; D0 = HeapFree result
+
+_arrFail:
+	clr.l	d0
+_arrExit:
+	ENDP
+
+	end

@@ -1,0 +1,88 @@
+************************************************************************
+*  HeapSmallCompact
+************************************************************************
+*
+*  Small Object Allocator (SOA) compaction.  Phase 5.
+*
+*    __HeapSoaCompact - release every fully-empty slab (and, once its
+*                       last tile goes, the whole arena) back to the
+*                       parent block allocator.
+*
+*  The free path (__HeapSoaFree) already releases a slab the moment it
+*  becomes empty, so under normal operation no empty slabs linger; this
+*  routine is the belt-and-suspenders sweep _HeapCompact performs and a
+*  safety net should that eager release ever be disabled.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap : DWORD - heap handle to compact
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  D0 = -1 (always succeeds; a heap with no small pool is a no-op).
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	.code
+
+__HeapSoaCompact PROC USES d2-d4/a2-a5, hHeap:DWORD
+	movea.l hHeap,a0
+	move.l	hhSmallPool(a0),d0
+	beq.s	_socDone			; no small pool -> nothing to do
+	movea.l d0,a2				; A2 --> SCB
+	movea.l scbArenaHead(a2),a3		; A3 --> current arena
+_socArLoop:
+	cmpa.l	#0,a3
+	beq.s	_socDone
+	movea.l arNext(a3),a4			; A4 = next arena (before any release)
+	moveq	#0,d2				; D2 = tile index
+_socTile:
+	move.w	arSlabs(a3),d0
+	andi.l	#$0000FFFF,d0
+	cmp.l	d0,d2
+	bhs.s	_socArNext			; tiles exhausted
+	move.l	arTileMap(a3),d0
+	btst	d2,d0
+	beq.s	_socTileNext			; tile not live
+	move.l	d2,d0				; slab = arBase + t*SLAB_SIZE
+	mulu	#SLAB_SIZE,d0
+	movea.l arBase(a3),a5
+	adda.l	d0,a5				; A5 --> slab
+	move.w	slFree(a5),d0			; empty?  slFree == slTotal
+	cmp.w	slTotal(a5),d0
+	bne.s	_socTileNext			; not empty -> keep it
+	move.w	arSlabUse(a3),d3		; D3 = live tiles (1 => this is the last)
+	moveq	#0,d4
+	move.w	slClass(a5),d4			; unlink from scbPartial[cls]
+	lsl.l	#2,d4
+	lea	scbPartial(a2),a0
+	adda.l	d4,a0				; A0 = &scbPartial[cls]
+	move.l	a5,-(sp)			; slab
+	move.l	a0,-(sp)			; &head
+	jsr	__HeapClassListUnlink
+	adda.l	#8,sp
+	move.l	a5,-(sp)			; slab
+	move.l	hHeap,-(sp)			; hHeap
+	jsr	__HeapSlabRelease		; frees the tile (+ arena if last)
+	adda.l	#8,sp
+	cmpi.w	#1,d3				; was that the arena's last tile?
+	beq.s	_socArNext			; yes -> arena is gone, don't touch A3
+_socTileNext:
+	addq.l	#1,d2
+	bra.s	_socTile
+_socArNext:
+	movea.l a4,a3				; advance to the captured next arena
+	bra.s	_socArLoop
+_socDone:
+	moveq	#-1,d0				; success
+	ENDP
+
+	end

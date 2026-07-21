@@ -1,0 +1,157 @@
+************************************************************************
+*  __HeapStats
+************************************************************************
+*
+*  Walks the physical block chain of a heap and fills a caller-
+*  supplied HEAP_STATS structure with allocation accounting plus a
+*  request-size histogram.  This is a read-only measurement aid used
+*  to quantify small-allocation overhead/waste (see
+*  HEAP_SMALL_ALLOC_DESIGN.md, Phase 0).  It does not modify the heap.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap  : A handle to the heap to measure.  This handle is returned
+*	    by the HeapCreate or GetMachineHeap function.
+*
+*  pStats : Pointer to a HEAP_STATS structure (HEAP_STATS_SIZE bytes)
+*	    that receives the results.  The structure is zeroed by this
+*	    function before accumulation.
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  If the function succeeds, the return value is nonzero (TRUE).
+*
+*  If the function fails, the return value is zero (FALSE).  On failure
+*  the heap error code is set and can be retrieved with HeapGetError.
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern	__HeapError
+
+	.code
+
+__HeapStats PROC USES d1-d3/a0-a2, hHeap:DWORD, pStats:DWORD
+	movea.l hHeap,a0 			; A0 --> Heap header
+
+	; Validate the heap handle before touching the block chain
+	move.l 	a0,-(sp)			; Push heap handle
+	jsr 	_HeapValidateHandle
+	adda.l 	#4,sp				; (adda does not disturb CCR)
+	bne 	_hstBadHandle			; Not a valid heap
+
+	; The stats buffer pointer must not be NULL
+	move.l 	pStats,d0 			; Get stats buffer pointer
+	beq 	_hstBadParam			; NULL not allowed
+	movea.l d0,a1 				; A1 --> stats buffer
+
+	; Zero the entire stats structure
+	movea.l a1,a2 				; A2 --> stats buffer (scratch)
+	moveq 	#(HEAP_STATS_SIZE/4)-1,d0	; Longword count, adjusted for dbra
+_hstZeroLoop:
+	clr.l 	(a2)+
+	dbra 	d0,_hstZeroLoop
+
+	; Walk the physical block chain from the head
+	movea.l hhHeapHead(a0),a2 		; A2 --> first block
+
+_hstWalkLoop:
+	cmpa.l 	#0,a2 				; End of the block chain?
+	beq 	_hstDone			; Yes, finish up
+
+	addq.l 	#1,hsBlockCount(a1)		; Count this block
+
+	move.l 	bhSize(a2),d1 			; D1 = total block size (incl header)
+	move.l 	d1,d2 				; D2 = data area size
+	subi.l 	#BLK_HDR_SIZE,d2		; D2 = bhSize - header
+
+	btst.b 	#FLG_FREE_BIT,bhFlags+3(a2)	; Is the block free?
+	bne.s 	_hstFreeBlock			; Yes, tally as free
+
+	; --- Allocated block ---
+	addq.l 	#1,hsAllocCount(a1)		; One more allocated block
+	move.l 	bhRequestSize(a2),d3 		; D3 = user requested bytes
+	add.l 	d3,hsReqBytes(a1)		; Accumulate requested bytes
+	add.l 	d1,hsCommitBytes(a1)		; Accumulate committed bytes (incl header)
+
+	; Bin the request size into the histogram (D3 = requested bytes)
+	cmpi.l 	#8,d3
+	bls.s 	_hstH0
+	cmpi.l 	#16,d3
+	bls.s 	_hstH1
+	cmpi.l 	#32,d3
+	bls.s 	_hstH2
+	cmpi.l 	#64,d3
+	bls.s 	_hstH3
+	cmpi.l 	#128,d3
+	bls.s 	_hstH4
+	cmpi.l 	#256,d3
+	bls.s 	_hstH5
+	cmpi.l 	#512,d3
+	bls.s 	_hstH6
+	cmpi.l 	#1024,d3
+	bls.s 	_hstH7
+	cmpi.l 	#4096,d3
+	bls.s 	_hstH8
+	addq.l 	#1,hsHist9(a1)			; > 4096
+	bra.s 	_hstNext
+_hstH8:	addq.l 	#1,hsHist8(a1)			; <= 4096
+	bra.s 	_hstNext
+_hstH7:	addq.l 	#1,hsHist7(a1)			; <= 1024
+	bra.s 	_hstNext
+_hstH6:	addq.l 	#1,hsHist6(a1)			; <= 512
+	bra.s 	_hstNext
+_hstH5:	addq.l 	#1,hsHist5(a1)			; <= 256
+	bra.s 	_hstNext
+_hstH4:	addq.l 	#1,hsHist4(a1)			; <= 128
+	bra.s 	_hstNext
+_hstH3:	addq.l 	#1,hsHist3(a1)			; <= 64
+	bra.s 	_hstNext
+_hstH2:	addq.l 	#1,hsHist2(a1)			; <= 32
+	bra.s 	_hstNext
+_hstH1:	addq.l 	#1,hsHist1(a1)			; <= 16
+	bra.s 	_hstNext
+_hstH0:	addq.l 	#1,hsHist0(a1)			; <= 8
+	bra.s 	_hstNext
+
+_hstFreeBlock:
+	addq.l 	#1,hsFreeCount(a1)		; One more free block
+	add.l 	d1,hsFreeBytes(a1)		; Accumulate free bytes (incl header)
+	cmp.l 	hsLargestFree(a1),d2 		; Bigger than current largest free?
+	bls.s 	_hstNext			; No, leave largest as is
+	move.l 	d2,hsLargestFree(a1)		; New largest free data area
+
+_hstNext:
+	movea.l bhNext(a2),a2 			; Follow the physical forward link
+	bra 	_hstWalkLoop
+
+_hstDone:
+	; Overhead = committed bytes - requested bytes (headers + alignment waste)
+	move.l 	hsCommitBytes(a1),d0
+	sub.l 	hsReqBytes(a1),d0
+	move.l 	d0,hsOverheadBytes(a1)
+
+	move.l 	#-1,d0 				; Flag success
+	bra.s 	_hstExit
+
+_hstBadHandle:
+	move.l 	#HEAP_ERROR_INVALID_HANDLE,__HeapError
+	bra.s 	_hstFail
+
+_hstBadParam:
+	move.l 	#HEAP_ERROR_INVALID_PARAM,__HeapError
+
+_hstFail:
+	clr.l 	d0 				; Flag failure
+
+_hstExit:
+	ENDP
+
+	end

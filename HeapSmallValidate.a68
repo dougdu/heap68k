@@ -1,0 +1,252 @@
+************************************************************************
+*  HeapSmallValidate
+************************************************************************
+*
+*  Small Object Allocator (SOA) validation.  Phase 5.
+*
+*    __HeapSoaValidate - deep-check a heap's small-pool control block,
+*                        arenas, slabs, free lists and class lists per
+*                        design section 10.
+*
+*  Called by _HeapValidate (when SOA_ROUTE is on) for a whole-heap
+*  check, and driven directly by the unit test.  A heap that has never
+*  used the SOA (hhSmallPool == 0) is trivially valid.
+*
+************************************************************************
+*  PARAMETERS
+************************************************************************
+*
+*  hHeap : DWORD - heap handle to validate
+*
+************************************************************************
+*  RETURN VALUE
+************************************************************************
+*
+*  D0 = 0 (Z set) when the small pool is consistent, otherwise a
+*  non-zero heap error code (also stored in __HeapError):
+*    HEAP_ERROR_SOA_ARENA_CORRUPT - SCB or arena descriptor bad
+*    HEAP_ERROR_SLAB_CORRUPT      - slab header / free list / class list bad
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern	__HeapSoaClassTbl
+	extern	__HeapError
+
+	.code
+
+__HeapSoaValidate PROC USES d2-d7/a2-a5, hHeap:DWORD
+	movea.l hHeap,a0			; A0 --> heap header
+	move.l	hhSmallPool(a0),d0
+	beq	_sovaOk				; no small pool -> trivially valid
+	movea.l d0,a2				; A2 --> SCB
+
+	; --- §10.1: SCB magic + owning-heap back pointer ---
+	cmpi.l	#SCB_MAGIC,scbMagic(a2)
+	bne	_sovaArenaBad
+	move.l	scbHeap(a2),d0
+	cmp.l	hHeap,d0
+	bne	_sovaArenaBad
+
+	move.l	hhFlags(a0),d2
+	andi.l	#HEAP_ID_MASK,d2		; D2 = this heap's id
+
+	; --- §10.2: walk the arena list ---
+	movea.l scbArenaHead(a2),a3		; A3 --> current arena
+_sovaArLoop:
+	cmpa.l	#0,a3
+	beq	_sovaLists			; arenas done -> class-list checks
+	cmpi.l	#AREN_MAGIC,arMagic(a3)
+	bne	_sovaArenaBad
+	move.l	arBase(a3),d0			; arBase must be SLAB_SIZE aligned
+	andi.l	#SLAB_SIZE_MASK,d0
+	bne	_sovaArenaBad
+	movea.l arBlock(a3),a0			; arBlock's header carries 'BLKH'
+	suba.l	#BLK_HDR_SIZE,a0
+	cmpi.l	#BLOCK_MAGIC,bhMagic(a0)
+	bne	_sovaArenaBad
+	move.w	arSlabUse(a3),d3		; arSlabUse <= arSlabs
+	andi.l	#$0000FFFF,d3			; D3 = arSlabUse
+	move.w	arSlabs(a3),d0
+	andi.l	#$0000FFFF,d0
+	cmp.l	d0,d3
+	bhi	_sovaArenaBad
+	; popcount(arTileMap) == arSlabUse
+	move.l	arTileMap(a3),d1
+	moveq	#0,d4				; D4 = popcount
+_sovaPop:
+	tst.l	d1
+	beq.s	_sovaPopDone
+	move.l	d1,d0
+	subq.l	#1,d0
+	and.l	d0,d1				; clear lowest set bit (Kernighan)
+	addq.l	#1,d4
+	bra.s	_sovaPop
+_sovaPopDone:
+	cmp.l	d3,d4				; popcount == arSlabUse ?
+	bne	_sovaArenaBad
+
+	; --- §10.3-4: validate each live tile's slab ---
+	moveq	#0,d3				; D3 = tile index t
+_sovaTile:
+	move.w	arSlabs(a3),d0
+	andi.l	#$0000FFFF,d0
+	cmp.l	d0,d3
+	bhs	_sovaArNext			; t >= arSlabs -> next arena
+	move.l	arTileMap(a3),d0
+	btst	d3,d0
+	beq	_sovaTileNext			; tile not live
+	move.l	d3,d0				; slab = arBase + t*SLAB_SIZE
+	mulu	#SLAB_SIZE,d0
+	movea.l arBase(a3),a4
+	adda.l	d0,a4				; A4 --> slab
+	cmpi.l	#SLAB_MAGIC,slMagic(a4)
+	bne	_sovaSlabBad
+	move.l	slFlags(a4),d0			; slId == this heap's id ?
+	andi.l	#HEAP_ID_MASK,d0
+	cmp.l	d2,d0
+	bne	_sovaSlabBad
+	moveq	#0,d4
+	move.w	slClass(a4),d4			; D4 = class index
+	cmpi.l	#SOA_NUM_CLASSES,d4
+	bhs	_sovaSlabBad			; class >= 16
+	lea	__HeapSoaClassTbl,a0		; slCellSz == classTbl[cls]
+	move.l	d4,d0
+	add.l	d0,d0				; cls*2 (word entries)
+	move.w	(a0,d0.l),d1
+	andi.l	#$0000FFFF,d1			; D1 = expected cell size
+	move.w	slCellSz(a4),d0
+	andi.l	#$0000FFFF,d0
+	cmp.l	d1,d0
+	bne	_sovaSlabBad
+	move.l	#SLAB_SIZE-SLAB_HDR_SIZE,d0	; slTotal == usable / cellSz
+	divu	d1,d0
+	andi.l	#$0000FFFF,d0
+	moveq	#0,d5
+	move.w	slTotal(a4),d5			; D5 = slTotal
+	cmp.l	d5,d0
+	bne	_sovaSlabBad
+	moveq	#0,d6
+	move.w	slFree(a4),d6			; D6 = slFree
+	cmp.l	d5,d6				; 0 <= slFree <= slTotal
+	bhi	_sovaSlabBad
+
+	; §10.4: walk the free list -> exactly slFree nodes, idx<total,
+	;        each tagged free, no cycle (bounded by slTotal)
+	lea	slCells(a4),a5			; A5 --> cell[0]
+	moveq	#0,d7				; D7 = node count
+	moveq	#0,d0
+	move.w	slFreeHd(a4),d0
+	andi.l	#$0000FFFF,d0			; D0 = index
+_sovaFL:
+	cmpi.l	#SOA_NIL_INDEX,d0
+	beq.s	_sovaFLDone
+	cmp.l	d5,d0				; idx < slTotal ?
+	bhs	_sovaSlabBad
+	move.l	d0,d1				; save idx
+	moveq	#0,d0
+	move.w	slCellSz(a4),d0
+	mulu	d1,d0				; d0 = idx * cellSz
+	movea.l a5,a1
+	adda.l	d0,a1				; A1 --> cell[idx]
+	move.w	cellFreeTag(a1),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#SOA_FREE_TAG,d0		; free cell must be tagged
+	bne	_sovaSlabBad
+	addq.l	#1,d7
+	cmp.l	d5,d7				; count > slTotal -> cycle
+	bhi	_sovaSlabBad
+	moveq	#0,d0
+	move.w	cellNextIdx(a1),d0
+	andi.l	#$0000FFFF,d0
+	bra.s	_sovaFL
+_sovaFLDone:
+	cmp.l	d6,d7				; free-list length == slFree ?
+	bne	_sovaSlabBad
+_sovaTileNext:
+	addq.l	#1,d3
+	bra	_sovaTile
+_sovaArNext:
+	movea.l arNext(a3),a3
+	bra	_sovaArLoop
+
+	; --- §10.5: class-list consistency (partial: slFree>0, full: slFree==0) ---
+_sovaLists:
+	moveq	#0,d3				; D3 = class index
+_sovaClsLoop:
+	cmpi.l	#SOA_NUM_CLASSES,d3
+	bhs	_sovaOk				; all classes checked -> valid
+	move.l	d3,d0				; A4 = scbPartial[cls] head
+	lsl.l	#2,d0
+	lea	scbPartial(a2),a0
+	adda.l	d0,a0
+	movea.l (a0),a4
+	moveq	#0,d4				; D4 = node guard counter
+_sovaPart:
+	cmpa.l	#0,a4
+	beq.s	_sovaFullHead
+	cmpi.l	#SLAB_MAGIC,slMagic(a4)
+	bne	_sovaSlabBad
+	move.w	slClass(a4),d0
+	andi.l	#$0000FFFF,d0
+	cmp.l	d3,d0				; slClass matches its list ?
+	bne	_sovaSlabBad
+	tst.w	slFree(a4)			; partial slab must have a free cell
+	beq	_sovaSlabBad
+	move.w	slFree(a4),d0			; slFree <= slTotal
+	andi.l	#$0000FFFF,d0
+	move.w	slTotal(a4),d1
+	andi.l	#$0000FFFF,d1
+	cmp.l	d1,d0
+	bhi	_sovaSlabBad
+	addq.l	#1,d4				; cycle guard: bounded by slab count
+	move.l	scbSlabCount(a2),d0
+	cmp.l	d0,d4
+	bhi	_sovaSlabBad
+	movea.l slNext(a4),a4
+	bra.s	_sovaPart
+_sovaFullHead:
+	move.l	d3,d0				; A4 = scbFull[cls] head
+	lsl.l	#2,d0
+	lea	scbFull(a2),a0
+	adda.l	d0,a0
+	movea.l (a0),a4
+	moveq	#0,d4
+_sovaFull:
+	cmpa.l	#0,a4
+	beq.s	_sovaClsNext
+	cmpi.l	#SLAB_MAGIC,slMagic(a4)
+	bne	_sovaSlabBad
+	move.w	slClass(a4),d0
+	andi.l	#$0000FFFF,d0
+	cmp.l	d3,d0
+	bne	_sovaSlabBad
+	tst.w	slFree(a4)			; full slab must have no free cell
+	bne	_sovaSlabBad
+	addq.l	#1,d4
+	move.l	scbSlabCount(a2),d0
+	cmp.l	d0,d4
+	bhi	_sovaSlabBad
+	movea.l slNext(a4),a4
+	bra.s	_sovaFull
+_sovaClsNext:
+	addq.l	#1,d3
+	bra.s	_sovaClsLoop
+
+_sovaArenaBad:
+	move.l	#HEAP_ERROR_SOA_ARENA_CORRUPT,d0
+	bra.s	_sovaExit
+_sovaSlabBad:
+	move.l	#HEAP_ERROR_SLAB_CORRUPT,d0
+	bra.s	_sovaExit
+_sovaOk:
+	moveq	#0,d0				; valid
+_sovaExit:
+	move.l	d0,__HeapError
+	tst.l	d0				; leave Z reflecting the result
+	ENDP
+
+	end

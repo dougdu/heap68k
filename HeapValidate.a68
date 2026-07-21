@@ -193,6 +193,17 @@ hvExhaustedHeapCheckLoop:
 	bra.s 	hvExhaustedHeapCheckLoop
 
 hvEndofFreeChain:
+	IF SOA_ROUTE
+	; Deep-validate the small-object pool on a whole-heap check (§10).
+	move.l	pBlock,d0
+	bne.s	hvSoaDone			; single-block request -> skip SOA
+	move.l	hHeap,-(sp)
+	jsr	__HeapSoaValidate
+	adda.l	#4,sp
+	tst.l	d0				; D0 = SOA error (also in __HeapError)
+	bne.s	hvExit				; propagate the SOA error code
+hvSoaDone:
+	ENDIF
 	clr.l 	d0				; Flag no errors
 	bra.s 	hvExit
 

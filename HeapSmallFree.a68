@@ -1,0 +1,155 @@
+************************************************************************
+*  HeapSmallFree
+************************************************************************
+*
+*  Small Object Allocator (SOA) free path.  Phase 3.
+*
+*    __HeapSoaFree - return one cell to its slab, with double-free
+*                    detection, debug-fill-on-free, Full->Partial
+*                    promotion, and empty-slab / empty-arena reclamation.
+*
+*  The caller (_HeapFree, when SOA_ROUTE is on) has already recognized
+*  pMem as a cell of `slab` via __HeapSlabFromPtr and verified that the
+*  slab is owned by hHeap.  This routine trusts that recognition and
+*  only guards against a repeat (double) free of the same cell.
+*
+*  Returns D0 = -1 (TRUE) on success, or 0 (FALSE) with __HeapError set
+*  to HEAP_ERROR_DOUBLE_FREE when the cell is already free.
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern	__HeapError
+
+	.code
+
+__HeapSoaFree PROC USES d2-d4/a2-a4, hHeap:DWORD, slab:DWORD, pMem:DWORD
+	movea.l slab,a2				; A2 --> slab
+	movea.l pMem,a3				; A3 --> cell
+
+	; --- i = (cell - firstCell) / cellSz ---
+	move.l	a3,d0
+	sub.l	a2,d0
+	subi.l	#SLAB_HDR_SIZE,d0		; cell - firstCell
+	moveq	#0,d1
+	move.w	slCellSz(a2),d1			; cellSz
+	divu	d1,d0				; low word = cell index (exact)
+	andi.l	#$0000FFFF,d0
+	move.l	d0,d2				; D2 = i (survives)
+
+	; --- double-free guard: freeTag present AND i actually on free list ---
+	move.w	cellFreeTag(a3),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#SOA_FREE_TAG,d0
+	bne.s	_sofAccept			; no tag -> live cell -> accept
+	moveq	#0,d0
+	move.w	slFreeHd(a2),d0			; walk the free list from the head
+	andi.l	#$0000FFFF,d0
+	moveq	#0,d3
+	move.w	slTotal(a2),d3			; bounded by the cell count
+	andi.l	#$0000FFFF,d3
+_sofWalk:
+	cmpi.w	#SOA_NIL_INDEX,d0
+	beq.s	_sofAccept			; hit end without i -> not on list -> accept
+	cmp.l	d2,d0
+	beq	_sofDouble			; i is on the list -> genuine double free
+	move.l	d0,d1				; follow chain: cell[cur].nextIdx
+	moveq	#0,d0
+	move.w	slCellSz(a2),d0
+	mulu	d0,d1				; cur * cellSz
+	lea	slCells(a2),a0
+	adda.l	d1,a0				; A0 --> cell[cur]
+	moveq	#0,d0
+	move.w	cellNextIdx(a0),d0
+	andi.l	#$0000FFFF,d0
+	subq.l	#1,d3
+	bne.s	_sofWalk
+	bra	_sofDouble			; ran the bound w/o NIL -> corrupt; reject
+
+_sofAccept:
+	; --- SCB + class (for list moves and live-cell stats) ---
+	movea.l hHeap,a0
+	movea.l hhSmallPool(a0),a4		; A4 --> SCB
+	moveq	#0,d4
+	move.w	slClass(a2),d4			; D4 = class index
+
+	; --- debug fill on free (whole cell) BEFORE writing the control word (§10) ---
+	btst.b	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	beq.s	_sofPush
+	moveq	#0,d0
+	move.w	slCellSz(a2),d0
+	movea.l a3,a1
+	lsr.l	#2,d0				; longwords (class size is a mult of 8)
+	subq.l	#1,d0
+_sofFill:
+	move.l	#BAADFOOD,(a1)+
+	dbra	d0,_sofFill
+
+_sofPush:
+	; --- push the cell back onto the slab free list ---
+	move.w	slFreeHd(a2),cellNextIdx(a3)	; cell.nextIdx = old head
+	move.w	#SOA_FREE_TAG,cellFreeTag(a3)	; mark free
+	move.w	d2,slFreeHd(a2)			; head = i
+	addq.w	#1,slFree(a2)			; one more free cell
+
+	; --- was the slab full (slFree now 1)?  move Full -> Partial ---
+	moveq	#0,d0
+	move.w	slFree(a2),d0
+	andi.l	#$0000FFFF,d0
+	cmpi.l	#1,d0
+	bne.s	_sofEmptyChk
+	lea	scbFull(a4),a0
+	move.l	d4,d1
+	lsl.l	#2,d1
+	adda.l	d1,a0				; &scbFull[cls]
+	move.l	a2,-(sp)
+	move.l	a0,-(sp)
+	jsr	__HeapClassListUnlink
+	adda.l	#8,sp
+	lea	scbPartial(a4),a0
+	move.l	d4,d1
+	lsl.l	#2,d1
+	adda.l	d1,a0				; &scbPartial[cls]
+	move.l	a2,-(sp)
+	move.l	a0,-(sp)
+	jsr	__HeapClassListPush
+	adda.l	#8,sp
+
+_sofEmptyChk:
+	; --- slab fully empty (slFree == slTotal)?  unlink + release ---
+	moveq	#0,d0
+	move.w	slFree(a2),d0
+	andi.l	#$0000FFFF,d0
+	moveq	#0,d1
+	move.w	slTotal(a2),d1
+	andi.l	#$0000FFFF,d1
+	cmp.l	d1,d0
+	bne.s	_sofStats
+	lea	scbPartial(a4),a0
+	move.l	d4,d1
+	lsl.l	#2,d1
+	adda.l	d1,a0				; &scbPartial[cls]
+	move.l	a2,-(sp)
+	move.l	a0,-(sp)
+	jsr	__HeapClassListUnlink		; take it off the partial list
+	adda.l	#8,sp
+	move.l	a2,-(sp)			; slab
+	move.l	hHeap,-(sp)			; hHeap
+	jsr	__HeapSlabRelease		; free the tile (and arena if now empty)
+	adda.l	#8,sp
+
+_sofStats:
+	subq.l	#1,scbLiveCells(a4)		; one fewer live cell (§9.4)
+	moveq	#-1,d0				; TRUE
+	bra.s	_sofExit
+
+_sofDouble:
+	move.l	#HEAP_ERROR_DOUBLE_FREE,__HeapError
+	moveq	#0,d0				; FALSE
+_sofExit:
+	ENDP
+
+	end

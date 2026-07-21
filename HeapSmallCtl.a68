@@ -1,0 +1,152 @@
+************************************************************************
+*  HeapSmallCtl
+************************************************************************
+*
+*  Small Object Allocator (SOA) control-block and helper primitives.
+*  Phase 1: data-structure primitives only (no public-API routing).
+*
+*    __HeapScbGetOrCreate - lazily create/return a heap's SCB
+*    __HeapClassListPush  - insert a slab at the head of a class list
+*    __HeapClassListUnlink- remove a slab from a class list
+*    __HeapSoaSizeToClass - map a request size (0..SOA_MAX) to a class
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	public	__HeapSoaSizeToClass
+
+	.code
+
+************************************************************************
+*  __HeapScbGetOrCreate
+*
+*  Returns the SOA control block for hHeap, creating (and zeroing) it
+*  from the parent heap on first use.
+*
+*  hHeap : DWORD - heap handle
+*  Returns D0 = SCB pointer, or NULL (0) if the SCB could not be
+*  allocated.
+************************************************************************
+__HeapScbGetOrCreate PROC USES a0-a1, hHeap:DWORD
+	movea.l hHeap,a0			; A0 --> heap header
+	move.l	hhSmallPool(a0),d0		; Existing SCB?
+	bne	_scbExit			; Yes, return it
+
+	; Allocate an SCB block from the parent heap.  We ZERO it ourselves
+	; rather than trusting HEAP_ZERO_MEMORY: a heap created with
+	; HEAP_ENABLE_DEBUG_FILL ignores HEAP_ZERO_MEMORY (it fills CDCD),
+	; yet the SCB list heads and counters MUST start at zero.
+	; HEAP_DISABLE_SMALL_POOL forces the block path: the SCB is <= SOA_MAX,
+	; so without it the SOA-routed _HeapAlloc would recurse back here.
+	move.l	#SCB_HDR_SIZE,-(sp)		; lBytes
+	move.l	#HEAP_DISABLE_SMALL_POOL,-(sp)	; lFlags: never route the SCB itself
+	move.l	a0,-(sp)			; hHeap
+	jsr	_HeapAlloc
+	adda.l	#12,sp
+	tst.l	d0
+	beq	_scbExit			; Out of memory -> return 0
+
+	movea.l d0,a1				; A1 --> new SCB (zero cursor)
+	moveq	#(SCB_HDR_SIZE/4)-1,d1		; zero every SCB longword
+_scbZero:
+	clr.l	(a1)+
+	dbra	d1,_scbZero
+
+	movea.l d0,a1				; A1 --> new SCB
+	move.l	#SCB_MAGIC,scbMagic(a1)		; Init magic
+	move.l	a0,scbHeap(a1)			; Back-pointer to heap
+	move.l	a1,hhSmallPool(a0)		; Publish into the heap header
+	; D0 already holds the SCB pointer (HeapAlloc return)
+_scbExit:
+	ENDP
+
+************************************************************************
+*  __HeapClassListPush
+*
+*  Inserts a slab at the head of a per-class doubly-linked list.
+*
+*  pHeadSlot : DWORD - address of the list head longword
+*  slab      : DWORD - slab header pointer
+************************************************************************
+__HeapClassListPush PROC USES a0-a2, pHeadSlot:DWORD, slab:DWORD
+	movea.l pHeadSlot,a0			; A0 --> &head
+	movea.l slab,a1				; A1 --> slab
+	move.l	(a0),d0				; D0 = old head
+	clr.l	slPrev(a1)			; New head has no predecessor
+	move.l	d0,slNext(a1)			; slab->next = old head
+	beq.s	_clpNoOld			; Old head was NULL?
+	movea.l d0,a2
+	move.l	a1,slPrev(a2)			; oldHead->prev = slab
+_clpNoOld:
+	move.l	a1,(a0)				; head = slab
+	ENDP
+
+************************************************************************
+*  __HeapClassListUnlink
+*
+*  Removes a slab from a per-class doubly-linked list.
+*
+*  pHeadSlot : DWORD - address of the list head longword
+*  slab      : DWORD - slab header pointer
+************************************************************************
+__HeapClassListUnlink PROC USES a0-a2, pHeadSlot:DWORD, slab:DWORD
+	movea.l pHeadSlot,a0			; A0 --> &head
+	movea.l slab,a1				; A1 --> slab
+	move.l	slPrev(a1),d0			; D0 = prev
+	move.l	slNext(a1),d1			; D1 = next
+	tst.l	d0
+	beq.s	_cluNoPrev
+	movea.l d0,a2
+	move.l	d1,slNext(a2)			; prev->next = next
+	bra.s	_cluFixNext
+_cluNoPrev:
+	move.l	d1,(a0)				; head = next
+_cluFixNext:
+	tst.l	d1
+	beq.s	_cluClear
+	movea.l d1,a2
+	move.l	d0,slPrev(a2)			; next->prev = prev
+_cluClear:
+	clr.l	slPrev(a1)
+	clr.l	slNext(a1)
+	ENDP
+
+************************************************************************
+*  __HeapSoaSizeToClass  (leaf, not a PROC)
+*
+*  Input:  D0.l = requested size n (0..SOA_MAX)
+*  Output: D0.l = size-class index (0..SOA_NUM_CLASSES-1)
+*  Trashes: D0 and CCR only.
+*
+*  Shift form of the class map; cross-checked against __HeapSoaClassTbl
+*  by the Phase 1 unit test.
+************************************************************************
+__HeapSoaSizeToClass:
+	cmpi.l	#64,d0				; Tier 1: 8-byte spacing (<=64)
+	bgt.s	_sstcMid
+	addq.l	#7,d0				; ((n+7)>>3)-1
+	lsr.l	#3,d0
+	subq.l	#1,d0
+	bpl.s	_sstcRet			; n>=1 -> class >= 0
+	moveq	#0,d0				; clamp n==0 -> class 0
+_sstcRet:
+	rts
+_sstcMid:
+	cmpi.l	#128,d0				; Tier 2: 16-byte spacing (<=128)
+	bgt.s	_sstcHi
+	subi.l	#64,d0				; 7 + ((n-64+15)>>4)
+	addi.l	#15,d0
+	lsr.l	#4,d0
+	addq.l	#7,d0
+	rts
+_sstcHi:					; Tier 3: 32-byte spacing (<=256)
+	subi.l	#128,d0				; 11 + ((n-128+31)>>5)
+	addi.l	#31,d0
+	lsr.l	#5,d0
+	addi.l	#11,d0
+	rts
+
+	end

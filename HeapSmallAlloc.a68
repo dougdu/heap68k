@@ -1,0 +1,143 @@
+************************************************************************
+*  HeapSmallAlloc
+************************************************************************
+*
+*  Small Object Allocator (SOA) allocation path.  Phase 2.
+*
+*    __HeapSoaAlloc - allocate one cell of the size class that fits the
+*                     request, carving slabs/arenas on demand.
+*
+*  This is the SOA counterpart of the block allocator's fast path.  It
+*  is called either directly (unit tests) or, once SOA_ROUTE is enabled
+*  (Phase 6), from _HeapAlloc for qualifying small requests.
+*
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+
+	extern	__HeapSoaSizeToClass
+
+	.code
+
+************************************************************************
+*  __HeapSoaAlloc
+*
+*  hHeap  : DWORD - heap handle
+*  lFlags : DWORD - per-call allocation flags (HEAP_ZERO_MEMORY honored)
+*  lBytes : DWORD - requested size in bytes (expected 1..SOA_MAX)
+*
+*  Returns D0 = pointer to an allocated cell, or NULL (0) if a slab
+*  could not be created (caller falls back to the block path).
+*
+*  Algorithm (design §9.3):
+*    cls  = size_to_class(n)
+*    slab = scb->scbPartial[cls]  (create + link one if the list is empty)
+*    pop a cell off the slab free list; if the slab is now full, move it
+*    from the class partial list to the class full list; then zero/debug-
+*    fill the whole cell (design §10) and bump the live-cell statistics.
+************************************************************************
+__HeapSoaAlloc PROC USES d2-d3/a2-a4, hHeap:DWORD, lFlags:DWORD, lBytes:DWORD
+
+	; --- Obtain (or lazily create) the heap's SCB ---
+	move.l	hHeap,-(sp)
+	jsr	__HeapScbGetOrCreate
+	adda.l	#4,sp
+	tst.l	d0
+	beq	_soaFail			; SCB alloc failed -> give up
+	movea.l d0,a2				; A2 --> SCB (survives calls)
+
+	; --- cls = size_to_class(n) ---
+	move.l	lBytes,d0
+	jsr	__HeapSoaSizeToClass		; D0 = class (trashes D0/CCR only)
+	move.l	d0,d2				; D2 = class index (survives)
+
+	; --- A3 = &scbPartial[cls] ---
+	move.l	d2,d0
+	lsl.l	#2,d0				; cls * 4 (longword slots)
+	lea	scbPartial(a2),a3
+	adda.l	d0,a3				; A3 --> partial-list head slot
+
+	move.l	(a3),d3				; D3 = current partial slab
+	bne.s	_soaHave			; have one with a free cell
+
+	; --- No partial slab for this class: create + link one ---
+	move.l	d2,-(sp)			; cls
+	move.l	hHeap,-(sp)			; hHeap
+	jsr	__HeapSlabCreate		; claim a tile, format, build free list
+	adda.l	#8,sp
+	tst.l	d0
+	beq	_soaFail			; out of memory -> fall back
+	move.l	d0,d3				; D3 = new slab
+
+	move.l	d3,-(sp)			; slab
+	move.l	a3,-(sp)			; &scbPartial[cls]
+	jsr	__HeapClassListPush		; publish as the partial head
+	adda.l	#8,sp
+
+_soaHave:
+	; --- Pop the head cell off the slab free list ---
+	movea.l d3,a1				; A1 --> slab (scratch access)
+	moveq	#0,d0
+	move.w	slFreeHd(a1),d0			; D0 = free-list head index i
+	moveq	#0,d1
+	move.w	slCellSz(a1),d1			; D1 = cell size (class value)
+	mulu	d1,d0				; D0 = i * cellSz  (word*word->long)
+	lea	slCells(a1),a4
+	adda.l	d0,a4				; A4 --> cell (survives calls)
+	move.w	cellNextIdx(a4),slFreeHd(a1)	; slFreeHd = next free index
+	subq.w	#1,slFree(a1)			; one fewer free cell
+	bne.s	_soaFill			; slab still has free cells
+
+	; --- Slab is now full: move it from the partial list to the full list ---
+	move.l	d3,-(sp)			; slab
+	move.l	a3,-(sp)			; &scbPartial[cls]
+	jsr	__HeapClassListUnlink
+	adda.l	#8,sp
+	lea	scbFull(a2),a0
+	move.l	d2,d0
+	lsl.l	#2,d0				; cls * 4
+	adda.l	d0,a0				; A0 --> &scbFull[cls]
+	move.l	d3,-(sp)			; slab
+	move.l	a0,-(sp)			; &scbFull[cls]
+	jsr	__HeapClassListPush
+	adda.l	#8,sp
+
+_soaFill:
+	; --- Zero / debug-fill the whole cell (design §10) ---
+	movea.l hHeap,a0			; A0 --> heap header (for hhFlags)
+	move.l	#$CDCDCDCD,d1			; debug-fill pattern
+	btst.b	#FLG_HEAP_ENABLE_DEBUG_FILL,hhFlags+3(a0)
+	bne.s	_soaDoFill			; debug fill wins over zero
+	moveq	#0,d1				; zero pattern
+	move.l	lFlags,d0
+	btst.l	#FLG_HEAP_ZERO_MEMORY,d0		; caller asked to zero?
+	bne.s	_soaDoFill
+	btst.b	#FLG_HEAP_ZERO_MEMORY,hhFlags+3(a0) ; heap zeroes every alloc?
+	beq.s	_soaStats			; neither -> leave as-is
+_soaDoFill:
+	movea.l d3,a0				; A0 --> slab
+	moveq	#0,d0
+	move.w	slCellSz(a0),d0			; D0 = cell size in bytes
+	movea.l a4,a1				; A1 = fill cursor (cell)
+	lsr.l	#2,d0				; longword count (class size is a mult of 8)
+	subq.l	#1,d0				; adjust for dbra
+_soaFillLp:
+	move.l	d1,(a1)+
+	dbra	d0,_soaFillLp
+
+_soaStats:
+	; --- Statistics: one more live cell, requested bytes ---
+	addq.l	#1,scbLiveCells(a2)
+	move.l	lBytes,d0
+	add.l	d0,scbLiveReqBytes(a2)
+	move.l	a4,d0				; return the cell pointer
+	bra.s	_soaExit
+
+_soaFail:
+	moveq	#0,d0				; NULL -> caller falls back
+_soaExit:
+	ENDP
+
+	end
