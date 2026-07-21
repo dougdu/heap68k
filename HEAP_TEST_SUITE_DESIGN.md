@@ -1,6 +1,6 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** Phases A–6 complete — harness + kit + block-path + SOA + debug/validation + error-sweep + stress/soak suites validated (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors`/`test_stress` green via `nmake test`); the stress suite found & fixed a real SOA bug (stale slab/arena magic in released memory). Suite build-out (Phases 7–8) pending
+**Status:** Phases A–6 + 8 complete — full functional/SOA/debug/error/stress coverage plus the §9 edge-case backfill (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors`/`test_stress`/`test_edges` green via `nmake test`); the stress suite found & fixed a real SOA bug (stale slab/arena magic in released memory). Only Phase 7 (runner polish / CI / README) remains
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
@@ -337,7 +337,7 @@ implemented and passing. `→err` means "assert via `_HeapGetError`".
 ### 9.4 ReAlloc & Size
 | Area | Cases |
 |------|-------|
-| `_HeapReAlloc` | `NULL` ptr behaves as alloc; size `0` behaves as free (defined); grow (moved/kept), shrink |
+| `_HeapReAlloc` | `NULL` ptr → `INVALID_BLOCK` (this heap is **strict**, not malloc-like); size `0` → a **minimal allocation** (not a free); grow (moved/kept), shrink — covered by [`test_edges.a68`](test_edges.a68) P1 |
 | In-place | `HEAP_REALLOC_IN_PLACE_ONLY`: same-size/shrink succeed; a required move → `OUT_OF_MEMORY` →err, original preserved & intact |
 | Zeroing | `HEAP_ZERO_MEMORY` on grow zeroes the new tail; **no** zeroing on a same-class SOA grow (S3) |
 | Transitions | SOA matrix: same-class keep; cross-class cell→cell (copy+free); small→large cell→block; (block→cell only via disable toggling) |
@@ -475,7 +475,7 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 5 | Error-code & near-miss coverage | ✅ | [`test_errors.a68`](test_errors.a68) triggers & asserts every code `$00`–`$17` (§9.7) + §9.8 near-miss classification, F2 ÷0 guard, and foreign-pointer API safety (no crash); passes via `nmake test` (2026-07-21) |
 | 6 | Stress / soak | ✅ | [`test_stress.a68`](test_stress.a68) (§9.9) fixed-seed xorshift mix (alloc/free/realloc, 1..4096, machine SOA + private block heaps) + interleaved validate + drain invariants + arena adaptive-shrink + high-water baseline; deterministic. **Found & fixed a real SOA bug** (released slab/arena kept its magic → reused memory mis-ID'd as a cell). Passes via `nmake test` (2026-07-21) |
 | 7 | Runner polish & CI | ⬜ | one-command `nmake test`; decoded summary; nonzero exit on fail; port/timeout/teardown robust; README |
-| 8 | Coverage audit & backfill | ⬜ | every §9 row mapped to an implemented, passing case; gaps closed; tracker + changelog updated |
+| 8 | Coverage audit & backfill | ✅ | [`test_edges.a68`](test_edges.a68) closes the §9 gaps — realloc NULL/0 + zero-on-grow, compact reclamation effect, walk block count, destroy-with-live-allocs, `_GetMachineHeaps` contents + truncation; §9.4 corrected. Passes via `nmake test` (2026-07-21) |
 
 ### Phase 0 — Harness bootstrap  ✅ (2026-07-21)
 - [x] [`heaptest.gdb`](heaptest.gdb) (§10.1): `m68k-elf-gdb -nx --batch` connects to
@@ -593,9 +593,21 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 - [ ] `nmake test` builds + runs + verdicts in one step; decoded summary table.
 - [ ] Robust port/timeout/teardown; nonzero exit on any failure; short README section.
 
-### Phase 8 — Coverage audit & backfill  ⬜
-- [ ] Walk the §9 matrix; every row has an implemented, passing case; close gaps.
-- [ ] Update the tracker + changelog; note residual out-of-scope items.
+### Phase 8 — Coverage audit & backfill  ✅ (2026-07-21)
+- [x] Walked the §9 matrix against every module; every row now has an implemented, passing case.
+      [`test_edges.a68`](test_edges.a68) closes the thin spots the functional/stress suites left:
+      `_HeapReAlloc` corner cases (NULL ptr → `INVALID_BLOCK`, size 0 → minimal alloc,
+      `HEAP_ZERO_MEMORY` zeroes the grown tail); `_HeapCompact`'s reclamation **effect** (a
+      `DISABLE_COALESCE_ON_FREE` heap is fragmented, a big alloc fails, compact merges the
+      adjacent frees and the alloc then fits + its return grows); `_HeapWalk` block enumeration
+      **count** (5 allocations counted; empty heap → 0 + `NO_MORE_ITEMS`); `_HeapDestroy` of a heap
+      that still holds live allocations (discards them, reclaims the region, count returns to
+      baseline); and `_GetMachineHeaps` buffer **contents** (buf[1..] are valid distinct handles)
+      plus `N < count` **truncation** (returns the true count, writes only N, no overrun).
+- [x] Corrected design §9.4: this library's `_HeapReAlloc` is strict — a NULL pointer is
+      `INVALID_BLOCK` and size 0 yields a minimal allocation (the earlier C-style wording was
+      aspirational and did not match the implementation).  Residual out-of-scope: `HEAP_TRAP_ON_ERROR`
+      (halts the CPU, not harness-testable) and Phase 7 runner/CI polish.
 
 ---
 
@@ -652,3 +664,4 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 | 2026-07-21 | **Phase 4 complete** — [`test_debug.a68`](test_debug.a68) (§9.6): debug-fill on alloc (`CDCDCDCD`) and free (`BAADF00D`, control-word-after-poison for cells; `HEAP_DISABLE_COALESCE_ON_FREE` so the free fill is always reached), tail-guard overrun → `TAIL_VALIDATION_FAILED`, auto-validate-on-call refuses a call on a corrupt heap, and corrupt-and-detect (block magic→`INVALID_BLOCK`, fwd link→`INVALID_NEXT_LINK`, free back-link→`INVALID_FPREV_LINK`, slab→`SLAB_CORRUPT`, arena→`SOA_ARENA_CORRUPT`) with repair-revalidate. 6/6 green via `nmake test`. Trap learned: `_HeapValidate` runs `_HeapValidateHandle` first (checks `hhHeapHead`→`$0F` and bucket heads→`$10`), so a magic corruption must target a **mid-chain** block to surface `INVALID_BLOCK`. |
 | 2026-07-21 | **Phase 5 complete** — [`test_errors.a68`](test_errors.a68) (§9.7/§9.8): triggers & asserts every heap error code `$00`–`$17` (all reachable — none unreachable) across API misuse, whole/single-block `_HeapValidate` corruptions, `_HeapValidateHandle` header corruptions, and SOA double-free/slab/arena, each repaired and re-validated; plus near-miss `__HeapSlabFromPtr` classification (off-by-one / mid-cell / foreign), the F2 ÷0 guard (`slCellSz == 0`, `slClass >= SOA_NUM_CLASSES`), and foreign-pointer `_HeapFree`/`_HeapSize` → `INVALID_BLOCK` with no crash. 7/7 green via `nmake test`. Re-hit the `pC`→`PC` register-name trap (renamed `pCc`). |
 | 2026-07-21 | **Phase 6 complete** — [`test_stress.a68`](test_stress.a68) (§9.9): fixed-seed xorshift-32 soak (alloc/free/realloc 1..4096 over the SOA machine heap + a private block heap), interleaved validate, tagged data-integrity, drain reclamation invariants (`scbLiveCells`/`scbSlabCount`/`scbArenaCount == 0`), arena adaptive-shrink (4→1) + empty-arena reclamation, and a deterministic live-byte/count high-water baseline (identical across runs). 8/8 green via `nmake test`. **Found & fixed a real SOA defect:** `__HeapSlabRelease`/`__HeapArenaRelease` left `slMagic`/`arMagic` intact on freed memory, so reused blocks were mis-recognized as cells by `__HeapSlabFromPtr` (drove `scbLiveCells` to −6, mis-reported `_HeapSize`); fix clears both magics on release. Reclamation counts themselves were already correct. |
+| 2026-07-21 | **Phase 8 complete** — [`test_edges.a68`](test_edges.a68): coverage-audit backfill of the §9 edge cases the functional/stress suites left thin — `_HeapReAlloc` NULL→`INVALID_BLOCK` / size-0→minimal-alloc / `ZERO_MEMORY`-zeroes-grown-tail, `_HeapCompact` reclamation **effect** on a no-coalesce heap (fragment→merge→fit + return grows), `_HeapWalk` block enumeration **count** (5 + empty), `_HeapDestroy` with **live allocations** inside, and `_GetMachineHeaps` buffer **contents** + `N < count` **truncation** (no overrun). Corrected the design §9.4 realloc wording to match the strict implementation. 9/9 green via `nmake test`. Only Phase 7 (runner polish/CI/README) remains. |

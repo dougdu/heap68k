@@ -1,0 +1,242 @@
+************************************************************************
+*  test_edges.a68 — Phase 8, coverage backfill for §9.4/§9.5 edge cases.
+*
+*  Closes the audit gaps that the functional/stress suites left thin:
+*    P1  _HeapReAlloc corner cases (NULL ptr, size 0, zero-on-grow)
+*    P2  _HeapCompact's *reclamation effect* (coalesces fragments)
+*    P3  _HeapWalk block enumeration count (populated + empty heap)
+*    P4  _HeapDestroy of a heap that still holds live allocations
+*    P5  _GetMachineHeaps buffer contents + N < count truncation
+*
+*  Documents the ACTUAL realloc behavior (NULL -> INVALID_BLOCK, size 0 ->
+*  a minimal allocation), which differs from the aspirational C-style
+*  wording that used to be in the design doc §9.4.
+************************************************************************
+
+	.model	flat
+
+	include heap.inc
+	include heaptestkit.inc
+
+	.code
+
+HEAPBUFSIZE equ $80000				; 512 KB self-contained machine heap
+NOSOA	    equ HEAP_DISABLE_SMALL_POOL
+
+start:
+	TEST_INIT	heapbuf,HEAPBUFSIZE-128
+
+	HCREATE	#NOSOA,#$8000				; block heap for the realloc cases
+	move.l	d0,heapE
+
+*======================================================================
+* Phase 1 — _HeapReAlloc corner cases
+*======================================================================
+	PHASE	1
+	; realloc(NULL, n): this library rejects it (NOT malloc-like)
+	HREALLOC heapE,#0,#0,#64
+	EXPECT_ZERO	$01,d0
+	EXPECT_ERR	$02,HEAP_ERROR_INVALID_BLOCK
+	; realloc(p, 0): defined as a minimal allocation, not a free
+	HALLOC	heapE,#0,#128
+	EXPECT_NONZERO	$03,d0
+	move.l	d0,pA
+	HREALLOC heapE,#0,pA,#0
+	EXPECT_NONZERO	$04,d0
+	move.l	d0,pA
+	EXPECT_ERR	$05,HEAP_ERROR_SUCCESS
+	HFREE	heapE,pA
+	; HEAP_ZERO_MEMORY on a grow zeroes the newly grown tail
+	HALLOC	heapE,#0,#64
+	EXPECT_NONZERO	$06,d0
+	move.l	d0,pA
+	movea.l	pA,a0					; fill [0..64) with a non-zero marker
+	moveq	#64/4-1,d0
+_e1fill:
+	move.l	#$AAAAAAAA,(a0)+
+	dbra	d0,_e1fill
+	HREALLOC heapE,#HEAP_ZERO_MEMORY,pA,#256
+	EXPECT_NONZERO	$07,d0
+	move.l	d0,pA
+	EXPECT_FILL	$08,pA,64,$AAAAAAAA		; original bytes preserved
+	movea.l	pA,a0					; pB --> the grown tail (pA + 64)
+	lea	64(a0),a0
+	move.l	a0,pB
+	EXPECT_FILL	$09,pB,192,0			; [64..256) zeroed by the grow
+	HFREE	heapE,pA
+
+*======================================================================
+* Phase 2 — _HeapCompact actually reclaims (coalesces) fragments
+*======================================================================
+	PHASE	2
+	HCREATE	#(NOSOA or HEAP_DISABLE_COALESCE_ON_FREE),#$4000
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,heapDC
+	HALLOC	heapDC,#0,#4096
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pA
+	HALLOC	heapDC,#0,#4096
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pB
+	HALLOC	heapDC,#0,#4096
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,pQ
+	HFREE	heapDC,pA				; three adjacent fragments,
+	HFREE	heapDC,pB				;   NOT coalesced (flag set)
+	HFREE	heapDC,pQ
+	HALLOC	heapDC,#0,#10240			; 10 KB fits no single 4 KB fragment
+	EXPECT_ZERO	$21,d0
+	EXPECT_ERR	$22,HEAP_ERROR_OUT_OF_MEMORY
+	HCOMPACT heapDC					; merges the adjacent frees
+	EXPECT_GE	$23,d0,8192			; largest free block grew past one fragment
+	HALLOC	heapDC,#0,#10240			; now it fits
+	EXPECT_NONZERO	$24,d0
+	move.l	d0,pA
+	HFREE	heapDC,pA
+	HCOMPACT heapDC					; idempotent second pass
+	HVALIDATE heapDC,#0
+	EXPECT_Z	$25
+
+*======================================================================
+* Phase 3 — _HeapWalk block enumeration count
+*======================================================================
+	PHASE	3
+	HCREATE	#NOSOA,#$8000
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,heapW
+	moveq	#5-1,d5					; allocate exactly 5 blocks
+_e3alloc:
+	HALLOC	heapW,#0,#64
+	EXPECT_NONZERO	$F0,d0
+	dbra	d5,_e3alloc
+	clr.l	walkE					; walk, counting allocated blocks
+	clr.l	cnt
+_e3walk:
+	HWALK	heapW,#walkE
+	tst.l	d0
+	beq.s	_e3done
+	movea.l	walkE,a0				; cursor holds the block header
+	btst.b	#FLG_FREE_BIT,bhFlags+3(a0)
+	bne.s	_e3walk					; free block -> don't count
+	addq.l	#1,cnt
+	bra.s	_e3walk
+_e3done:
+	EXPECT_EQ	$31,cnt,5			; exactly the 5 allocations
+	; an empty heap enumerates zero allocated blocks and ends cleanly
+	HCREATE	#NOSOA,#$2000
+	EXPECT_NONZERO	$F0,d0
+	move.l	d0,heapEmpty
+	clr.l	walkE
+	clr.l	cnt
+_e3ewalk:
+	HWALK	heapEmpty,#walkE
+	tst.l	d0
+	beq.s	_e3edone
+	movea.l	walkE,a0
+	btst.b	#FLG_FREE_BIT,bhFlags+3(a0)
+	bne.s	_e3ewalk
+	addq.l	#1,cnt
+	bra.s	_e3ewalk
+_e3edone:
+	EXPECT_ZERO	$32,cnt
+	EXPECT_ERR	$33,HEAP_ERROR_NO_MORE_ITEMS
+
+*======================================================================
+* Phase 4 — _HeapDestroy with live allocations still inside
+*======================================================================
+	PHASE	4
+	move.l	#gmhBuf,-(sp)				; baseline active-heap count
+	move.l	#8,-(sp)
+	jsr	_GetMachineHeaps
+	adda.l	#8,sp
+	move.l	d0,cnt
+	HCREATE	#NOSOA,#$4000
+	EXPECT_NONZERO	$41,d0
+	move.l	d0,heapL
+	HALLOC	heapL,#0,#256				; three live blocks, never freed
+	EXPECT_NONZERO	$F0,d0
+	HALLOC	heapL,#0,#256
+	EXPECT_NONZERO	$F0,d0
+	HALLOC	heapL,#0,#256
+	EXPECT_NONZERO	$F0,d0
+	move.l	#gmhBuf,-(sp)				; count rose by one
+	move.l	#8,-(sp)
+	jsr	_GetMachineHeaps
+	adda.l	#8,sp
+	move.l	cnt,d1
+	addq.l	#1,d1
+	EXPECT_EQV	$42,d0,d1
+	HDESTROY heapL					; destroy discards the live blocks
+	EXPECT_NONZERO	$43,d0				; returned TRUE
+	HVALIDATEH heapL
+	EXPECT_NZ	$44				; handle no longer validates
+	move.l	#gmhBuf,-(sp)				; count back to baseline
+	move.l	#8,-(sp)
+	jsr	_GetMachineHeaps
+	adda.l	#8,sp
+	EXPECT_EQV	$45,d0,cnt
+	HVALIDATE hMachineHeap,#0			; the freed region is clean
+	EXPECT_Z	$46
+
+*======================================================================
+* Phase 5 — _GetMachineHeaps buffer contents + truncation
+*======================================================================
+	PHASE	5
+	HDESTROY heapE					; retire the leaked earlier heaps
+	HDESTROY heapDC					;   so the machine heap holds only
+	HDESTROY heapW					;   the machine heap again
+	HDESTROY heapEmpty
+	HCREATE	#NOSOA,#$2000
+	EXPECT_NONZERO	$51,d0
+	move.l	d0,heapX
+	HCREATE	#NOSOA,#$2000
+	EXPECT_NONZERO	$52,d0
+	move.l	d0,heapY
+	move.l	#gmhBuf,-(sp)				; enumerate all three
+	move.l	#8,-(sp)
+	jsr	_GetMachineHeaps
+	adda.l	#8,sp
+	EXPECT_EQ	$53,d0,3			; machine + heapX + heapY
+	EXPECT_EQV	$54,gmhBuf,hMachineHeap		; buf[0] == the machine heap
+	HVALIDATEH gmhBuf+4				; buf[1], buf[2] are real handles
+	EXPECT_Z	$55
+	HVALIDATEH gmhBuf+8
+	EXPECT_Z	$56
+	move.l	gmhBuf+4,d0
+	EXPECT_NEV	$57,d0,gmhBuf+8			; and they are distinct
+	; truncation: room for 2 of 3 -> returns the true count, no overflow
+	move.l	#$DEADBEEF,gmhBuf2+8			; guard just past the 2 slots
+	move.l	#gmhBuf2,-(sp)
+	move.l	#2,-(sp)
+	jsr	_GetMachineHeaps
+	adda.l	#8,sp
+	EXPECT_EQ	$58,d0,3			; full count still reported
+	EXPECT_EQV	$59,gmhBuf2,hMachineHeap
+	move.l	gmhBuf2+8,d0
+	EXPECT_EQ	$5A,d0,$DEADBEEF		; guard intact -> no buffer overrun
+
+	TEST_PASS
+	TEST_EPILOGUE
+
+*----- module .bss -----
+	.bss
+hMachineHeap	ds.l	1
+tResult		ds.l	1
+tDetail		ds.l	1
+heapE	ds.l	1
+heapDC	ds.l	1
+heapW	ds.l	1
+heapEmpty ds.l	1
+heapL	ds.l	1
+heapX	ds.l	1
+heapY	ds.l	1
+pA	ds.l	1
+pB	ds.l	1
+pQ	ds.l	1
+walkE	ds.l	1
+cnt	ds.l	1
+gmhBuf	ds.l	8
+gmhBuf2	ds.l	4
+	.even
+heapbuf	ds.b	HEAPBUFSIZE
+	end
