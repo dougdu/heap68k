@@ -34,7 +34,7 @@
 
 hhllen	equ 	(HEAP_HDR_SIZE shr 2)-1
 
-_HeapDestroy PROC USES d1-d2/a0, hHeap:DWORD
+_HeapDestroy PROC USES d1-d3/a0-a3, hHeap:DWORD
 
 	; All private heaps are created from the machine heap
 	move.l 	__MachineHeapHandle,d0		; Get machine heap handle
@@ -67,6 +67,37 @@ _hdHeapHandleNotNull:
 	jsr 	__HeapAutoValidateFlagCheck
 	adda.l 	#8,sp
 	bne 	_hdError			; Validation failed
+
+	; Invalidate this sub-heap's SOA slab/arena magics before the block is
+	; freed, so its bytes can't be mis-recognized as an SOA cell once the
+	; machine heap re-hands them out (mirrors __HeapSlabRelease; the header
+	; zero below wipes hhSmallPool, so this must run first).
+	IF SOA_ROUTE
+	movea.l	d1,a0			; A0 --> heap header
+	move.l	hhSmallPool(a0),d0	; D0 = SOA control block (0 if unused)
+	beq.s	_hdNoSoa
+	movea.l	d0,a0			; A0 --> SCB
+	movea.l	scbArenaHead(a0),a2	; A2 --> first arena
+_hdArenaLoop:
+	cmpa.l	#0,a2			; end of the arena list?
+	beq.s	_hdNoSoa
+	clr.l	arMagic(a2)		; invalidate the arena descriptor
+	moveq	#0,d3
+	move.w	arSlabs(a2),d3		; D3 = tile count for this arena
+	andi.l	#$0000FFFF,d3
+	movea.l	arBase(a2),a3		; A3 --> tile 0
+	bra.s	_hdTileTest
+_hdTileLoop:
+	clr.l	slMagic(a3)		; invalidate the slab tile header
+	adda.l	#SLAB_SIZE,a3
+	subq.l	#1,d3
+_hdTileTest:
+	tst.l	d3
+	bne.s	_hdTileLoop
+	movea.l	arNext(a2),a2		; next arena
+	bra.s	_hdArenaLoop
+_hdNoSoa:
+	ENDIF
 
 	; A private heap is just a allocated block on the machine heap
 	; so if can be destroyed just by freeing it.
