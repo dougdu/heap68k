@@ -215,8 +215,99 @@ _e3edone:
 	move.l	gmhBuf2+8,d0
 	EXPECT_EQ	$5A,d0,$DEADBEEF		; guard intact -> no buffer overrun
 
+*======================================================================
+* Phase 6 -- oversized realloc preserves the original allocation
+*======================================================================
+	PHASE	6
+	HCREATE	#NOSOA,#$4000
+	EXPECT_NONZERO	$60,d0
+	move.l	d0,heapE
+	HALLOC	heapE,#0,#4096
+	EXPECT_NONZERO	$60,d0
+	move.l	d0,pA
+	movea.l pA,a0
+	move.l	#$A5A5A5A5,(a0)
+	HREALLOC heapE,#0,pA,#$7FFFFFFF
+	EXPECT_ZERO	$61,d0
+	EXPECT_ERR	$62,HEAP_ERROR_OUT_OF_MEMORY
+	EXPECT_FILL	$63,pA,4,$A5A5A5A5
+	HFREE	heapE,pA
+	EXPECT_NONZERO	$64,d0
+	HVALIDATE heapE,#0
+	EXPECT_Z	$65
+	HDESTROY heapE
+
+*======================================================================
+* Phase 7 -- request boundaries across block, tail-check, and SOA heaps
+*======================================================================
+	PHASE	7
+	lea	oversizeFlags,a2
+	moveq	#3-1,d5
+_e7heap:
+	HCREATE	(a2)+,#$10000
+	EXPECT_NONZERO	$70,d0
+	move.l	d0,heapE
+	HALLOC	heapE,#0,#4096
+	EXPECT_NONZERO	$70,d0
+	move.l	d0,pA
+	HSIZE	heapE,pA
+	move.l	d0,oldSize
+	HALLOC	heapE,#0,#64
+	EXPECT_NONZERO	$70,d0
+	move.l	d0,pB
+	HSIZE	heapE,pB
+	move.l	d0,oldSmallSize
+	movea.l pA,a0
+	move.w	#4096/4-1,d0
+_e7fill:
+	move.l	#$A5A5A5A5,(a0)+
+	dbra	d0,_e7fill
+	movea.l pB,a0
+	moveq	#64/4-1,d0
+_e7fillSmall:
+	move.l	#$5A5A5A5A,(a0)+
+	dbra	d0,_e7fillSmall
+	lea	oversizeRequests,a3
+	moveq	#8-1,d4
+_e7request:
+	move.l	(a3)+,d3
+	HALLOC	heapE,#0,d3
+	EXPECT_ZERO	$71,d0
+	EXPECT_ERR	$72,HEAP_ERROR_OUT_OF_MEMORY
+	HREALLOC heapE,#0,pA,d3
+	EXPECT_ZERO	$73,d0
+	EXPECT_ERR	$74,HEAP_ERROR_OUT_OF_MEMORY
+	HREALLOC heapE,#HEAP_REALLOC_IN_PLACE_ONLY,pA,d3
+	EXPECT_ZERO	$75,d0
+	EXPECT_ERR	$76,HEAP_ERROR_OUT_OF_MEMORY
+	HREALLOC heapE,#0,pB,d3
+	EXPECT_ZERO	$77,d0
+	EXPECT_ERR	$78,HEAP_ERROR_OUT_OF_MEMORY
+	HSIZE	heapE,pA
+	EXPECT_EQV	$79,d0,oldSize
+	HSIZE	heapE,pB
+	EXPECT_EQV	$7A,d0,oldSmallSize
+	EXPECT_FILL	$7B,pA,4096,$A5A5A5A5
+	EXPECT_FILL	$7C,pB,64,$5A5A5A5A
+	HVALIDATE heapE,#0
+	EXPECT_Z	$7D
+	dbra	d4,_e7request
+	HFREE	heapE,pA
+	EXPECT_NONZERO	$7E,d0
+	HFREE	heapE,pB
+	EXPECT_NONZERO	$7E,d0
+	HVALIDATE heapE,#0
+	EXPECT_Z	$7F
+	HDESTROY heapE
+	dbra	d5,_e7heap
+
 	TEST_PASS
 	TEST_EPILOGUE
+
+	.data
+oversizeFlags dc.l NOSOA,(NOSOA or HEAP_TAIL_CHECKING_ENABLED),0
+oversizeRequests dc.l $80000,$7FFFFFBF,$7FFFFFC0,$7FFFFFFF
+	dc.l $80000000,$FFFFFFC0,$FFFFFFE0,$FFFFFFFF
 
 *----- module .bss -----
 	.bss
@@ -233,6 +324,8 @@ heapY	ds.l	1
 pA	ds.l	1
 pB	ds.l	1
 pQ	ds.l	1
+oldSize	ds.l	1
+oldSmallSize ds.l 1
 walkE	ds.l	1
 cnt	ds.l	1
 gmhBuf	ds.l	8

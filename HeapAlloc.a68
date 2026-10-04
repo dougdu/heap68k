@@ -84,6 +84,8 @@ _haSoaSkip:
 
 	; Begin allocation
 	move.l 	lBytes,d1 			; Get count of bytes to allocate
+	cmp.l 	hhSize(a0),d1
+	bhi 	_haNoMem
 
 	; Compute actual size of the block we need
 	move.l 	d1,d2 				; D2 = working copy of request size
