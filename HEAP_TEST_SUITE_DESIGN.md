@@ -4,6 +4,11 @@
 **Component:** `68kTools/libraries/heap`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](heap.inc)
 
+**NM1 extension (2026-10-05):** `test_aligned.a68` adds checked aligned
+reservations, legal prefix/suffix reuse, fragmented-bucket search, exact failure
+rollback, separate descriptor cleanup, adaptive tile fallback, tile-count
+clamping, and zero/debug/tail semantics. The complete suite passes 10/10.
+
 ---
 
 ## Table of Contents
@@ -408,14 +413,14 @@ carry no C type. **Validated in Phase 0.**
 ### 10.2 `run-heap-tests.ps1` (driver)
 1. **Build** the test ELFs (`nmake /f makefile-elf tests`).
 2. For each module ELF:
-   a. kill any stale `sim68k` and free TCP `1234`;
+   a. verify the selected RSP port is free; never stop unrelated processes;
    b. start a fresh `sim68k --gdb <port>` (the program is **not** passed on the command
       line — it is transferred by the gdb `load` in §10.1); wait for the RSP port to open;
    c. run `m68k-elf-gdb <module>.elf -nx --batch -x heaptest.gdb`, capture stdout;
    d. **watchdog:** `WaitForExit(timeout)`; on timeout kill gdb+sim → `TIMEOUT` (a storm
       fails fast instead of hanging);
    e. parse `RESULT=`/`DETAIL=`; `0` → pass, else decode `$PPCC` + detail;
-   f. tear down the sim.
+   f. tear down only the simulator/GDB PIDs started by this runner.
 3. Print a **summary table** (module · result · code · detail · decoded meaning) and set
    the process **exit code** = number of failing modules.
 
@@ -423,6 +428,8 @@ carry no C type. **Validated in Phase 0.**
 For triage, not CI: `sim68k --gdb`; then `sid68k` (no argv); at `-` type
 `e<module>.elf` (loads image **and** DDT symbols + sets PC), `x`, `g,_tdone`, then inspect
 with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C2.)
+Use the standalone sid68k checkout for NM1-aware descriptor/padding views;
+the old sid68k tree under worm68k is obsolete.
 
 ### 10.4 Running the suite (quick start)
 - **`nmake /f makefile-elf test`** — canonical one-step: build the module ELFs, run every
@@ -431,6 +438,9 @@ with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C
 - `pwsh -File run-heap-tests.ps1` — build + run the default modules.
 - `pwsh -File run-heap-tests.ps1 -NoBuild -Modules test_stress` — run one module, no rebuild.
 - `pwsh -File run-heap-tests.ps1 -Port 4321 -TimeoutSec 40` — override the RSP port / watchdog.
+- `pwsh -File run-heap-tests.ps1 -NoBuild -Modules test_aligned` — focused aligned regression.
+- `-Sim <path> -Gdb <path>` select qualified tools; `-ReportPath <path>` records
+  source/tool/archive/ELF hashes and preserves GDB logs.
 
 **Reading the summary.** A `PASS` row is `RESULT=00000000`. A `FAIL` row's `Note` decodes
 `RESULT=$0000PPCC` as `phase P, check 0xCC`, and `DETAIL` is the failing value / error code —
@@ -440,8 +450,10 @@ hint), `NOBUILD` (ELF missing). The process **exit code = number of non-passing 
 
 **Prereqs** (the runner checks all three and aborts with exit `255` if any is missing):
 `sim68k.exe` (…`builds\win64\bin\Release`), `m68k-elf-gdb.exe` (`C:\SysGCC\m68k-elf\bin`), and
-`heaptest.gdb` beside the runner. Teardown is wrapped in `try/finally`, so every sim is killed
-even if the run aborts; each module also waits for the RSP port to be free before starting.
+`heaptest.gdb` beside the runner. Teardown is wrapped in `try/finally` and targets
+only owned process IDs, including watchdog failure. A temporary GDB script
+uses the selected port; an occupied port is an error, not permission to kill
+the process using it. The default per-module watchdog remains 20 seconds.
 
 ---
 

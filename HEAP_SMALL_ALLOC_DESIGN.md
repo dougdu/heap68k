@@ -3,6 +3,10 @@
 **Status:** Draft v1.2 (round-2 review applied) · **Phases 0–6 complete — SOA default-on**  ·  **Target:** `libheap-elf.a` / `libheap` (m68k)  ·  **Owner:** _unassigned_
 **Related docs:** [HEAP_API.md](HEAP_API.md), [heap.inc](heap.inc)
 
+**NM1 backing update (2026-10-05):** The aligned regular allocator and separately
+owned arena descriptors are implemented. Section 6.4 describes the current
+layout; the original phase history below remains historical.
+
 ---
 
 ## Table of Contents
@@ -250,7 +254,10 @@ make small allocations pay nothing). Suggested layout (subject to Phase 1 finali
 | `$0C` | `scbFlags` | long | Reserved SOA-local flags |
 | `$10` | `scbPartial[0..15]` | 16×long | Per-class head of **partial** slabs (have ≥ 1 free cell) |
 | `$50` | `scbFull[0..15]` | 16×long | Per-class head of **full** slabs (0 free cells) |
-| `$90` | `scbStats…` | n×long | Counters: live cells, live bytes requested, slab count |
+| `$90` | `scbLiveCells` | long | Live caller cells |
+| `$94` | `scbLiveCellBytes` | long | Sum of live usable class bytes, not original requests |
+| `$98` | `scbSlabCount` | long | Live slab tiles |
+| `$9C` | `scbArenaCount` | long | Backing arenas |
 
 > The full/partial split lets allocation find a slab with a free cell in O(1) (head of the
 > partial list) and lets free promote a slab from full→partial in O(1).
@@ -259,37 +266,41 @@ make small allocations pay nothing). Suggested layout (subject to Phase 1 finali
 
 An **arena** provides `SLAB_SIZE`-aligned backing storage for slabs.
 
-- An arena is a **regular heap block** obtained from the owning heap's block allocator, sized
-  as a multiple of `SLAB_SIZE`. **Arena size is adaptive, not a fixed 64 KB:** it starts small
+- An arena owns a **regular backing block** and a separate compact descriptor.
+  The backing request is an exact multiple of `SLAB_SIZE`.
+  **Arena size is adaptive, not a fixed 64 KB:** it starts small
   (default `ARENA_SLABS_DFLT` tiles — e.g. 4 — adaptive down to a single-slab arena) and may scale up for
   larger heaps. A fixed `16 × SLAB_SIZE` = 64 KB arena would make the *first* small allocation
   fail on any private heap smaller than ~68 KB (arena + alignment slack), silently dropping to
   the block path and losing the density win exactly where G1 promised it (review S4).
   `slab_create` requests the smallest arena that yields at least one tile, bounded by the
   parent heap's free space.
-- **Alignment:** the block allocator only guarantees 32-byte alignment, so the SOA requests
-  `arena_bytes + SLAB_SIZE` and aligns the arena's usable base up to the next `SLAB_SIZE`
-  boundary. The slack (< `SLAB_SIZE`, once per arena) holds the **arena descriptor**:
+- **Alignment:** `__HeapAllocAligned` returns a regular-block data pointer
+  aligned to `SLAB_SIZE`. It searches before mutating, returns legal
+  prefix/suffix fragments to the existing buckets, and reports any retained
+  zero-to-32-byte suffix. The descriptor is a separate non-SOA regular block:
 
-  | Offset | Field | Description |
-  |-------:|-------|-------------|
-  | `$00` | `arMagic` | `'AREN'` |
-  | `$04` | `arBlock` | Pointer to the underlying regular block (for release) |
-  | `$08` | `arNext`  | Next arena in the SCB arena list |
-  | `$0C` | `arBase`  | First `SLAB_SIZE`-aligned slab address |
-  | `$10` | `arSlabs` | Total slab slots (tiles) in this arena |
-  | `$14` | `arSlabUse`| Slab tiles currently in use (whole-arena release when this hits 0) |
-  | `$16` | `arTileMap`| Per-tile used/free **bitmap** (bit *i* set ⇒ tile *i* is a live slab). One longword covers up to 32 tiles. This — **not** the bare `arSlabUse` count — is what lets `slab_create` find a free tile, lets an individual empty slab be reclaimed, and drives the `_HeapValidate` in-use walk (review S1). |
+  | Offset | Field | Size | Description |
+  |-------:|-------|-----:|-------------|
+  | `$00` | `arMagic` | long | `'AREN'` |
+  | `$04` | `arBlock` | long | Backing data pointer, not its block header |
+  | `$08` | `arNext` | long | Next separately owned arena descriptor |
+  | `$0C` | `arBase` | long | Aligned first tile, equal to `arBlock` |
+  | `$10` | `arSlabs` | word | Reserved tile count, 1 through 32 |
+  | `$12` | `arSlabUse` | word | Live tiles; final release frees backing and descriptor |
+  | `$14` | `arTileMap` | long | Live-tile bitmap; drives claiming and reclamation |
+  | `$18` | `arPadding` | long | Retained unusable backing suffix, zero through 32 bytes |
 
 - Arenas are created on demand when every partial/empty slab for a class is exhausted, and
   released back to the block allocator by `_HeapCompact`/`_HeapDestroy` when fully empty.
 - **Tile allocation & reclamation** are driven by `arTileMap`: `slab_create` claims the first
   clear bit (formatting that tile as a slab); releasing a fully-empty slab clears its bit and
-  decrements `arSlabUse`; when `arSlabUse` reaches 0 the whole arena block is returned to the
-  parent heap. A bare count could neither locate a free tile nor enumerate live tiles.
-- **Optional optimization (later phase):** add an internal `__HeapAllocAligned` primitive so
-  arenas need no over-allocation slack. Deferred; the over-allocate-and-align method above is
-  portable and correct.
+  decrements `arSlabUse`; when it reaches zero, release captures the next/backing
+  pointers, unlinks and invalidates the descriptor, and frees backing then
+  descriptor. A bare count could neither locate a free tile nor enumerate live tiles.
+- Requests are clamped to the bitmap's 32-tile capacity. Four-tile creation still
+  retries one tile; final failure frees the unpublished descriptor and preserves
+  the heap's physical/free-chain state and out-of-memory diagnostic.
 
 ### 6.5 Slabs & Slab Header
 
@@ -509,7 +520,10 @@ heap_free(hHeap, pMem):
     ; --- recognition: is pMem a slab cell? (load-bearing chain, S2/§6.7) ---
     if slab->slMagic == 'SLAB'
        and slab->slArena->arMagic == 'AREN'
+       and slab->slArena->arBlock == slab->slArena->arBase
+       and 1 <= slab->slArena->arSlabs <= 32
        and slab->slArena->arBase <= slab < slab->slArena->arBase + slab->slArena->arSlabs*SLAB_SIZE
+       and the corresponding arTileMap bit is live
        and (pMem - firstCell(slab)) mod slab->slCellSz == 0
        and cellIndex < slab->slTotal:
         ; --- recognized: check ownership SEPARATELY (D1) ---
@@ -538,7 +552,7 @@ soa_free(hHeap, slab, cell):
 ```
 slab_create(hHeap, cls):
     ar = arena in scb->scbArenaHead whose arTileMap has a clear bit
-    if none: ar = arena_create(hHeap)            ; over-allocate + align (§6.4); adaptive size
+    if none: ar = arena_create(hHeap)            ; separate descriptor + aligned backing; adaptive
         if ar == 0: return 0
     t    = index of first clear bit in ar->arTileMap
     tile = ar->arBase + t*SLAB_SIZE
@@ -553,7 +567,7 @@ slab_maybe_release(hHeap, slab):                 ; when a slab becomes fully emp
     unlink slab from its class partial list
     t  = (slab - ar->arBase) / SLAB_SIZE
     clear bit t in ar->arTileMap; ar->arSlabUse--
-    if ar->arSlabUse == 0: arena_release(hHeap, ar)   ; whole arena block back to parent
+    if ar->arSlabUse == 0: arena_release(hHeap, ar)   ; backing + descriptor back to parent
 ```
 
 ### 9.6 realloc transitions
@@ -829,7 +843,9 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 ### Phase 5 — Validation, Walk, Compact  ✅ (2026-07-21)
 - [x] Create [`HeapSmallValidate.a68`](HeapSmallValidate.a68): `__HeapSoaValidate` performs the full
       §10 sweep — SCB magic/back-pointer; per-arena magic, `arBase` alignment, `arSlabUse ≤ arSlabs`,
-      `popcount(arTileMap) == arSlabUse`, `arBlock` carries `'BLKH'`; per live-tile slab magic/`slId`/
+      `popcount(arTileMap) == arSlabUse`; both descriptor and `arBlock - BLK_HDR_SIZE`
+      carry live owned `'BLKH'` headers; exact tile request and padding accounting;
+      per live-tile slab magic/`slId`/
       class/`slCellSz`/`slTotal`/`slFree` bounds; free-list length == `slFree` with in-range indices,
       `freeTag` present and a cycle bound; and class-list consistency (partial ⇒ `slFree>0`, full ⇒
       `slFree==0`).  Wired into `_HeapValidate` (gated) for a whole-heap check only (`pBlock==NULL`).

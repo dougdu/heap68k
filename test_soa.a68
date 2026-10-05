@@ -125,11 +125,12 @@ _p1next:
 	move.l	arBase(a0),d0
 	andi.l	#SLAB_SIZE_MASK,d0
 	bne	_tfail
-	move.l	#$0304,d7			; arBase-ar >= AREN_HDR_SIZE
-	move.l	arBase(a0),d0
-	sub.l	arenaPtr,d0
-	cmpi.l	#AREN_HDR_SIZE,d0
-	blt	_tfail
+	move.l	#$0304,d7			; descriptor is separate from aligned backing
+	move.l	arBlock(a0),d0
+	cmp.l	arenaPtr,d0
+	beq	_tfail
+	cmp.l	arBase(a0),d0
+	bne	_tfail
 	move.l	#$0305,d7			; arSlabs == DFLT
 	move.w	arSlabs(a0),d0
 	andi.l	#$0000FFFF,d0
@@ -147,6 +148,22 @@ _p1next:
 	move.l	scbArenaHead(a1),d0
 	cmp.l	arenaPtr,d0
 	bne	_tfail
+
+	move.l	#$0309,d7			; descriptor request is compact and non-SOA
+	movea.l	arenaPtr,a1
+	suba.l	#BLK_HDR_SIZE,a1
+	cmpi.l	#BLOCK_MAGIC,bhMagic(a1)
+	bne	_tfail
+	cmpi.l	#AREN_HDR_SIZE,bhRequestSize(a1)
+	bne	_tfail
+	move.l	#$030A,d7			; backing request is exact tile payload
+	movea.l	arBlock(a0),a1
+	suba.l	#BLK_HDR_SIZE,a1
+	cmpi.l	#ARENA_SLABS_DFLT*SLAB_SIZE,bhRequestSize(a1)
+	bne	_tfail
+	move.l	#$030B,d7
+	cmpi.l	#BLK_HDR_SIZE,arPadding(a0)
+	bhi	_tfail
 
 ************************************************************************
 *  Phase 4 : __HeapSlabCreate (class 1 = 16 bytes, thorough)

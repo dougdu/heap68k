@@ -234,6 +234,257 @@ _haExit:
 	move.l	a0,d0 				; Return pointer in D0
 	ENDP
 
+************************************************************************
+*  __HeapAllocAligned
+*
+*  Internal regular-block allocation with a caller-selected data
+*  alignment.  The alignment must be a power of two and at least
+*  BLK_HDR_SIZE.  Legal prefix/suffix fragments are returned to the
+*  regular free lists; a suffix no larger than one block header is
+*  retained in the allocation and reported through pPadding.
+*
+*  This path never enters the SOA and is used for slab tile backing.
+************************************************************************
+__HeapAllocAligned PROC USES d1-d7/a0-a5, hHeap:DWORD, lFlags:DWORD, lBytes:DWORD, lAlignment:DWORD, pPadding:DWORD
+	movea.l hHeap,a0			; A0 --> heap header
+
+	clr.l	-(sp)
+	move.l	a0,-(sp)
+	jsr	__HeapAutoValidateFlagCheck
+	adda.l	#8,sp
+	bne	_haaErrorExit1
+
+	movea.l pPadding,a1
+	cmpa.l	#0,a1
+	beq.s	_haaCheckAlignment
+	clr.l	(a1)
+
+_haaCheckAlignment:
+	move.l	lAlignment,d4			; D4 = requested alignment
+	cmpi.l	#BLK_HDR_SIZE,d4
+	blo	_haaInvalidParam
+	move.l	d4,d0
+	subq.l	#1,d0
+	move.l	d0,d1
+	and.l	d4,d1				; power of two iff align & (align-1) == 0
+	bne	_haaInvalidParam
+
+	move.l	lBytes,d1			; D1 = caller request size
+	beq	_haaInvalidParam
+	cmp.l	hhSize(a0),d1
+	bhi	_haaNoMem
+	move.l	lFlags,d2			; D2 = caller flags for __FillBlock
+	move.l	d1,d3				; D3 = required data + header
+	btst.b	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a0)
+	beq.s	_haaNoTail
+	addi.l	#HEAP_TAIL_SIZE,d3
+	bcs	_haaNoMem
+_haaNoTail:
+	addi.l	#BLK_HDR_SIZE-1,d3
+	bcs	_haaNoMem
+	andi.l	#NOT(BLK_HDR_SIZE-1),d3
+	addi.l	#BLK_HDR_SIZE,d3
+	bcs	_haaNoMem
+	cmp.l	hhSize(a0),d3
+	bhi	_haaNoMem
+
+	; Start with the smallest bucket that could hold the unpadded request.
+	move.l	d3,d0
+	subi.l	#BLK_HDR_SIZE,d0
+	jsr	__HeapGetBucketOffset
+	move.l	d0,d5				; D5 = current bucket offset
+
+_haaFindBucket:
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d5.l),a1
+	cmpa.l	#0,a1
+	bne.s	_haaSearchBucket
+_haaNextBucket:
+	addq.l	#4,d5
+	cmpi.l	#HEAP_NUM_FREE_BUCKETS*4,d5
+	bhs	_haaNoMem
+	bra.s	_haaFindBucket
+
+_haaSearchBucket:
+	btst.b	#FLG_FREE_BIT,bhFlags+3(a1)
+	beq	_haaFreeChainCorrupt
+
+	; A2 = aligned block header.  Advance one alignment unit when the
+	; first candidate would leave an unusable one-header prefix.
+	move.l	a1,d0
+	addi.l	#BLK_HDR_SIZE,d0
+	bcs.s	_haaTryNext
+	move.l	d4,d6
+	subq.l	#1,d6
+	add.l	d6,d0
+	bcs.s	_haaTryNext
+	not.l	d6
+	and.l	d6,d0				; D0 = aligned data pointer
+	cmpi.l	#$01000000,d0
+	bhs.s	_haaTryNext
+	movea.l d0,a2
+	suba.l	#BLK_HDR_SIZE,a2
+	move.l	a2,d6
+	sub.l	a1,d6				; D6 = prefix total size
+	beq.s	_haaPrefixOk
+	cmpi.l	#BLK_HDR_SIZE,d6
+	bhi.s	_haaPrefixOk
+	adda.l	d4,a2
+	add.l	d4,d6
+	bcs.s	_haaTryNext
+
+_haaPrefixOk:
+	move.l	a1,d0
+	add.l	bhSize(a1),d0
+	bcs.s	_haaTryNext
+	movea.l d0,a5				; A5 = end of original free block
+	move.l	a2,d0
+	add.l	d3,d0				; D0 = end of requested aligned block
+	bcs.s	_haaTryNext
+	cmp.l	a5,d0
+	bhi.s	_haaTryNext
+	move.l	a5,d7
+	sub.l	d0,d7				; D7 = suffix total size
+	bra.s	_haaFound
+
+_haaTryNext:
+	movea.l bhFreeNext(a1),a1
+	cmpa.l	#0,a1
+	bne.s	_haaSearchBucket
+	bra.s	_haaNextBucket
+
+_haaFound:
+	; Capture physical neighbors before unlinking the original free block.
+	movea.l bhPrev(a1),a5
+	movea.l bhNext(a1),a4
+	move.l	a1,-(sp)
+	move.l	a0,-(sp)
+	jsr	__HeapUnlinkFromFreeBlockChain
+	adda.l	#8,sp
+
+	; A suffix with no payload cannot form a legal free block.  Retain
+	; those bytes in the aligned allocation and expose the exact loss.
+	moveq	#0,d0				; D0 = retained suffix padding
+	tst.l	d7
+	beq.s	_haaPaddingDone
+	cmpi.l	#BLK_HDR_SIZE,d7
+	bhi.s	_haaPaddingDone
+	move.l	d7,d0
+	add.l	d7,d3
+	clr.l	d7
+_haaPaddingDone:
+	move.l	d0,-(sp)			; preserve padding across helper calls
+
+	; Reformat and reinsert a legal prefix, if one exists.
+	tst.l	d6
+	beq.s	_haaNoPrefix
+	move.l	#BLOCK_MAGIC,bhMagic(a1)
+	move.l	hhFlags(a0),d0
+	andi.l	#HEAP_ID_MASK,d0
+	ori.l	#FLG_FREE,d0
+	move.l	d0,bhFlags(a1)
+	move.l	d6,bhSize(a1)
+	move.l	d6,d0
+	subi.l	#BLK_HDR_SIZE,d0
+	move.l	d0,bhRequestSize(a1)
+	move.l	a5,bhPrev(a1)
+	move.l	a2,bhNext(a1)
+	clr.l	bhFreePrev(a1)
+	clr.l	bhFreeNext(a1)
+	bsr	__HeapInsertFreeBlock
+	move.l	a1,bhPrev(a2)
+	bra.s	_haaInitAllocated
+_haaNoPrefix:
+	move.l	a5,bhPrev(a2)
+
+_haaInitAllocated:
+	move.l	#BLOCK_MAGIC,bhMagic(a2)
+	move.l	hhFlags(a0),d0
+	andi.l	#HEAP_ID_MASK,d0
+	move.l	d0,bhFlags(a2)
+	move.l	d1,bhRequestSize(a2)
+	move.l	d3,bhSize(a2)
+	clr.l	bhFreePrev(a2)
+	clr.l	bhFreeNext(a2)
+
+	; Reformat and reinsert a legal suffix, or connect directly to the
+	; original next physical block when no suffix remains.
+	tst.l	d7
+	beq.s	_haaNoSuffix
+	movea.l a2,a3
+	adda.l	d3,a3
+	move.l	#BLOCK_MAGIC,bhMagic(a3)
+	move.l	hhFlags(a0),d0
+	andi.l	#HEAP_ID_MASK,d0
+	ori.l	#FLG_FREE,d0
+	move.l	d0,bhFlags(a3)
+	move.l	d7,bhSize(a3)
+	move.l	d7,d0
+	subi.l	#BLK_HDR_SIZE,d0
+	move.l	d0,bhRequestSize(a3)
+	move.l	a2,bhPrev(a3)
+	move.l	a4,bhNext(a3)
+	clr.l	bhFreePrev(a3)
+	clr.l	bhFreeNext(a3)
+	move.l	a3,bhNext(a2)
+	cmpa.l	#0,a4
+	beq.s	_haaInsertSuffix
+	move.l	a3,bhPrev(a4)
+_haaInsertSuffix:
+	movea.l a3,a1
+	bsr	__HeapInsertFreeBlock
+	bra.s	_haaPhysicalDone
+_haaNoSuffix:
+	move.l	a4,bhNext(a2)
+	cmpa.l	#0,a4
+	beq.s	_haaPhysicalDone
+	move.l	a2,bhPrev(a4)
+
+_haaPhysicalDone:
+	movea.l a2,a1
+	bsr	__FillBlock
+	move.l	(sp)+,d7			; retained suffix padding
+	movea.l pPadding,a3
+	cmpa.l	#0,a3
+	beq.s	_haaReturn
+	move.l	d7,(a3)
+_haaReturn:
+	lea	bhData(a1),a0
+	move.l	a0,d0
+	bra.s	_haaExit
+
+_haaFreeChainCorrupt:
+	move.l	#HEAP_ERROR_BLOCK_NOT_FREE,d0
+	bra.s	_haaErrorExit
+_haaInvalidParam:
+	move.l	#HEAP_ERROR_INVALID_PARAM,d0
+	bra.s	_haaErrorExit
+_haaNoMem:
+	move.l	#HEAP_ERROR_OUT_OF_MEMORY,d0
+_haaErrorExit:
+	move.l	d0,__HeapError
+_haaErrorExit1:
+	clr.l	d0
+_haaExit:
+	ENDP
+
+************************************************************************
+*  __HeapInsertFreeBlock
+*
+*  A0 = heap, A1 = initialized free block.  Clobbers D0/A3.
+************************************************************************
+__HeapInsertFreeBlock:
+	move.l	bhRequestSize(a1),d0
+	jsr	__HeapGetBucketOffset
+	movea.l HEAP_FREE_BUCKET_BASE(a0,d0.l),a3
+	move.l	a1,HEAP_FREE_BUCKET_BASE(a0,d0.l)
+	clr.l	bhFreePrev(a1)
+	move.l	a3,bhFreeNext(a1)
+	cmpa.l	#0,a3
+	beq.s	_hifbDone
+	move.l	a1,bhFreePrev(a3)
+_hifbDone:
+	rts
+
 
 ;hHeap 	equ 	A0
 ;pBlock 	equ	A1

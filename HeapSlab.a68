@@ -159,6 +159,14 @@ __HeapSlabFromPtr PROC USES d1-d3/a0-a1, pMem:DWORD
 	movea.l slArena(a0),a1			; A1 --> candidate arena
 	cmpi.l	#AREN_MAGIC,arMagic(a1)
 	bne	_sfpNo
+	move.l	arBlock(a1),d2
+	cmp.l	arBase(a1),d2			; aligned backing is the tile base
+	bne	_sfpNo
+	move.w	arSlabs(a1),d0
+	andi.l	#$0000FFFF,d0
+	beq	_sfpNo
+	cmpi.l	#ARENA_MAX_SLABS,d0
+	bhi	_sfpNo
 
 	; arBase <= slab < arBase + arSlabs*SLAB_SIZE
 	move.l	arBase(a1),d2			; D2 = arBase
@@ -170,6 +178,13 @@ __HeapSlabFromPtr PROC USES d1-d3/a0-a1, pMem:DWORD
 	add.l	d2,d0				; end = arBase + span
 	cmp.l	d0,d1
 	bhs	_sfpNo				; slab >= end
+	move.l	d1,d0				; live tile bit must recognize this slab
+	sub.l	d2,d0
+	divu	#SLAB_SIZE,d0
+	andi.l	#$0000FFFF,d0
+	move.l	arTileMap(a1),d3
+	btst	d0,d3
+	beq	_sfpNo
 
 	; offset = pMem - firstCell : >=0, multiple of cellSz, index < total
 	move.l	pMem,d0

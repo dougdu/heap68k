@@ -203,6 +203,39 @@ free list; the free path releases a slab (and its arena, once empty) back to the
 allocator eagerly. The SCB, arenas, and slabs are described by the `'SCB '`, `'AREN'`,
 and `'SLAB'` magics respectively.
 
+**NM1 aligned backing.** Each arena owns a separate 28-byte regular-block
+descriptor and a regular backing block whose data pointer is 4 KB aligned.
+The descriptor is allocated with `HEAP_DISABLE_SMALL_POOL`, so it cannot
+recursively create another pool. Backing requests are exactly
+`arSlabs * SLAB_SIZE`, not `(arSlabs + 1) * SLAB_SIZE`.
+
+| Arena offset | Field | Size | Meaning |
+| --- | --- | --- | --- |
+| `$00` | `arMagic` | long | `'AREN'` |
+| `$04` | `arBlock` | long | Backing **data** pointer; its block header is 32 bytes earlier |
+| `$08` | `arNext` | long | Next separately owned descriptor |
+| `$0C` | `arBase` | long | Tile base, equal to `arBlock` |
+| `$10` | `arSlabs` | word | Reserved tiles, 1 through 32 |
+| `$12` | `arSlabUse` | word | Live tiles |
+| `$14` | `arTileMap` | long | Live-tile bitmap |
+| `$18` | `arPadding` | long | Unusable retained backing suffix, zero through 32 bytes |
+
+The first 24 bytes retain their original offsets, but descriptor/block aliasing
+is no longer valid. Normal descriptor commitment is 64 bytes including header
+and rounding. Backing commitment is tile payload plus its 32-byte header,
+retained padding, and any configured tail guard. Legal prefix/suffix fragments
+remain reusable regular free blocks. Empty-arena release unlinks and captures
+ownership before freeing backing and descriptor.
+
+The internal `__HeapAllocAligned(hHeap, lFlags, lBytes, lAlignment, pPadding)`
+returns an ordinary regular-block data pointer. Alignment must be a power of
+two of at least 32 bytes; requests must be nonzero. Arithmetic and the 24-bit
+address bound are checked before chain mutation. `pPadding` is an optional
+longword output. Failure returns zero with an explicit heap error and leaves
+the physical/free chains unchanged. This is not a new public `HeapAlloc`
+alignment guarantee, and an ordinary moving `HeapReAlloc` need not preserve
+the internal allocation's larger alignment.
+
 **Consequences for callers.**
 - **Alignment.** Cells are **8-byte aligned** (block allocations remain 32-byte
   aligned). All addresses are even, so word/long access is safe. Do not assume small

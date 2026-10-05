@@ -2,10 +2,9 @@
 *  HeapArena
 ************************************************************************
 *
-*  Small Object Allocator (SOA) arena management.  An arena is a
-*  regular heap block whose usable tile area is aligned up to a
-*  SLAB_SIZE boundary; the leading slack holds the arena descriptor.
-*  Phase 1: primitives only (no public-API routing).
+*  Small Object Allocator (SOA) arena management.  An arena owns a
+*  compact regular-block descriptor and a separate SLAB_SIZE-aligned
+*  regular block containing only tile payload.
 *
 *    __HeapArenaCreate  - allocate + format a new arena
 *    __HeapArenaRelease - unlink + free an arena
@@ -15,6 +14,8 @@
 	.model	flat
 
 	include heap.inc
+
+	extern	__HeapError
 
 	.code
 
@@ -27,7 +28,7 @@
 *
 *  Returns D0 = arena descriptor pointer, or NULL (0) on failure.
 ************************************************************************
-__HeapArenaCreate PROC USES d2-d4/a0-a2, hHeap:DWORD, nTiles:DWORD
+__HeapArenaCreate PROC USES d2-d4/a0-a3, hHeap:DWORD, nTiles:DWORD
 	movea.l hHeap,a0			; A0 --> heap header
 
 	; The arena must be linked into the heap's SCB
@@ -41,37 +42,50 @@ __HeapArenaCreate PROC USES d2-d4/a0-a2, hHeap:DWORD, nTiles:DWORD
 	move.l	nTiles,d2			; D2 = tiles wanted
 	moveq	#1,d0				; ...clamped to at least 1
 	cmp.l	d0,d2
-	bge.s	_arcTry
+	bge.s	_arcClampMax
 	move.l	d0,d2
+_arcClampMax:
+	cmpi.l	#ARENA_MAX_SLABS,d2
+	bls.s	_arcAllocDescriptor
+	move.l	#ARENA_MAX_SLABS,d2
 
-_arcTry:
-	; Request (nTiles+1)*SLAB_SIZE so the descriptor + alignment fit
-	move.l	d2,d3
-	addq.l	#1,d3
-	mulu	#SLAB_SIZE,d3			; D3 = (nTiles+1)*SLAB_SIZE
-	move.l	d3,-(sp)			; lBytes
-	clr.l	-(sp)				; no flags
-	move.l	a0,-(sp)			; hHeap
+_arcAllocDescriptor:
+	; The descriptor is an ordinary non-SOA block.  It is not published
+	; until aligned backing allocation and formatting both succeed.
+	move.l	#AREN_HDR_SIZE,-(sp)
+	move.l	#HEAP_DISABLE_SMALL_POOL,-(sp)
+	move.l	a0,-(sp)
 	jsr	_HeapAlloc
 	adda.l	#12,sp
+	tst.l	d0
+	beq	_arcFail
+	movea.l d0,a1				; A1 --> separately owned descriptor
+
+_arcTry:
+	move.l	d2,d3
+	mulu	#SLAB_SIZE,d3			; D3 = exact tile payload bytes
+	lea	arPadding(a1),a3
+	move.l	a3,-(sp)			; pPadding
+	move.l	#SLAB_SIZE,-(sp)		; lAlignment
+	move.l	d3,-(sp)			; lBytes
+	move.l	#HEAP_DISABLE_SMALL_POOL,-(sp)
+	move.l	a0,-(sp)
+	jsr	__HeapAllocAligned
+	adda.l	#20,sp
 	tst.l	d0
 	bne.s	_arcGot
 	; Allocation failed: adaptive shrink to a single-slab arena
 	cmpi.l	#1,d2
-	beq	_arcFail			; already minimal -> give up
+	beq.s	_arcFreeDescriptor		; already minimal -> give up
 	moveq	#1,d2
 	bra.s	_arcTry
 
 _arcGot:
-	movea.l d0,a1				; A1 --> block data (B) = descriptor
-	; arBase = roundup(B + AREN_HDR_SIZE, SLAB_SIZE)
-	move.l	d0,d4
-	addi.l	#AREN_HDR_SIZE+SLAB_SIZE-1,d4
-	andi.l	#NOT(SLAB_SIZE_MASK),d4		; D4 = arBase (longword mask)
+	move.l	d0,d4				; D4 = aligned tile backing/base
 
-	; Format the arena descriptor at B
+	; Format and publish the complete descriptor.
 	move.l	#AREN_MAGIC,arMagic(a1)
-	move.l	a1,arBlock(a1)			; underlying block ptr = B
+	move.l	d4,arBlock(a1)
 	move.l	scbArenaHead(a2),arNext(a1)	; link at head of arena list
 	move.l	a1,scbArenaHead(a2)
 	move.l	d4,arBase(a1)
@@ -82,6 +96,12 @@ _arcGot:
 	move.l	a1,d0				; return descriptor
 	bra.s	_arcExit
 
+_arcFreeDescriptor:
+	move.l	a1,-(sp)
+	move.l	a0,-(sp)
+	jsr	_HeapFree
+	adda.l	#8,sp
+	move.l	#HEAP_ERROR_OUT_OF_MEMORY,__HeapError
 _arcFail:
 	clr.l	d0
 _arcExit:
@@ -96,37 +116,43 @@ _arcExit:
 *  Unlinks the arena from the SCB list and frees its underlying block.
 *  Returns D0 = nonzero on success, 0 on failure.
 ************************************************************************
-__HeapArenaRelease PROC USES d1/a0-a2, hHeap:DWORD, arena:DWORD
+__HeapArenaRelease PROC USES d1-d2/a0-a3, hHeap:DWORD, arena:DWORD
 	movea.l hHeap,a0			; A0 --> heap header
 	movea.l arena,a1			; A1 --> arena
 	move.l	hhSmallPool(a0),d0
 	beq	_arrFail
 	movea.l d0,a2				; A2 --> SCB
-	subq.l	#1,scbArenaCount(a2)
 
 	; Unlink the arena from the scbArenaHead singly-linked list
-	lea	scbArenaHead(a2),a2		; A2 = &slot to update
+	lea	scbArenaHead(a2),a3		; A3 = &slot to update
 _arrWalk:
-	move.l	(a2),d0				; D0 = current arena
-	beq.s	_arrFree			; not found (defensive) -> just free
+	move.l	(a3),d0				; D0 = current arena
+	beq.s	_arrFail
 	move.l	arena,d1
 	cmp.l	d1,d0
 	beq.s	_arrFound
-	movea.l d0,a2
-	lea	arNext(a2),a2			; A2 = &current->arNext
+	movea.l d0,a3
+	lea	arNext(a3),a3			; A3 = &current->arNext
 	bra.s	_arrWalk
 _arrFound:
-	move.l	arNext(a1),(a2)			; *slot = arena->arNext
+	move.l	arNext(a1),d1			; capture links/ownership before any free
+	move.l	arBlock(a1),d2
+	move.l	d1,(a3)				; *slot = arena->arNext
+	subq.l	#1,scbArenaCount(a2)
+	clr.l	arMagic(a1)			; stale descriptors must not be recognized
+	clr.l	arNext(a1)
 
-_arrFree:
-	clr.l	arMagic(a1)			; invalidate the descriptor before the block
-						;   returns to the heap, so reused memory can't
-						;   pose as an arena to __HeapSlabFromPtr
-	move.l	arBlock(a1),-(sp)		; free the underlying block
+	move.l	d2,-(sp)			; free aligned tile backing first
 	move.l	a0,-(sp)
 	jsr	_HeapFree
 	adda.l	#8,sp
-	bra.s	_arrExit			; D0 = HeapFree result
+	tst.l	d0
+	beq.s	_arrExit
+	move.l	a1,-(sp)			; then free the separate descriptor
+	move.l	a0,-(sp)
+	jsr	_HeapFree
+	adda.l	#8,sp
+	bra.s	_arrExit
 
 _arrFail:
 	clr.l	d0

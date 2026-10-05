@@ -1,0 +1,345 @@
+************************************************************************
+*  Checked aligned regular allocation and separate SOA arena backing.
+************************************************************************
+	.model flat
+	include heap.inc
+	include heaptestkit.inc
+	extern __HeapStats
+
+HALIGNED MACRO hh,fl,nb,alignment,pad
+	move.l	&pad&,-(sp)
+	move.l	&alignment&,-(sp)
+	move.l	&nb&,-(sp)
+	move.l	&fl&,-(sp)
+	move.l	&hh&,-(sp)
+	jsr	__HeapAllocAligned
+	adda.l	#20,sp
+	ENDM
+
+HSTATS MACRO hh,dst
+	move.l	&dst&,-(sp)
+	move.l	&hh&,-(sp)
+	jsr	__HeapStats
+	adda.l	#8,sp
+	ENDM
+
+	.code
+HEAPBUFSIZE equ $40000
+NOSOA equ HEAP_DISABLE_SMALL_POOL
+
+start:
+	lea	testStackTop,sp
+	TEST_INIT heapbuf,HEAPBUFSIZE-128
+	HCREATE #NOSOA,#$10000
+	move.l	d0,heapH
+	PHASE 1
+	EXPECT_NONZERO 1,heapH
+	HALLOC heapH,#0,#128
+	EXPECT_NONZERO 2,d0
+	move.l	d0,original
+	movea.l	d0,a0
+	move.l	#$12345678,(a0)
+	HSTATS heapH,#beforeStats
+	EXPECT_NONZERO 3,d0
+	HALIGNED heapH,#0,#1,#0,#padding
+	EXPECT_ZERO 4,d0
+	EXPECT_ERR 5,HEAP_ERROR_INVALID_PARAM
+	HALIGNED heapH,#0,#1,#16,#padding
+	EXPECT_ZERO 6,d0
+	EXPECT_ERR 7,HEAP_ERROR_INVALID_PARAM
+	HALIGNED heapH,#0,#1,#96,#padding
+	EXPECT_ZERO 8,d0
+	EXPECT_ERR 9,HEAP_ERROR_INVALID_PARAM
+	HALIGNED heapH,#0,#0,#SLAB_SIZE,#padding
+	EXPECT_ZERO 10,d0
+	EXPECT_ERR 11,HEAP_ERROR_INVALID_PARAM
+	HALIGNED heapH,#0,#$FFFFFFF0,#SLAB_SIZE,#padding
+	EXPECT_ZERO 12,d0
+	EXPECT_ERR 13,HEAP_ERROR_OUT_OF_MEMORY
+	HSTATS heapH,#afterStats
+	EXPECT_NONZERO 14,d0
+	move.l	#$010F,d7
+	bsr	_compareStats
+	movea.l	original,a0
+	EXPECT_MAGIC 16,(a0),$12345678
+
+	PHASE 2
+	move.l	#BLK_HDR_SIZE,d3
+_alignment:
+	moveq	#0,d2
+_size:
+	lea	sizes,a0
+	move.l	d2,d0
+	lsl.l	#2,d0
+	move.l	(a0,d0.l),d4
+	HALIGNED heapH,#HEAP_ZERO_MEMORY,d4,d3,#padding
+	EXPECT_NONZERO 1,d0
+	move.l	d0,pAligned
+	move.l	d3,d1
+	subq.l	#1,d1
+	and.l	d0,d1
+	EXPECT_ZERO 2,d1
+	HSIZE heapH,pAligned
+	EXPECT_EQV 3,d0,d4
+	EXPECT_LE 4,padding,BLK_HDR_SIZE
+	movea.l	pAligned,a0
+	suba.l	#BLK_HDR_SIZE,a0
+	EXPECT_MAGIC 5,bhMagic(a0),BLOCK_MAGIC
+	move.l	d4,d1
+	addi.l	#BLK_HDR_SIZE-1,d1
+	andi.l	#NOT(BLK_HDR_SIZE-1),d1
+	addi.l	#BLK_HDR_SIZE,d1
+	add.l	padding,d1
+	EXPECT_EQV 6,bhSize(a0),d1
+	movea.l	pAligned,a0
+	move.l	d4,d0
+	subq.l	#1,d0
+	move.l	#$0207,d7
+_zero:
+	tst.b	(a0)+
+	bne	_tfail
+	dbra	d0,_zero
+	HVALIDATE heapH,#0
+	EXPECT_Z 8
+	HFREE heapH,pAligned
+	EXPECT_NONZERO 9,d0
+	HSTATS heapH,#afterStats
+	move.l	#$020A,d7
+	bsr	_compareStats
+	addq.l	#1,d2
+	cmpi.l	#3,d2
+	blo	_size
+	add.l	d3,d3
+	cmpi.l	#SLAB_SIZE,d3
+	bls	_alignment
+
+	PHASE 3
+	; Force a non-aligned free-block data address even if the linker
+	; happened to place the next regular allocation on a page boundary.
+	movea.l	original,a0
+	movea.l	bhNext-BLK_HDR_SIZE(a0),a0
+	lea	bhData(a0),a0
+	move.l	a0,d0
+	andi.l	#SLAB_SIZE_MASK,d0
+	bne.s	_prefixReady
+	HALLOC heapH,#0,#32
+	move.l	d0,shiftBlock
+_prefixReady:
+	HALIGNED heapH,#0,#SLAB_SIZE,#SLAB_SIZE,#0
+	EXPECT_NONZERO 1,d0
+	move.l	d0,pAligned
+	movea.l	d0,a0
+	suba.l	#BLK_HDR_SIZE,a0
+	movea.l	bhPrev(a0),a1
+	EXPECT_NONZERO 2,a1
+	move.l	bhFlags(a1),d1
+	andi.l	#FLG_FREE,d1
+	EXPECT_NONZERO 3,d1
+	EXPECT_GE 4,bhSize(a1),2*BLK_HDR_SIZE
+	movea.l	bhNext(a0),a1
+	EXPECT_NONZERO 5,a1
+	move.l	bhFlags(a1),d1
+	andi.l	#FLG_FREE,d1
+	EXPECT_NONZERO 6,d1
+	HVALIDATE heapH,#0
+	EXPECT_Z 7
+	HFREE heapH,pAligned
+	HFREE heapH,shiftBlock
+	clr.l	shiftBlock
+	HSTATS heapH,#afterStats
+	move.l	#$0308,d7
+	bsr	_compareStats
+
+	PHASE 4
+	movea.l	original,a0
+	movea.l	bhNext-BLK_HDR_SIZE(a0),a0
+	lea	bhData(a0),a0
+	move.l	a0,d0
+	andi.l	#SLAB_SIZE_MASK,d0
+	bne.s	_holeReady
+	HALLOC heapH,#0,#32
+	move.l	d0,shiftBlock
+_holeReady:
+	HALLOC heapH,#0,#4096
+	move.l	d0,smallHole
+	HALLOC heapH,#0,#32
+	move.l	d0,separator
+	HALLOC heapH,#0,#12288
+	move.l	d0,bigHole
+	HALLOC heapH,#0,#32
+	move.l	d0,rightGuard
+	EXPECT_NONZERO 1,rightGuard
+	HFREE heapH,bigHole
+	HFREE heapH,smallHole
+	HALIGNED heapH,#0,#4096,#SLAB_SIZE,#padding
+	EXPECT_NONZERO 2,d0
+	move.l	d0,pAligned
+	move.l	bigHole,d1
+	move.l	#$0403,d7
+	cmp.l	d1,d0
+	blo	_tfail
+	addi.l	#4096,d0
+	addi.l	#12288,d1
+	move.l	#$0404,d7
+	cmp.l	d1,d0
+	bhi	_tfail
+	HVALIDATE heapH,#0
+	EXPECT_Z 5
+	HFREE heapH,pAligned
+	HFREE heapH,separator
+	HFREE heapH,rightGuard
+	HFREE heapH,shiftBlock
+	HSTATS heapH,#afterStats
+	move.l	#$0406,d7
+	bsr	_compareStats
+
+	PHASE 5
+	HCREATE #0,#4096
+	EXPECT_NONZERO 1,d0
+	move.l	d0,tinyH
+	move.l	d0,-(sp)
+	jsr	__HeapScbGetOrCreate
+	adda.l	#4,sp
+	EXPECT_NONZERO 2,d0
+	HSTATS tinyH,#beforeStats
+	move.l	#4,-(sp)
+	move.l	tinyH,-(sp)
+	jsr	__HeapArenaCreate
+	adda.l	#8,sp
+	EXPECT_ZERO 3,d0
+	EXPECT_ERR 4,HEAP_ERROR_OUT_OF_MEMORY
+	HSTATS tinyH,#afterStats
+	move.l	#$0505,d7
+	bsr	_compareStats
+	HVALIDATE tinyH,#0
+	EXPECT_Z 6
+	HDESTROY tinyH
+	EXPECT_NONZERO 7,d0
+
+	PHASE 6
+	HCREATE #0,#12288
+	EXPECT_NONZERO 1,d0
+	move.l	d0,smallH
+	move.l	#4,-(sp)
+	move.l	smallH,-(sp)
+	jsr	__HeapArenaCreate
+	adda.l	#8,sp
+	EXPECT_NONZERO 2,d0
+	move.l	d0,arena
+	movea.l	d0,a0
+	moveq	#0,d1
+	move.w	arSlabs(a0),d1
+	EXPECT_EQ 3,d1,1
+	move.l	arBlock(a0),d1
+	EXPECT_EQV 4,arBase(a0),d1
+	move.l	arena,-(sp)
+	move.l	smallH,-(sp)
+	jsr	__HeapArenaRelease
+	adda.l	#8,sp
+	EXPECT_NONZERO 5,d0
+	HVALIDATE smallH,#0
+	EXPECT_Z 6
+	HDESTROY smallH
+	EXPECT_NONZERO 7,d0
+
+	PHASE 7
+	move.l	#100,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapArenaCreate
+	adda.l	#8,sp
+	EXPECT_NONZERO 1,d0
+	move.l	d0,arena
+	movea.l	d0,a0
+	moveq	#0,d1
+	move.w	arSlabs(a0),d1
+	EXPECT_EQ 2,d1,ARENA_MAX_SLABS
+	move.l	arena,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapArenaRelease
+	adda.l	#8,sp
+	EXPECT_NONZERO 3,d0
+	clr.l	-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapArenaCreate
+	adda.l	#8,sp
+	EXPECT_NONZERO 4,d0
+	move.l	d0,arena
+	movea.l	d0,a0
+	moveq	#0,d1
+	move.w	arSlabs(a0),d1
+	EXPECT_EQ 5,d1,1
+	move.l	arena,-(sp)
+	move.l	hMachineHeap,-(sp)
+	jsr	__HeapArenaRelease
+	adda.l	#8,sp
+	EXPECT_NONZERO 6,d0
+	HVALIDATE hMachineHeap,#0
+	EXPECT_Z 7
+
+	PHASE 8
+	HCREATE #NOSOA+HEAP_ENABLE_DEBUG_FILL+HEAP_TAIL_CHECKING_ENABLED,#32768
+	EXPECT_NONZERO 1,d0
+	move.l	d0,debugH
+	HALIGNED debugH,#HEAP_ZERO_MEMORY,#64,#SLAB_SIZE,#padding
+	EXPECT_NONZERO 2,d0
+	move.l	d0,pAligned
+	EXPECT_FILL 3,pAligned,64,CDCDCDCD
+	movea.l	pAligned,a0
+	EXPECT_MAGIC 4,64(a0),HEAP_TAIL
+	clr.l	64(a0)
+	HFREE debugH,pAligned
+	EXPECT_ZERO 5,d0
+	EXPECT_ERR 6,HEAP_ERROR_TAIL_VALIDATION_FAILED
+	movea.l	pAligned,a0
+	move.l	#HEAP_TAIL,64(a0)
+	HFREE debugH,pAligned
+	EXPECT_NONZERO 7,d0
+	HVALIDATE debugH,#0
+	EXPECT_Z 8
+	HDESTROY debugH
+	EXPECT_NONZERO 9,d0
+	HFREE heapH,original
+	HDESTROY heapH
+	EXPECT_NONZERO 10,d0
+	HVALIDATE hMachineHeap,#0
+	EXPECT_Z 11
+	TEST_PASS
+	TEST_EPILOGUE
+
+_compareStats:
+	lea	beforeStats,a0
+	lea	afterStats,a1
+	moveq	#HEAP_STATS_SIZE/4-1,d0
+_compareWord:
+	move.l	(a1)+,d6
+	cmp.l	(a0)+,d6
+	bne	_tfail
+	dbra	d0,_compareWord
+	rts
+
+	.data
+sizes dc.l 1,33,4096
+	.bss
+hMachineHeap ds.l 1
+tResult ds.l 1
+tDetail ds.l 1
+heapH ds.l 1
+tinyH ds.l 1
+smallH ds.l 1
+debugH ds.l 1
+original ds.l 1
+pAligned ds.l 1
+padding ds.l 1
+shiftBlock ds.l 1
+smallHole ds.l 1
+bigHole ds.l 1
+separator ds.l 1
+rightGuard ds.l 1
+arena ds.l 1
+beforeStats ds.b HEAP_STATS_SIZE
+afterStats ds.b HEAP_STATS_SIZE
+heapbuf ds.b HEAPBUFSIZE+BLK_HDR_SIZE
+	.even
+testStack ds.b $4000
+testStackTop ds.l 1
+	end

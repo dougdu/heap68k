@@ -61,19 +61,58 @@ _sovaArLoop:
 	beq	_sovaLists			; arenas done -> class-list checks
 	cmpi.l	#AREN_MAGIC,arMagic(a3)
 	bne	_sovaArenaBad
+	movea.l a3,a0				; descriptor is a live regular block
+	suba.l	#BLK_HDR_SIZE,a0
+	cmpi.l	#BLOCK_MAGIC,bhMagic(a0)
+	bne	_sovaArenaBad
+	btst.b	#FLG_FREE_BIT,bhFlags+3(a0)
+	bne	_sovaArenaBad
+	move.l	bhFlags(a0),d0
+	andi.l	#HEAP_ID_MASK,d0
+	cmp.l	d2,d0
+	bne	_sovaArenaBad
+	cmpi.l	#AREN_HDR_SIZE,bhRequestSize(a0)
+	bne	_sovaArenaBad
 	move.l	arBase(a3),d0			; arBase must be SLAB_SIZE aligned
 	andi.l	#SLAB_SIZE_MASK,d0
+	bne	_sovaArenaBad
+	move.l	arBlock(a3),d0
+	cmp.l	arBase(a3),d0
 	bne	_sovaArenaBad
 	movea.l arBlock(a3),a0			; arBlock's header carries 'BLKH'
 	suba.l	#BLK_HDR_SIZE,a0
 	cmpi.l	#BLOCK_MAGIC,bhMagic(a0)
 	bne	_sovaArenaBad
+	btst.b	#FLG_FREE_BIT,bhFlags+3(a0)
+	bne	_sovaArenaBad
+	move.l	bhFlags(a0),d0
+	andi.l	#HEAP_ID_MASK,d0
+	cmp.l	d2,d0
+	bne	_sovaArenaBad
 	move.w	arSlabUse(a3),d3		; arSlabUse <= arSlabs
 	andi.l	#$0000FFFF,d3			; D3 = arSlabUse
 	move.w	arSlabs(a3),d0
 	andi.l	#$0000FFFF,d0
+	beq	_sovaArenaBad
+	cmpi.l	#ARENA_MAX_SLABS,d0
+	bhi	_sovaArenaBad
 	cmp.l	d0,d3
 	bhi	_sovaArenaBad
+	mulu	#SLAB_SIZE,d0
+	cmp.l	bhRequestSize(a0),d0		; backing request is exact tile payload
+	bne	_sovaArenaBad
+	move.l	arPadding(a3),d1
+	cmpi.l	#BLK_HDR_SIZE,d1
+	bhi	_sovaArenaBad
+	addi.l	#BLK_HDR_SIZE,d0
+	movea.l hHeap,a1
+	btst.b	#FLG_HEAP_ENABLE_TAIL_CHECK,hhFlags+3(a1)
+	beq.s	_sovaBackingNoTail
+	addi.l	#HEAP_TAIL_SIZE,d0
+_sovaBackingNoTail:
+	add.l	d1,d0
+	cmp.l	bhSize(a0),d0
+	bne	_sovaArenaBad
 	; popcount(arTileMap) == arSlabUse
 	move.l	arTileMap(a3),d1
 	moveq	#0,d4				; D4 = popcount

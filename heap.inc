@@ -215,15 +215,16 @@ scbSlabCount    equ     $98             	; number of live slabs
 scbArenaCount   equ     $9C             	; number of arenas
 SCB_HDR_SIZE    equ     $A0             	; size of the SCB
 
-* --- Arena descriptor: SLAB_SIZE-aligned tile backing store ---
+* --- Arena descriptor: separately owned control for aligned tile backing ---
 arMagic         equ     $00             	; 'AREN' magic
-arBlock         equ     $04             	; underlying regular block (for release)
+arBlock         equ     $04             	; aligned regular backing-block data pointer
 arNext          equ     $08             	; next arena in the SCB arena list
 arBase          equ     $0C             	; first SLAB_SIZE-aligned tile address
 arSlabs         equ     $10             	; word: total tiles in this arena
 arSlabUse       equ     $12             	; word: tiles currently in use
 arTileMap       equ     $14             	; long: used/free bitmap (bit i = tile i live)
-AREN_HDR_SIZE   equ     $18             	; size of the arena descriptor
+arPadding       equ     $18             	; unusable aligned-block suffix bytes (0..BLK_HDR_SIZE)
+AREN_HDR_SIZE   equ     $1C             	; size of the separately allocated arena descriptor
 
 * --- Slab header: at each SLAB_SIZE-aligned tile ---
 slMagic         equ     $00             	; 'SLAB' magic (free-path discriminator)
@@ -254,6 +255,7 @@ SOA_WALK_CURSOR_SIZE equ $0C            	; size of the walk cursor
 * SOA function prototypes (Phase 1)
 ************************************************************************
 __HeapScbGetOrCreate		PROTO	, hHeap:DWORD
+__HeapAllocAligned		PROTO	, hHeap:DWORD, lFlags:DWORD, lBytes:DWORD, lAlignment:DWORD, pPadding:DWORD
 __HeapArenaCreate		PROTO	, hHeap:DWORD, nTiles:DWORD
 __HeapArenaRelease		PROTO	, hHeap:DWORD, arena:DWORD
 __HeapSlabCreate		PROTO	, hHeap:DWORD, cls:DWORD

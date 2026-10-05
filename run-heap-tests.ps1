@@ -21,18 +21,21 @@
 #>
 [CmdletBinding()]
 param(
-    [string[]] $Modules    = @('stub', 'test_kit', 'test_create', 'test_block', 'test_soa', 'test_debug', 'test_errors', 'test_stress', 'test_edges'),
+    [string[]] $Modules    = @('stub', 'test_kit', 'test_create', 'test_block', 'test_soa', 'test_debug', 'test_errors', 'test_stress', 'test_edges', 'test_aligned'),
     [int]      $TimeoutSec = 20,        # per-module watchdog (storm/hang cutoff)
     [int]      $Port       = 1234,
-    [switch]   $NoBuild
+    [switch]   $NoBuild,
+    [string]   $Sim = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\sim68k.exe',
+    [string]   $Gdb = 'C:\SysGCC\m68k-elf\bin\m68k-elf-gdb.exe',
+    [string]   $ReportPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 
-$Sim       = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\sim68k.exe'
-$Gdb       = 'C:\SysGCC\m68k-elf\bin\m68k-elf-gdb.exe'
 $GdbScript = Join-Path $PSScriptRoot 'heaptest.gdb'
+$Modules = @($Modules | ForEach-Object { $_ -split ',' } | Where-Object { $_ })
+if ($ReportPath) { $ReportPath = [IO.Path]::GetFullPath($ReportPath) }
 
 foreach ($tool in @($Sim, $Gdb, $GdbScript)) {
     if (-not (Test-Path -LiteralPath $tool)) { Write-Error "missing: $tool"; exit 255 }
@@ -58,8 +61,18 @@ function Get-ResultNote([string]$module, [string]$res) {
     return ('phase {0}, check 0x{1:X2}' -f $pp, $cc)
 }
 
-function Stop-AllSim {
-    Get-Process sim68k -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+function Stop-OwnedProcess($process) {
+    if ($null -eq $process) { return }
+    if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+    $process.WaitForExit()
+    $process.Dispose()
+}
+
+function Assert-PortFree([int]$p) {
+    $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $p)
+    try { $listener.Start() }
+    catch [Net.Sockets.SocketException] { throw "heap tests: port $p is already in use" }
+    finally { $listener.Stop() }
 }
 
 function Wait-Port([int]$p, [int]$timeoutMs = 5000) {
@@ -68,27 +81,21 @@ function Wait-Port([int]$p, [int]$timeoutMs = 5000) {
         $c = [System.Net.Sockets.TcpClient]::new()
         try {
             if ($c.ConnectAsync('127.0.0.1', $p).Wait(200)) { $c.Close(); return $true }
-        } catch { }
+        } catch [AggregateException] {
+            if ($_.Exception.InnerException -isnot [Net.Sockets.SocketException] -or
+                $_.Exception.InnerException.SocketErrorCode -ne [Net.Sockets.SocketError]::ConnectionRefused) {
+                throw
+            }
+        }
         finally { $c.Dispose() }
         Start-Sleep -Milliseconds 100
     }
     return $false
 }
 
-# Wait until the RSP port stops accepting connections, i.e. a previous sim has
-# fully released it, so we never attach gdb to a dying sim on a stale port.
-function Wait-PortFree([int]$p, [int]$timeoutMs = 3000) {
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    while ($sw.ElapsedMilliseconds -lt $timeoutMs) {
-        $c = [System.Net.Sockets.TcpClient]::new()
-        try {
-            if (-not $c.ConnectAsync('127.0.0.1', $p).Wait(150)) { return $true }   # timed out -> free
-            $c.Close()                                                             # still open -> wait
-        } catch { return $true }                                                   # refused/threw -> free
-        finally { $c.Dispose() }
-        Start-Sleep -Milliseconds 100
-    }
-    return $false
+function Record([string]$path) {
+    $file = Get-Item $path
+    return [ordered]@{ path=$file.FullName; bytes=$file.Length; sha256=(Get-FileHash $path -Algorithm SHA256).Hash }
 }
 
 if (-not $NoBuild) {
@@ -100,8 +107,18 @@ if (-not $NoBuild) {
     }
 }
 
-Stop-AllSim
 $results = @()
+$simProc = $null
+$gdbProc = $null
+$temporaryFiles = [Collections.Generic.List[string]]::new()
+$commands = [IO.Path]::GetTempFileName()
+$temporaryFiles.Add($commands)
+$scriptLines = @(Get-Content $GdbScript)
+if (@($scriptLines | Where-Object { $_ -match '^target remote ' }).Count -ne 1) {
+    throw 'heap tests: expected exactly one RSP endpoint in heaptest.gdb'
+}
+$scriptLines -replace '^target remote .+$', "target remote 127.0.0.1:$Port" |
+    Set-Content $commands -Encoding ascii
 
 try {
 foreach ($m in $Modules) {
@@ -111,35 +128,50 @@ foreach ($m in $Modules) {
         continue
     }
 
-    Stop-AllSim
-    [void] (Wait-PortFree $Port 3000)
+    Assert-PortFree $Port
     $simOut = [System.IO.Path]::GetTempFileName()
+    $temporaryFiles.Add($simOut)
+    $temporaryFiles.Add("$simOut.err")
     $simProc = Start-Process -FilePath $Sim -ArgumentList '--gdb', "$Port" `
                  -PassThru -WindowStyle Hidden -RedirectStandardOutput $simOut -RedirectStandardError "$simOut.err"
 
     if (-not (Wait-Port $Port 5000)) {
-        try { $simProc | Stop-Process -Force } catch { }
+        Stop-OwnedProcess $simProc
+        $simProc = $null
         Remove-Item $simOut, "$simOut.err" -ErrorAction SilentlyContinue
         $results += [pscustomobject]@{ Module=$m; Status='NOSIM'; Result='--------'; Detail='--------'; Note="RSP port $Port did not open" }
         continue
     }
 
     $gdbOut = [System.IO.Path]::GetTempFileName()
-    $gdbProc = Start-Process -FilePath $Gdb -ArgumentList $elf, '-nx', '--batch', '-x', $GdbScript `
+    $temporaryFiles.Add($gdbOut)
+    $temporaryFiles.Add("$gdbOut.err")
+    $gdbProc = Start-Process -FilePath $Gdb -ArgumentList $elf, '-nx', '--batch', '-x', $commands `
              -PassThru -WindowStyle Hidden -RedirectStandardOutput $gdbOut -RedirectStandardError "$gdbOut.err"
 
     $exited = $gdbProc.WaitForExit($TimeoutSec * 1000)
     if (-not $exited) {
-        try { $gdbProc | Stop-Process -Force } catch { }
-        try { $simProc | Stop-Process -Force } catch { }
+        Stop-OwnedProcess $gdbProc
+        $gdbProc = $null
+        Stop-OwnedProcess $simProc
+        $simProc = $null
         Remove-Item $simOut, "$simOut.err", $gdbOut, "$gdbOut.err" -ErrorAction SilentlyContinue
         $results += [pscustomobject]@{ Module=$m; Status='TIMEOUT'; Result='--------'; Detail='--------'; Note="watchdog > $TimeoutSec s (storm/hang)" }
         continue
     }
     $gdbProc.WaitForExit()   # ensure redirected streams are flushed
 
-    $out = (Get-Content $gdbOut -Raw -ErrorAction SilentlyContinue) + "`n" + (Get-Content "$gdbOut.err" -Raw -ErrorAction SilentlyContinue)
-    try { $simProc | Stop-Process -Force } catch { }
+    $gdbExit = $gdbProc.ExitCode
+    $out = (Get-Content $gdbOut -Raw) + "`n" + (Get-Content "$gdbOut.err" -Raw)
+    if ($ReportPath) {
+        $logDir = Join-Path (Split-Path $ReportPath -Parent) 'logs'
+        New-Item -ItemType Directory -Force $logDir | Out-Null
+        [IO.File]::WriteAllText((Join-Path $logDir "$m-gdb.log"), $out)
+    }
+    Stop-OwnedProcess $gdbProc
+    $gdbProc = $null
+    Stop-OwnedProcess $simProc
+    $simProc = $null
     Remove-Item $simOut, "$simOut.err", $gdbOut, "$gdbOut.err" -ErrorAction SilentlyContinue
 
     $mt = [regex]::Match($out, 'RESULT=([0-9a-fA-F]{8})\s+DETAIL=([0-9a-fA-F]{8})')
@@ -153,16 +185,20 @@ foreach ($m in $Modules) {
 
     $res = $mt.Groups[1].Value.ToUpper()
     $det = $mt.Groups[2].Value.ToUpper()
-    if ($res -eq '00000000') {
-        $results += [pscustomobject]@{ Module=$m; Status='PASS'; Result=$res; Detail=$det; Note='' }
+    if ($res -eq '00000000' -and $gdbExit -eq 0) {
+        $results += [pscustomobject]@{ Module=$m; Status='PASS'; Result=$res; Detail=$det; Note=''; Elf=Record $elf; Source=Record "$m.a68"; GdbExit=$gdbExit }
     } else {
-        $note = Get-ResultNote $m $res
-        $results += [pscustomobject]@{ Module=$m; Status='FAIL'; Result=$res; Detail=$det; Note=$note }
+        $note = if ($gdbExit) { "gdb exit $gdbExit" } else { Get-ResultNote $m $res }
+        $results += [pscustomobject]@{ Module=$m; Status='FAIL'; Result=$res; Detail=$det; Note=$note; Elf=Record $elf; Source=Record "$m.a68"; GdbExit=$gdbExit }
     }
 }
 }
 finally {
-    Stop-AllSim
+    Stop-OwnedProcess $gdbProc
+    Stop-OwnedProcess $simProc
+    foreach ($file in $temporaryFiles) {
+        if (Test-Path -LiteralPath $file) { Remove-Item -LiteralPath $file -Force }
+    }
 }
 
 Write-Host ''
@@ -170,4 +206,20 @@ $results | Format-Table -AutoSize Module, Status, Result, Detail, Note | Out-Str
 $pass = @($results | Where-Object { $_.Status -eq 'PASS' }).Count
 $fail = @($results | Where-Object { $_.Status -ne 'PASS' }).Count
 Write-Host ("heap tests: {0} passed, {1} failed, {2} total" -f $pass, $fail, $results.Count)
+if ($ReportPath) {
+    $sources = @(Get-ChildItem $PSScriptRoot -File | Where-Object {
+        ($_.Extension -eq '.a68' -and $_.Name -notlike '*Test.a68' -and
+         ($_.Name -like 'Heap*' -or $_.Name -like 'GetMachine*')) -or $_.Name -eq 'heap.inc'
+    } | Sort-Object Name | ForEach-Object { Record $_.FullName })
+    $report = [ordered]@{
+        schema=1;phase='NM1-upstream';port=$Port;passed=$pass;failed=$fail;total=$results.Count
+        simulator=Record $Sim;gdb=Record $Gdb;runner=Record $PSCommandPath
+        gdbScript=Record $GdbScript;testKit=Record (Join-Path $PSScriptRoot 'heaptestkit.inc')
+        library=Record (Join-Path $PSScriptRoot 'libheap-elf.a')
+        librarySources=$sources
+        tests=$results
+    }
+    New-Item -ItemType Directory -Force (Split-Path $ReportPath -Parent) | Out-Null
+    $report | ConvertTo-Json -Depth 8 | Set-Content $ReportPath -Encoding UTF8
+}
 exit $fail
