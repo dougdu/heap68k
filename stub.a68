@@ -5,7 +5,7 @@
 *  Minimal self-contained heap test that proves the automated harness
 *  end to end: initialize a machine heap in our own BSS (no CP/M base
 *  page), make a couple of trivial assertions, and converge on the
-*  shared result protocol (see HEAP_TEST_SUITE_DESIGN.md §7).
+*  shared result protocol (see docs/HEAP_TEST_SUITE_DESIGN.md §7).
 *
 *  Result convention (read at the _tdone breakpoint by heaptest.gdb):
 *    tResult = 0          -> all checks passed

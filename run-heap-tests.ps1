@@ -1,5 +1,5 @@
 <#
-    run-heap-tests.ps1 — automated heap test runner (see HEAP_TEST_SUITE_DESIGN.md §10).
+    run-heap-tests.ps1 — automated heap test runner (see docs/HEAP_TEST_SUITE_DESIGN.md §10).
 
     For each test module it:
       1. starts a fresh `sim68k --gdb` RSP stub,
