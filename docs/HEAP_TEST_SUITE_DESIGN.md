@@ -13,6 +13,8 @@ clamping, and zero/debug/tail semantics. The complete suite passes 10/10.
 live in `test/`; library sources and the public include live in `src/`. Library
 object files and archives remain in the repository root.
 
+ELF is the only supported library object format; COFF build support is retired.
+
 ---
 
 ## Table of Contents
@@ -58,8 +60,7 @@ localization and no human in the loop.
 
 **Out of scope:**
 - Micro-benchmarking / cycle-accurate performance (only coarse `__HeapStats` snapshots).
-- COFF/macOS **archiving/execution** on the Windows host (pre-existing `m68k-coff-ar`
-  crash; ELF is the reference platform — §14 R8).
+- macOS **archiving/execution** on the Windows host (§14 R8).
 - Concurrency (the library is single-threaded, no locking).
 - Testing the assembler or the simulator themselves.
 
@@ -121,7 +122,7 @@ Two test artifacts exist today; neither is a maintainable automated **suite**.
 
 **Non-Goals**
 - Performance benchmarking beyond `__HeapStats` snapshots.
-- COFF/macOS archiving or execution on the Windows host (§14 R8).
+- macOS archiving or execution on the Windows host (§14 R8).
 - Fuzzing the assembler/simulator; concurrency testing.
 
 ---
@@ -486,8 +487,8 @@ the process using it. The default per-module watchdog remains 20 seconds.
 - `test\heaptestkit.inc` sits beside the test modules; the public include is
   `src\heap.inc`. Test assembly rules search both the `src/` and `test/` include
   directories, and each module `include`s both files.
-- Mirror the targets into `makefile-coff` / `makefile.macos` for source parity, carrying
-  the known caveats (COFF `ar` crash; macOS not host-buildable — §14 R8).
+- Mirror the targets into `makefile.macos` for ELF source parity, carrying the known
+  caveat that the macOS toolchain is not host-buildable on Windows (§14 R8).
 - Keep artifacts git-ignored (`*.elf`, `*.o`, `*.lst`, `*.68k`).
 
 ---
@@ -662,8 +663,8 @@ heap68k/
       per-module override table; no more "unknown code".  Robust teardown (`try/finally` always
       kills the sim), a **port-free wait** before each module (never attach to a dying sim on a
       stale port), and a `NORESULT` hint from the gdb output.  Quick-start documented in §10.4.
-- [ ] Not done (deferred): mirroring the `tests`/`test` targets into `makefile-coff` /
-      `makefile.macos` (COFF `ar` is broken on this host and macOS is not host-buildable — §14 R8).
+- [ ] Not done (deferred): mirroring the `tests`/`test` targets into `makefile.macos`
+      (the macOS toolchain is not host-buildable on Windows — §14 R8).
 
 ### Phase 8 — Coverage audit & backfill  ✅ (2026-07-21)
 - [x] Walked the §9 matrix against every module; every row now has an implemented, passing case.
@@ -694,7 +695,7 @@ heap68k/
 | R5 | Non-determinism (RNG/timing) breaks golden checks | flaky | Fixed-seed LCG (C4); sim FDC forced sync under `--gdb`; fixed heap base/size |
 | R6 | Debug-fill vs `ZERO_MEMORY` precedence surprises (the `$CDCDCDCD` SCB-init class of bug) | false failures / crashes | Encode the precedence in tests; explicit-zero where required; cover both flag orders |
 | R7 | SOA authoring traps (dirtying a free cell; last-cell free releases the arena under debug-fill) | self-inflicted crash | `ANCHOR_CELL`/`DIRTY_BODY` helpers (§8); documented in the kit (C7) |
-| R8 | COFF/macOS can't archive/run on the Windows host | partial platforms | ELF is the reference/CI platform; COFF/macOS best-effort (pre-existing `m68k-coff-ar` crash) |
+| R8 | macOS toolchain can't archive/run on the Windows host | host-specific builds | Windows ELF is the reference/CI platform; macOS ELF builds require a macOS host |
 | R9 | Coverage rot as the library evolves | silent gaps | Keep the §9 matrix in lockstep; `nmake test` in CI; Phase 8 audit |
 | R10 | Legacy `HeapTest.a68` base-page dependency | can't run headless | New suite is self-contained; legacy driver retained only as an optional CP/M-hosted integration test |
 

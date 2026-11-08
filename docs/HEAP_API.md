@@ -63,6 +63,9 @@ The Heap API is a dynamic memory management library for the Motorola 68000 famil
 
 The implementation lives in `src/` and is split across individual `.a68` source files, one per function, assembled to ELF object files and linked into `libheap-elf.a`. Public constants, structures, and API prototypes are in `src/heap.inc`. Library object files and archives are built in the repository root.
 
+ELF is the only supported object format. Build with [makefile-elf](../makefile-elf)
+on Windows or [makefile.macos](../makefile.macos) on macOS.
+
 ---
 
 ## 2. Architecture and Internal Structures

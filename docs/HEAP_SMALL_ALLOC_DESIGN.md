@@ -460,8 +460,8 @@ New source files (mirroring the one-function-per-file convention):
 | `HeapArena.a68`       | `__HeapArenaCreate`, `__HeapArenaRelease` |
 | `HeapSmallCtl.a68`    | `__HeapScbGetOrCreate`, class list helpers, SOA stats |
 
-Each is added to `HEAP_ELF_OBJS` and to the ELF/COFF/macOS makefiles with the same
-`heap.inc` dependency line as existing objects.
+Each is added to the Windows `HEAP_ELF_OBJS` and macOS `HEAP_OBJS` lists in the
+ELF makefiles, with the same `src/heap.inc` dependency line as existing objects.
 
 ---
 
@@ -684,9 +684,11 @@ Randomized alloc/free/realloc across sizes 1..4096 with mixed heaps, interleaved
 vs. the legacy allocator on the same seed.
 
 ### 12.4 Build/CI
-All three makefiles (`makefile-elf`, `makefile-coff`, `makefile.macos`) build clean; new
-objects link into `libheap-elf.a`; `heaptest.elf` runs the suite. **Rebuild everything** when
-touching `heap.inc` (a shared header change invalidates all objects).
+ELF is the only supported object format; the COFF build has been retired.
+The Windows `makefile-elf` and macOS `makefile.macos` carry the same library objects.
+`nmake /f makefile-elf test` builds and runs the automated ELF suite.
+**Rebuild everything** when touching `src/heap.inc` (a shared header change invalidates
+all objects).
 
 ### 12.5 Observability — sid68k `!heap -p`
 The `!heap -p [handle]` command ([`HeapDebugExt.cpp`](../../../sid68k/sid68k/HeapDebugExt.cpp))
@@ -752,7 +754,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 | Phase | Title | Status | Exit criteria |
 |------:|-------|:------:|---------------|
 | A | Analysis & this spec | ✅ | Spec reviewed & accepted |
-| 0 | Measurement baseline & constants | ✅ | Constants/flag/errors + `__HeapStats` in `heap.inc`; ELF builds green & `heaptest.elf` links. COFF archiving deferred (pre-existing `ar` crash); macOS not host-buildable |
+| 0 | Measurement baseline & constants | ✅ | Constants/flag/errors + `__HeapStats` in `heap.inc`; ELF builds green & `heaptest.elf` links; macOS not host-buildable |
 | 1 | SOA data structures & primitives | ✅ | SCB/arena/slab create + `__HeapSlabFromPtr` unit-tested (`heapsmalltest.elf` passes under sim68k); no API routing yet |
 | 2 | Allocation path | ✅ | `_HeapAlloc` routes small (gated `SOA_ROUTE`, off in P2-5); fill/zero correct; falls back on failure; `heapsmalltest.elf` Phase 6 passes |
 | 3 | Free path | ✅ | `_HeapFree` discriminates & frees cells; double-free & cross-heap detected; `heapsmalltest.elf` Phase 7 passes |
@@ -760,7 +762,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 | 5 | Validation, Walk, Compact | ✅ | `_HeapValidate` covers SOA; `__HeapSoaWalk` enumerates cells; `_HeapCompact` releases empties; `heapsmalltest.elf` Phase 9 passes |
 | 6 | Default-on, docs, tooling, tuning | ✅ | Opt-out default; `HEAP_API.md` updated; sid68k `!heap` SOA-aware; stats confirm ≥ 2× (≥ 4× ≤32B) win |
 
-### Phase 0 — Measurement baseline & constants  ✅ (ELF; COFF/macOS deferred)
+### Phase 0 — Measurement baseline & constants  ✅ (ELF; macOS deferred)
 - [x] Add SOA constants, magics, `FLG_HEAP_DISABLE_SMALL_POOL`, `__HeapSoaClassTbl`, and appended
       error codes to [heap.inc](../src/heap.inc) (values only; no behavior). Class table emitted in
       [HeapData.a68](../src/HeapData.a68) as `__HeapSoaClassTbl` (data, not the shared include).
@@ -769,10 +771,11 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
       free/overhead totals, largest free block, and a request-size histogram (`HEAP_STATS`).
 - [x] Extend [HeapTest.a68](../test/HeapTest.a68) with a scripted small-allocation mix + `__HeapStats` snapshot.
 - [x] `makefile-elf` builds clean; `libheap-elf.a` + `heaptest.elf` produced (nmake).
-- [~] `makefile-coff`: all objects assemble under `/coff`; **archiving deferred** — `m68k-coff-ar.exe`
-      (GNU ar 2.16.1) crashes (`0xC0000005`) on the multi-object list, reproduced without the new
-      object. Pre-existing host/tool issue (known issue #11).
 - [~] `makefile.macos`: corrected `-Cu` → `-Cx`; not buildable on the Windows host (macOS toolchain).
+
+> Historical note: the retired COFF backend assembled its objects, but
+> `m68k-coff-ar.exe` (GNU ar 2.16.1) crashed (`0xC0000005`) on the multi-object
+> list, including without the new object. COFF support is no longer pending work.
 
 ### Phase 1 — SOA data structures & primitives  ✅ (2026-07-21)
 - [x] Create `HeapSmallCtl.a68`: `__HeapScbGetOrCreate`, class list head helpers (`__HeapClassListPush`/`__HeapClassListUnlink`).
@@ -783,7 +786,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
       arena create, slab create + free-list walk, and `__HeapSlabFromPtr` recognition (valid / mid-cell / out-of-range /
       foreign) all pass (`tResult=0`) under sim68k `--gdb` + sid68k. **Run:** `sim68k --gdb` then
       `G 500,A58,A4C` in `sid68k heapsmalltest.elf` (start addr **required**; A58=`_tdone`, A4C=`_tfail`).
-- [x] Add new objects to `HEAP_ELF_OBJS` and all makefiles (ELF green; COFF/macOS carry the same Phase 0 caveats).
+- [x] Add new objects to both ELF makefiles (Windows ELF green; macOS carries the same Phase 0 caveat).
 
 ### Phase 2 — Allocation path  ✅ (2026-07-21)
 - [x] Create [`HeapSmallAlloc.a68`](../src/HeapSmallAlloc.a68): `__HeapSoaAlloc` (§9.3) — get/create SCB, pick a
@@ -799,8 +802,8 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 - [x] Tests: `HeapSmallTest.a68` Phase 6 — basic alloc + `__HeapSlabFromPtr` recognition + class, adjacent
       cells + live-cell stats, whole-cell zero-fill (free-list control word preserved), fill-to-full →
       Partial→Full + new slab, and a 16-class sweep. All pass (`tResult=0`) under sim68k.
-- [x] Add `HeapSmallAlloc.o` to `HEAP_ELF_OBJS` and all three makefiles (also back-filled the Phase 1
-      SOA objects into `makefile-coff`/`makefile.macos` for consistency).
+- [x] Add `HeapSmallAlloc.o` to both ELF makefiles (also back-filled the Phase 1
+      SOA objects into `makefile.macos` for consistency).
 
 ### Phase 3 — Free path  ✅ (2026-07-21)
 - [x] Create [`HeapSmallFree.a68`](../src/HeapSmallFree.a68): `__HeapSoaFree` (§9.4) — compute cell index, push
