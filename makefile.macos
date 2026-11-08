@@ -11,7 +11,7 @@
 REPOROOT  ?= $(shell cd ../../../.. && pwd)
 ASM       = $(REPOROOT)/68kTools/builds/macos/bin/asm68k
 ELF_FLAGS =-Cx -elf -Fl -Fm -nologo
-AINC      =-I.
+AINC      =-Isrc
 LD        = $(REPOROOT)/tools/ld
 LDSCRIPT  = $(REPOROOT)/tools/cpm68k.ld
 AR        = $(REPOROOT)/tools/ar
@@ -20,8 +20,8 @@ SIM68KDIR = $(REPOROOT)/68kTools/sim68k
 LIBDIR    = $(REPOROOT)/lib
 INCDIR    = $(REPOROOT)/include
 
-.a68.o:
-	$(ASM) $(ELF_FLAGS) $(AINC) -c $<
+%.o: src/%.a68
+	$(ASM) $(ELF_FLAGS) $(AINC) -Fo$@ -Fl$(@:.o=.lst) -c $<
 
 test/%.o: test/%.a68
 	$(ASM) $(ELF_FLAGS) $(AINC) -Itest -Fo$@ -Fl$(@:.o=.lst) -c $<
@@ -42,7 +42,7 @@ all: libheap.a test/heaptest.68k
 
 libheap.a: $(HEAP_OBJS)
 	$(AR) -rscv libheap.a $^
-	cp Heap.inc $(INCDIR)
+	cp src/heap.inc $(INCDIR)
 	cp libheap.a $(LIBDIR)
 
 test/heaptest.68k: test/HeapTest.o libheap.a
@@ -50,40 +50,40 @@ test/heaptest.68k: test/HeapTest.o libheap.a
 	cp $@ $(SIM68KDIR)
 
 # Dependencies for Heap source
-GetMachineHeap.o: GetMachineHeap.a68
-GetMachineHeaps.o: GetMachineHeaps.a68
-HeapAlloc.o: HeapAlloc.a68 heap.inc
-HeapAutoValidateFlagCheck.o: HeapAutoValidateFlagCheck.a68 heap.inc
-HeapCoalesce.o: HeapCoalesce.a68 heap.inc
-HeapCompact.o: HeapCompact.a68 heap.inc
-HeapCreate.o: HeapCreate.a68 heap.inc
-HeapData.o: HeapData.a68 heap.inc
-HeapDebugFillOnFree.o: HeapDebugFillOnFree.a68 heap.inc
-HeapDestroy.o: HeapDestroy.a68 heap.inc
-HeapFree.o: HeapFree.a68 heap.inc
-HeapGetError.o: HeapGetError.a68
-HeapInitialize.o: HeapInitialize.a68 heap.inc
-HeapInvalidateBlockHeader.o: HeapInvalidateBlockHeader.a68 heap.inc
-HeapReAlloc.o: HeapReAlloc.a68 heap.inc
-HeapSize.o: HeapSize.a68 heap.inc
-HeapStats.o: HeapStats.a68 heap.inc
-HeapUnlinkFromBlockChain.o: HeapUnlinkFromBlockChain.a68 heap.inc
-HeapUnlinkFromFreeBlockChain.o: HeapUnlinkFromFreeBlockChain.a68 heap.inc
-HeapValidate.o: HeapValidate.a68 heap.inc
-HeapValidateHandle.o: HeapValidateHandle.a68 heap.inc
-HeapWalk.o: HeapWalk.a68 heap.inc
-HeapSmallCtl.o: HeapSmallCtl.a68 heap.inc
-HeapArena.o: HeapArena.a68 heap.inc
-HeapSlab.o: HeapSlab.a68 heap.inc
-HeapSmallAlloc.o: HeapSmallAlloc.a68 heap.inc
-HeapSmallFree.o: HeapSmallFree.a68 heap.inc
-HeapSmallReAlloc.o: HeapSmallReAlloc.a68 heap.inc
-HeapSmallValidate.o: HeapSmallValidate.a68 heap.inc
-HeapSmallCompact.o: HeapSmallCompact.a68 heap.inc
-HeapSmallWalk.o: HeapSmallWalk.a68 heap.inc
+GetMachineHeap.o: src/GetMachineHeap.a68 src/heap.inc makefile.macos
+GetMachineHeaps.o: src/GetMachineHeaps.a68 src/heap.inc makefile.macos
+HeapAlloc.o: src/HeapAlloc.a68 src/heap.inc makefile.macos
+HeapAutoValidateFlagCheck.o: src/HeapAutoValidateFlagCheck.a68 src/heap.inc makefile.macos
+HeapCoalesce.o: src/HeapCoalesce.a68 src/heap.inc makefile.macos
+HeapCompact.o: src/HeapCompact.a68 src/heap.inc makefile.macos
+HeapCreate.o: src/HeapCreate.a68 src/heap.inc makefile.macos
+HeapData.o: src/HeapData.a68 src/heap.inc makefile.macos
+HeapDebugFillOnFree.o: src/HeapDebugFillOnFree.a68 src/heap.inc makefile.macos
+HeapDestroy.o: src/HeapDestroy.a68 src/heap.inc makefile.macos
+HeapFree.o: src/HeapFree.a68 src/heap.inc makefile.macos
+HeapGetError.o: src/HeapGetError.a68 makefile.macos
+HeapInitialize.o: src/HeapInitialize.a68 src/heap.inc makefile.macos
+HeapInvalidateBlockHeader.o: src/HeapInvalidateBlockHeader.a68 src/heap.inc makefile.macos
+HeapReAlloc.o: src/HeapReAlloc.a68 src/heap.inc makefile.macos
+HeapSize.o: src/HeapSize.a68 src/heap.inc makefile.macos
+HeapStats.o: src/HeapStats.a68 src/heap.inc makefile.macos
+HeapUnlinkFromBlockChain.o: src/HeapUnlinkFromBlockChain.a68 src/heap.inc makefile.macos
+HeapUnlinkFromFreeBlockChain.o: src/HeapUnlinkFromFreeBlockChain.a68 src/heap.inc makefile.macos
+HeapValidate.o: src/HeapValidate.a68 src/heap.inc makefile.macos
+HeapValidateHandle.o: src/HeapValidateHandle.a68 src/heap.inc makefile.macos
+HeapWalk.o: src/HeapWalk.a68 src/heap.inc makefile.macos
+HeapSmallCtl.o: src/HeapSmallCtl.a68 src/heap.inc makefile.macos
+HeapArena.o: src/HeapArena.a68 src/heap.inc makefile.macos
+HeapSlab.o: src/HeapSlab.a68 src/heap.inc makefile.macos
+HeapSmallAlloc.o: src/HeapSmallAlloc.a68 src/heap.inc makefile.macos
+HeapSmallFree.o: src/HeapSmallFree.a68 src/heap.inc makefile.macos
+HeapSmallReAlloc.o: src/HeapSmallReAlloc.a68 src/heap.inc makefile.macos
+HeapSmallValidate.o: src/HeapSmallValidate.a68 src/heap.inc makefile.macos
+HeapSmallCompact.o: src/HeapSmallCompact.a68 src/heap.inc makefile.macos
+HeapSmallWalk.o: src/HeapSmallWalk.a68 src/heap.inc makefile.macos
 
 # Test harness
-test/HeapTest.o: test/HeapTest.a68 heap.inc libheap.a makefile.macos
+test/HeapTest.o: test/HeapTest.a68 src/heap.inc libheap.a makefile.macos
 
 clean:
 	rm -f *.68k *.a *.o *.lst

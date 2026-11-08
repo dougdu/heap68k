@@ -6,7 +6,7 @@
 *  supplied HEAP_STATS structure with allocation accounting plus a
 *  request-size histogram.  This is a read-only measurement aid used
 *  to quantify small-allocation overhead/waste (see
-*  docs/HEAP_SMALL_ALLOC_DESIGN.md, Phase 0).  It does not modify the heap.
+*  ../docs/HEAP_SMALL_ALLOC_DESIGN.md, Phase 0).  It does not modify the heap.
 *
 ************************************************************************
 *  PARAMETERS

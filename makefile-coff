@@ -10,7 +10,7 @@
 
 ASM       =C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe
 COFF_FLAGS=/Cx /coff /Fl /Fm /Zi /nologo
-AINC      =/I.
+AINC      =/Isrc
 LD        =C:\git\worm68k\tools\coff\m68k-coff-ld.exe
 LDSCRIPT  =C:\git\worm68k\tools\cpm68k-coff.ld
 AR        =C:\git\worm68k\tools\coff\m68k-coff-ar.exe
@@ -19,8 +19,8 @@ BINDIR    =C:\git\worm68k\bin
 LIBDIR    =C:\git\worm68k\lib
 INCDIR    =C:\git\worm68k\include
 
-.a68.obj:
-	$(ASM) $(COFF_FLAGS) $(AINC) /c $<
+{src}.a68.obj:
+	$(ASM) $(COFF_FLAGS) $(AINC) /Fo$@ /Fl$(@R).lst /c $<
 
 {test}.a68{test}.obj:
 	$(ASM) $(COFF_FLAGS) $(AINC) /Itest /Fo$@ /Fl$(@R).lst /c $<
@@ -40,7 +40,7 @@ all: libheap-coff.a test\heaptest.cof
 
 libheap-coff.a: $(HEAP_COFF_OBJS)
 	$(AR) -rscv libheap-coff.a $**
-	copy Heap.inc $(INCDIR)
+	copy src\heap.inc $(INCDIR)
 	copy libheap-coff.a $(LIBDIR)
 
 test\heaptest.cof: test\HeapTest.obj libheap-coff.a
@@ -48,40 +48,40 @@ test\heaptest.cof: test\HeapTest.obj libheap-coff.a
 	copy $@ $(BINDIR)
 
 # Dependencies for COFF objects
-GetMachineHeap.obj: GetMachineHeap.a68
-GetMachineHeaps.obj: GetMachineHeaps.a68
-HeapAlloc.obj: HeapAlloc.a68 heap.inc
-HeapAutoValidateFlagCheck.obj: HeapAutoValidateFlagCheck.a68 heap.inc
-HeapCoalesce.obj: HeapCoalesce.a68 heap.inc
-HeapCompact.obj: HeapCompact.a68 heap.inc
-HeapCreate.obj: HeapCreate.a68 heap.inc
-HeapData.obj: HeapData.a68 heap.inc
-HeapDebugFillOnFree.obj: HeapDebugFillOnFree.a68 heap.inc
-HeapDestroy.obj: HeapDestroy.a68 heap.inc
-HeapFree.obj: HeapFree.a68 heap.inc
-HeapGetError.obj: HeapGetError.a68
-HeapInitialize.obj: HeapInitialize.a68 heap.inc
-HeapInvalidateBlockHeader.obj: HeapInvalidateBlockHeader.a68 heap.inc
-HeapReAlloc.obj: HeapReAlloc.a68 heap.inc
-HeapSize.obj: HeapSize.a68 heap.inc
-HeapStats.obj: HeapStats.a68 heap.inc
-HeapUnlinkFromBlockChain.obj: HeapUnlinkFromBlockChain.a68 heap.inc
-HeapUnlinkFromFreeBlockChain.obj: HeapUnlinkFromFreeBlockChain.a68 heap.inc
-HeapValidate.obj: HeapValidate.a68 heap.inc
-HeapValidateHandle.obj: HeapValidateHandle.a68 heap.inc
-HeapWalk.obj: HeapWalk.a68 heap.inc
-HeapSmallCtl.obj: HeapSmallCtl.a68 heap.inc
-HeapArena.obj: HeapArena.a68 heap.inc
-HeapSlab.obj: HeapSlab.a68 heap.inc
-HeapSmallAlloc.obj: HeapSmallAlloc.a68 heap.inc
-HeapSmallFree.obj: HeapSmallFree.a68 heap.inc
-HeapSmallReAlloc.obj: HeapSmallReAlloc.a68 heap.inc
-HeapSmallValidate.obj: HeapSmallValidate.a68 heap.inc
-HeapSmallCompact.obj: HeapSmallCompact.a68 heap.inc
-HeapSmallWalk.obj: HeapSmallWalk.a68 heap.inc
+GetMachineHeap.obj: src\GetMachineHeap.a68 src\heap.inc makefile-coff
+GetMachineHeaps.obj: src\GetMachineHeaps.a68 src\heap.inc makefile-coff
+HeapAlloc.obj: src\HeapAlloc.a68 src\heap.inc makefile-coff
+HeapAutoValidateFlagCheck.obj: src\HeapAutoValidateFlagCheck.a68 src\heap.inc makefile-coff
+HeapCoalesce.obj: src\HeapCoalesce.a68 src\heap.inc makefile-coff
+HeapCompact.obj: src\HeapCompact.a68 src\heap.inc makefile-coff
+HeapCreate.obj: src\HeapCreate.a68 src\heap.inc makefile-coff
+HeapData.obj: src\HeapData.a68 src\heap.inc makefile-coff
+HeapDebugFillOnFree.obj: src\HeapDebugFillOnFree.a68 src\heap.inc makefile-coff
+HeapDestroy.obj: src\HeapDestroy.a68 src\heap.inc makefile-coff
+HeapFree.obj: src\HeapFree.a68 src\heap.inc makefile-coff
+HeapGetError.obj: src\HeapGetError.a68 makefile-coff
+HeapInitialize.obj: src\HeapInitialize.a68 src\heap.inc makefile-coff
+HeapInvalidateBlockHeader.obj: src\HeapInvalidateBlockHeader.a68 src\heap.inc makefile-coff
+HeapReAlloc.obj: src\HeapReAlloc.a68 src\heap.inc makefile-coff
+HeapSize.obj: src\HeapSize.a68 src\heap.inc makefile-coff
+HeapStats.obj: src\HeapStats.a68 src\heap.inc makefile-coff
+HeapUnlinkFromBlockChain.obj: src\HeapUnlinkFromBlockChain.a68 src\heap.inc makefile-coff
+HeapUnlinkFromFreeBlockChain.obj: src\HeapUnlinkFromFreeBlockChain.a68 src\heap.inc makefile-coff
+HeapValidate.obj: src\HeapValidate.a68 src\heap.inc makefile-coff
+HeapValidateHandle.obj: src\HeapValidateHandle.a68 src\heap.inc makefile-coff
+HeapWalk.obj: src\HeapWalk.a68 src\heap.inc makefile-coff
+HeapSmallCtl.obj: src\HeapSmallCtl.a68 src\heap.inc makefile-coff
+HeapArena.obj: src\HeapArena.a68 src\heap.inc makefile-coff
+HeapSlab.obj: src\HeapSlab.a68 src\heap.inc makefile-coff
+HeapSmallAlloc.obj: src\HeapSmallAlloc.a68 src\heap.inc makefile-coff
+HeapSmallFree.obj: src\HeapSmallFree.a68 src\heap.inc makefile-coff
+HeapSmallReAlloc.obj: src\HeapSmallReAlloc.a68 src\heap.inc makefile-coff
+HeapSmallValidate.obj: src\HeapSmallValidate.a68 src\heap.inc makefile-coff
+HeapSmallCompact.obj: src\HeapSmallCompact.a68 src\heap.inc makefile-coff
+HeapSmallWalk.obj: src\HeapSmallWalk.a68 src\heap.inc makefile-coff
 
 # Test program for libheap-coff.a
-test\HeapTest.obj: test\HeapTest.a68 heap.inc libheap-coff.a makefile-coff
+test\HeapTest.obj: test\HeapTest.a68 src\heap.inc libheap-coff.a makefile-coff
 
 clean:
 	del *.68k

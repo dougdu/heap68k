@@ -32,6 +32,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+$SourceRoot = Join-Path $RepoRoot 'src'
 Set-Location -LiteralPath $PSScriptRoot
 
 $GdbScript = Join-Path $PSScriptRoot 'heaptest.gdb'
@@ -210,9 +211,8 @@ $pass = @($results | Where-Object { $_.Status -eq 'PASS' }).Count
 $fail = @($results | Where-Object { $_.Status -ne 'PASS' }).Count
 Write-Host ("heap tests: {0} passed, {1} failed, {2} total" -f $pass, $fail, $results.Count)
 if ($ReportPath) {
-    $sources = @(Get-ChildItem $RepoRoot -File | Where-Object {
-        ($_.Extension -eq '.a68' -and $_.Name -notlike '*Test.a68' -and
-         ($_.Name -like 'Heap*' -or $_.Name -like 'GetMachine*')) -or $_.Name -eq 'heap.inc'
+    $sources = @(Get-ChildItem $SourceRoot -File | Where-Object {
+        $_.Extension -eq '.a68' -or $_.Name -eq 'heap.inc'
     } | Sort-Object Name | ForEach-Object { Record $_.FullName })
     $report = [ordered]@{
         schema=1;phase='NM1-upstream';port=$Port;passed=$pass;failed=$fail;total=$results.Count

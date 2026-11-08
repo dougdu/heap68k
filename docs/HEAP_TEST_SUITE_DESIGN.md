@@ -2,7 +2,7 @@
 
 **Status:** All phases complete (A–8) — full functional / SOA / debug / error / stress coverage + the §9 edge-case backfill, run by a hardened one-step CI runner (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors`/`test_stress`/`test_edges` green via `nmake test`, exit 0). The stress suite found & fixed a real SOA bug (stale slab/arena magic in released memory).
 **Component:** `68kTools/libraries/heap`
-**Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](../heap.inc)
+**Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](../src/heap.inc)
 
 **NM1 extension (2026-10-05):** `test_aligned.a68` adds checked aligned
 reservations, legal prefix/suffix reuse, fragmented-bucket search, exact failure
@@ -10,7 +10,8 @@ rollback, separate descriptor cleanup, adaptive tile fallback, tile-count
 clamping, and zero/debug/tail semantics. The complete suite passes 10/10.
 
 **Repository layout:** Test sources, helpers, scripts, and generated test artifacts
-live in `test/`; library sources and archives remain in the repository root.
+live in `test/`; library sources and the public include live in `src/`. Library
+object files and archives remain in the repository root.
 
 ---
 
@@ -43,7 +44,7 @@ library, plus a **repeatable harness** that builds, runs, and reports pass/fail
 localization and no human in the loop.
 
 **In scope:**
-- Functional coverage of all 13 public API entry points ([heap.inc](../heap.inc) §"Heap API
+- Functional coverage of all 13 public API entry points ([heap.inc](../src/heap.inc) §"Heap API
   Prototypes"): `_MachineHeapInitialize`, `_GetMachineHeap`, `_GetMachineHeaps`,
   `_HeapCreate`, `_HeapDestroy`, `_HeapAlloc`, `_HeapFree`, `_HeapReAlloc`, `_HeapSize`,
   `_HeapValidate`, `_HeapValidateHandle`, `_HeapWalk`, `_HeapCompact`.
@@ -482,8 +483,8 @@ the process using it. The default per-module watchdog remains 20 seconds.
   (`$(LD) -T $(LDSCRIPT) -Ttext 500 test\<obj>.o -L $(LIBDIR) -lheap-elf -o $@`).
 - Add a **`test`** (a.k.a. `check`) target that builds `tests` then invokes
   `test\run-heap-tests.ps1`, propagating its exit code so CI fails on any red.
-- `test\heaptestkit.inc` sits beside the test modules; `heap.inc` remains in the
-  repository root. Test assembly rules search both the root and `test/` include
+- `test\heaptestkit.inc` sits beside the test modules; the public include is
+  `src\heap.inc`. Test assembly rules search both the `src/` and `test/` include
   directories, and each module `include`s both files.
 - Mirror the targets into `makefile-coff` / `makefile.macos` for source parity, carrying
   the known caveats (COFF `ar` crash; macOS not host-buildable — §14 R8).
@@ -497,7 +498,10 @@ the process using it. The default per-module watchdog remains 20 seconds.
 heap68k/
 ├─ docs/
 │  └─ HEAP_TEST_SUITE_DESIGN.md ; this document
-├─ heap.inc                    ; library types + API prototypes
+├─ src/
+│  ├─ heap.inc                 ; library types + API prototypes
+│  ├─ HeapAlloc.a68            ; allocation implementation
+│  └─ ...                      ; remaining library assembly sources
 ├─ makefile-elf                ; library + test build/run targets
 └─ test/
    ├─ heaptestkit.inc          ; macros + result convention (§8)

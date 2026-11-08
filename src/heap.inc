@@ -162,7 +162,7 @@ heMagic         equ     $00             	; Offset to the MAGIC Number
 HEAP_END_SIZE   equ     BLK_HDR_SIZE    	; Size of the heap end marker in bytes.
 
 ************************************************************************
-* Small Object Allocator (SOA) definitions - see docs/HEAP_SMALL_ALLOC_DESIGN.md
+* Small Object Allocator (SOA) definitions - see ../docs/HEAP_SMALL_ALLOC_DESIGN.md
 * Phase 0: definitions only (no behavior yet).
 ************************************************************************
 SOA_MAX         equ     256             	; Max request (bytes) routed to the SOA

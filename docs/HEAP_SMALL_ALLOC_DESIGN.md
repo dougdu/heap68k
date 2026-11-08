@@ -1,7 +1,7 @@
 # Heap Small-Allocation Efficiency — Architecture & Design Spec
 
 **Status:** Draft v1.2 (round-2 review applied) · **Phases 0–6 complete — SOA default-on**  ·  **Target:** `libheap-elf.a` / `libheap` (m68k)  ·  **Owner:** _unassigned_
-**Related docs:** [HEAP_API.md](HEAP_API.md), [heap.inc](../heap.inc)
+**Related docs:** [HEAP_API.md](HEAP_API.md), [heap.inc](../src/heap.inc)
 
 **NM1 backing update (2026-10-05):** The aligned regular allocator and separately
 owned arena descriptors are implemented. Section 6.4 describes the current
@@ -140,11 +140,11 @@ not violate them.
 
 | # | Constraint | Source |
 |---|-----------|--------|
-| C1 | Free receives only `(hHeap, pMem)`. The allocator kind and size class must be **recoverable from `pMem` alone**. | [HeapFree.a68](../HeapFree.a68) |
-| C2 | The **upper byte of every valid address is zero**; a non-zero upper byte signals corruption. Pointer masking must preserve this. | [HeapFree.a68](../HeapFree.a68), [HEAP_API.md §2.1](HEAP_API.md) |
-| C3 | Heap identity lives in the **high word of the flags longword** (`HEAP_ID_MASK = $FFFF0000`); ownership is a mask-and-compare. | [heap.inc](../heap.inc) |
-| C4 | The heap header is fixed at `$40` bytes; only `hhReserved` (`$3C`) is free for new state. | [heap.inc](../heap.inc) |
-| C5 | Per-call flags (`HEAP_ZERO_MEMORY`) override per-heap flags for that call. | [HeapAlloc.a68](../HeapAlloc.a68) |
+| C1 | Free receives only `(hHeap, pMem)`. The allocator kind and size class must be **recoverable from `pMem` alone**. | [HeapFree.a68](../src/HeapFree.a68) |
+| C2 | The **upper byte of every valid address is zero**; a non-zero upper byte signals corruption. Pointer masking must preserve this. | [HeapFree.a68](../src/HeapFree.a68), [HEAP_API.md §2.1](HEAP_API.md) |
+| C3 | Heap identity lives in the **high word of the flags longword** (`HEAP_ID_MASK = $FFFF0000`); ownership is a mask-and-compare. | [heap.inc](../src/heap.inc) |
+| C4 | The heap header is fixed at `$40` bytes; only `hhReserved` (`$3C`) is free for new state. | [heap.inc](../src/heap.inc) |
+| C5 | Per-call flags (`HEAP_ZERO_MEMORY`) override per-heap flags for that call. | [HeapAlloc.a68](../src/HeapAlloc.a68) |
 | C6 | Build is **case-sensitive** (`/Cx`); labels differing only in case are distinct. | [makefile-elf](../makefile-elf) |
 | C7 | 68K ABI in this codebase: **D0/D1/A0/A1 = caller-saved** (scratch); **D2–D7/A2–A6 = callee-saved**. `PROC`/`ENDP` `USES` lists enforce this. | [HEAP_API.md §8](HEAP_API.md) |
 | C8 | Every allocation returned today is 32-byte aligned. Callers **must not** assume this continues for small allocations (SOA cells are guaranteed only **≥ 8-byte (longword)** aligned — enough for 68K word/long access — **not** class-size aligned). | new |
@@ -236,8 +236,8 @@ spacing tightened at the low end to bound request→class rounding waste to **< 
   Tier 3 (idx 12–15): 32-byte spacing.
 - **16 classes.** `size → class` is a small branch ladder or a shift-indexed lookup table
   (see §9.1). Worst-case rounding: e.g. request 129 → class 160 = 24%.
-- The table is emitted once in [HeapData.a68](../HeapData.a68) as `__HeapSoaClassTbl` (with
-  `SOA_NUM_CLASSES` in [heap.inc](../heap.inc)) so allocation, validation, and tests share a
+- The table is emitted once in [HeapData.a68](../src/HeapData.a68) as `__HeapSoaClassTbl` (with
+  `SOA_NUM_CLASSES` in [heap.inc](../src/heap.inc)) so allocation, validation, and tests share a
   single source of truth.
 
 ### 6.3 SOA Control Block (SCB)
@@ -404,7 +404,7 @@ not silently rejected as an invalid block.
 
 ## 8. Data Structures & New Constants
 
-To be added to [heap.inc](../heap.inc) (names final in Phase 1):
+To be added to [heap.inc](../src/heap.inc) (names final in Phase 1):
 
 ```asm
 ; --- Small Object Allocator tunables ---
@@ -442,8 +442,8 @@ HEAP_ERROR_SOA_ARENA_CORRUPT  equ  $17   ; Arena descriptor inconsistent
 ```
 
 The class table is emitted once (data, not in the shared include) in
-[HeapData.a68](../HeapData.a68) as a public symbol so every consumer shares one copy;
-[heap.inc](../heap.inc) carries only the scalar tunables (`SOA_MAX`, `SOA_NUM_CLASSES`, …):
+[HeapData.a68](../src/HeapData.a68) as a public symbol so every consumer shares one copy;
+[heap.inc](../src/heap.inc) carries only the scalar tunables (`SOA_MAX`, `SOA_NUM_CLASSES`, …):
 
 ```asm
 	public 	__HeapSoaClassTbl
@@ -602,7 +602,7 @@ heap_realloc(hHeap, flags, pMem, n):
 
 ## 10. Debug, Fill & Validation Semantics
 
-- **Zero / debug fill on alloc:** honored per cell exactly as [`__FillBlock`](../HeapAlloc.a68)
+- **Zero / debug fill on alloc:** honored per cell exactly as [`__FillBlock`](../src/HeapAlloc.a68)
   does for blocks — `HEAP_ENABLE_DEBUG_FILL` → `$CDCDCDCD` over the class size;
   else `HEAP_ZERO_MEMORY` (per-call or per-heap) → zero. Fill spans the whole **cell** (class
   size), which is ≥ request, so no uninitialized bytes are exposed.
@@ -762,10 +762,10 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 
 ### Phase 0 — Measurement baseline & constants  ✅ (ELF; COFF/macOS deferred)
 - [x] Add SOA constants, magics, `FLG_HEAP_DISABLE_SMALL_POOL`, `__HeapSoaClassTbl`, and appended
-      error codes to [heap.inc](../heap.inc) (values only; no behavior). Class table emitted in
-      [HeapData.a68](../HeapData.a68) as `__HeapSoaClassTbl` (data, not the shared include).
+      error codes to [heap.inc](../src/heap.inc) (values only; no behavior). Class table emitted in
+      [HeapData.a68](../src/HeapData.a68) as `__HeapSoaClassTbl` (data, not the shared include).
 - [x] `hhReserved` → `hhSmallPool` alias at the same offset `$3C`; create/init already zero it.
-- [x] Implement [`__HeapStats`](../HeapStats.a68): block-chain walk → committed vs. requested bytes,
+- [x] Implement [`__HeapStats`](../src/HeapStats.a68): block-chain walk → committed vs. requested bytes,
       free/overhead totals, largest free block, and a request-size histogram (`HEAP_STATS`).
 - [x] Extend [HeapTest.a68](../test/HeapTest.a68) with a scripted small-allocation mix + `__HeapStats` snapshot.
 - [x] `makefile-elf` builds clean; `libheap-elf.a` + `heaptest.elf` produced (nmake).
@@ -786,10 +786,10 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 - [x] Add new objects to `HEAP_ELF_OBJS` and all makefiles (ELF green; COFF/macOS carry the same Phase 0 caveats).
 
 ### Phase 2 — Allocation path  ✅ (2026-07-21)
-- [x] Create [`HeapSmallAlloc.a68`](../HeapSmallAlloc.a68): `__HeapSoaAlloc` (§9.3) — get/create SCB, pick a
+- [x] Create [`HeapSmallAlloc.a68`](../src/HeapSmallAlloc.a68): `__HeapSoaAlloc` (§9.3) — get/create SCB, pick a
       partial slab (create + link one on demand), pop a cell, move the slab Partial→Full when it fills.
 - [x] Route `_HeapAlloc` small requests to the SOA, gated on SOA-enabled and tail-check-not-set. The gate
-      is the assembly switch `SOA_ROUTE` in [heap.inc](../heap.inc): **0** in Phases 1–5 (the routing block is
+      is the assembly switch `SOA_ROUTE` in [heap.inc](../src/heap.inc): **0** in Phases 1–5 (the routing block is
       conditionally assembled out so `_HeapFree`/`_HeapSize`/`_HeapValidate` stay legacy and the existing
       `heaptest.elf` is byte-for-byte unchanged); flipped to **1** in Phase 6. Verified the routing block
       assembles clean at `SOA_ROUTE=1`.
@@ -803,7 +803,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
       SOA objects into `makefile-coff`/`makefile.macos` for consistency).
 
 ### Phase 3 — Free path  ✅ (2026-07-21)
-- [x] Create [`HeapSmallFree.a68`](../HeapSmallFree.a68): `__HeapSoaFree` (§9.4) — compute cell index, push
+- [x] Create [`HeapSmallFree.a68`](../src/HeapSmallFree.a68): `__HeapSoaFree` (§9.4) — compute cell index, push
       the cell back on the slab free list, and drive the full→partial (unlink `scbFull`→push `scbPartial`)
       and partial→empty (unlink `scbPartial` + `__HeapSlabRelease`) transitions.
 - [x] Add the discriminator to `_HeapFree` (gated `SOA_ROUTE`): probe `__HeapSlabFromPtr` first — a hit
@@ -823,7 +823,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 - [x] `_HeapSize`: gated cell path — recognize the cell via `__HeapSlabFromPtr`, verify
       ownership (`slId`↔`hhId`, else `HANDLE_BLOCK_MISMATCH`), and return `slCellSz` (the
       class/usable size, §16 Q3).  Falls through to the block path otherwise.
-- [x] Create [`HeapSmallReAlloc.a68`](../HeapSmallReAlloc.a68): `__HeapSoaReAlloc` implements the
+- [x] Create [`HeapSmallReAlloc.a68`](../src/HeapSmallReAlloc.a68): `__HeapSoaReAlloc` implements the
       cell-origin transition matrix (§9.6): same-class → keep the cell (no `ZERO_MEMORY` on a
       same-class grow, S3); different small class → new cell + copy + free; small→large → new
       block + copy + free.  Uses `__HeapSoaAlloc`/`__HeapSoaFree` directly for cells and
@@ -841,7 +841,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
       pass (`tResult=0`) under sim68k.
 
 ### Phase 5 — Validation, Walk, Compact  ✅ (2026-07-21)
-- [x] Create [`HeapSmallValidate.a68`](../HeapSmallValidate.a68): `__HeapSoaValidate` performs the full
+- [x] Create [`HeapSmallValidate.a68`](../src/HeapSmallValidate.a68): `__HeapSoaValidate` performs the full
       §10 sweep — SCB magic/back-pointer; per-arena magic, `arBase` alignment, `arSlabUse ≤ arSlabs`,
       `popcount(arTileMap) == arSlabUse`; both descriptor and `arBlock - BLK_HDR_SIZE`
       carry live owned `'BLKH'` headers; exact tile request and padding accounting;
@@ -850,11 +850,11 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
       `freeTag` present and a cycle bound; and class-list consistency (partial ⇒ `slFree>0`, full ⇒
       `slFree==0`).  Wired into `_HeapValidate` (gated) for a whole-heap check only (`pBlock==NULL`).
 - [x] `_HeapValidateHandle`: gated SCB sanity check — if `hhSmallPool != 0` it must carry `'SCB '`.
-- [x] Create [`HeapSmallWalk.a68`](../HeapSmallWalk.a68): `__HeapSoaWalk(hHeap, pCursor)` enumerates live
+- [x] Create [`HeapSmallWalk.a68`](../src/HeapSmallWalk.a68): `__HeapSoaWalk(hHeap, pCursor)` enumerates live
       cells one per call via a 3-longword cursor `{swArena, swTile, swCell}` (a cell is reported when
       it is not on its slab's free list).  This is the design's companion option; `_HeapWalk`'s coarse
       mode already reports arena/SCB blocks since those are ordinary parent-heap blocks.
-- [x] Create [`HeapSmallCompact.a68`](../HeapSmallCompact.a68): `__HeapSoaCompact` releases every fully
+- [x] Create [`HeapSmallCompact.a68`](../src/HeapSmallCompact.a68): `__HeapSoaCompact` releases every fully
       empty slab (and the arena once its last tile goes).  Wired into `_HeapCompact` (gated).  Note the
       free path already releases empties eagerly, so this is a belt-and-suspenders sweep.
 - [x] All gated hooks assemble clean `/Cx` at `SOA_ROUTE=1`; kept at `0`.  Three objects added to all
@@ -868,11 +868,11 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 
 ### Phase 6 — Default-on, docs, tooling, tuning  ✅ (2026-07-21)
 - [x] Flip default to opt-out (SOA on unless `HEAP_DISABLE_SMALL_POOL`): `SOA_ROUTE equ 1` in
-      [heap.inc](../heap.inc). Fixed the SCB-alloc recursion this exposed — `SCB_HDR_SIZE`=$A0 ≤
+      [heap.inc](../src/heap.inc). Fixed the SCB-alloc recursion this exposed — `SCB_HDR_SIZE`=$A0 ≤
       `SOA_MAX`, so `__HeapScbGetOrCreate`'s own `_HeapAlloc(160)` would re-enter the SOA. Broke it
       by (a) allocating the SCB with `HEAP_DISABLE_SMALL_POOL` as `lFlags` in
-      [HeapSmallCtl.a68](../HeapSmallCtl.a68), and (b) honoring the per-**call** disable flag in the
-      [HeapAlloc.a68](../HeapAlloc.a68) gate. `heapsmalltest.elf` passes all 9 phases at `SOA_ROUTE=1`
+      [HeapSmallCtl.a68](../src/HeapSmallCtl.a68), and (b) honoring the per-**call** disable flag in the
+      [HeapAlloc.a68](../src/HeapAlloc.a68) gate. `heapsmalltest.elf` passes all 9 phases at `SOA_ROUTE=1`
       (`tResult=0`, `G 500,1780,1774` + `DL 3948`). (`heaptest.elf` is a CP/M base-page harness and
       cannot run under a bare sim68k `G 500` — it faults at PC=0x520 **before** any heap call,
       identically at `SOA_ROUTE=0`; not a regression. `heapsmalltest` is the authoritative test.)

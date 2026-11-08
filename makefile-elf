@@ -10,7 +10,7 @@
 
 ASM       =C:\git\worm68k\68kTools\builds\win64\bin\Release\asm68K.exe
 ELF_FLAGS =/Cx /elf /Fl /Fm /Zi /nologo
-AINC      =/I.
+AINC      =/Isrc
 LD        =C:\git\worm68k\tools\elf\m68k-elf-ld.exe
 LDSCRIPT  =C:\git\worm68k\tools\cpm68k.ld
 AR        =C:\git\worm68k\tools\elf\m68k-elf-ar.exe
@@ -19,8 +19,8 @@ LIBDIR    =C:\git\worm68k\lib
 INCDIR    =C:\git\worm68k\include
 BINDIR    =C:\git\worm68k\bin
 
-.a68.o:
-	$(ASM) $(ELF_FLAGS) $(AINC) /c $<
+{src}.a68.o:
+	$(ASM) $(ELF_FLAGS) $(AINC) /Fo$@ /Fl$(@R).lst /c $<
 
 {test}.a68{test}.o:
 	$(ASM) $(ELF_FLAGS) $(AINC) /Itest /Fo$@ /Fl$(@R).lst /c $<
@@ -42,7 +42,7 @@ all: libheap-elf.a test\heaptest.elf test\heapsmalltest.elf
 
 libheap-elf.a: $(HEAP_ELF_OBJS)
 	$(AR) -rscv $@ $**
-	copy Heap.inc $(INCDIR)
+	copy src\heap.inc $(INCDIR)
 	copy $@ $(LIBDIR)
 
 test\heaptest.elf: test\HeapTest.o libheap-elf.a
@@ -94,51 +94,51 @@ test\test_aligned.elf: test\test_aligned.o libheap-elf.a
 	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_aligned.o -L $(LIBDIR) -lheap-elf -o $@
 
 # Dependencies for ELF objects
-GetMachineHeap.o: GetMachineHeap.a68
-GetMachineHeaps.o: GetMachineHeaps.a68
-HeapAlloc.o: HeapAlloc.a68 heap.inc
-HeapAutoValidateFlagCheck.o: HeapAutoValidateFlagCheck.a68 heap.inc
-HeapCoalesce.o: HeapCoalesce.a68 heap.inc
-HeapCompact.o: HeapCompact.a68 heap.inc
-HeapCreate.o: HeapCreate.a68 heap.inc
-HeapData.o: HeapData.a68 heap.inc
-HeapDebugFillOnFree.o: HeapDebugFillOnFree.a68 heap.inc
-HeapDestroy.o: HeapDestroy.a68 heap.inc
-HeapFree.o: HeapFree.a68 heap.inc
-HeapGetError.o: HeapGetError.a68
-HeapInitialize.o: HeapInitialize.a68 heap.inc
-HeapInvalidateBlockHeader.o: HeapInvalidateBlockHeader.a68 heap.inc
-HeapReAlloc.o: HeapReAlloc.a68 heap.inc
-HeapSize.o: HeapSize.a68 heap.inc
-HeapStats.o: HeapStats.a68 heap.inc
-HeapSmallCtl.o: HeapSmallCtl.a68 heap.inc
-HeapArena.o: HeapArena.a68 heap.inc
-HeapSlab.o: HeapSlab.a68 heap.inc
-HeapSmallAlloc.o: HeapSmallAlloc.a68 heap.inc
-HeapSmallFree.o: HeapSmallFree.a68 heap.inc
-HeapSmallReAlloc.o: HeapSmallReAlloc.a68 heap.inc
-HeapSmallValidate.o: HeapSmallValidate.a68 heap.inc
-HeapSmallCompact.o: HeapSmallCompact.a68 heap.inc
-HeapSmallWalk.o: HeapSmallWalk.a68 heap.inc
-HeapUnlinkFromBlockChain.o: HeapUnlinkFromBlockChain.a68 heap.inc
-HeapUnlinkFromFreeBlockChain.o: HeapUnlinkFromFreeBlockChain.a68 heap.inc
-HeapValidate.o: HeapValidate.a68 heap.inc
-HeapValidateHandle.o: HeapValidateHandle.a68 heap.inc
-HeapWalk.o: HeapWalk.a68 heap.inc
+GetMachineHeap.o: src\GetMachineHeap.a68 src\heap.inc makefile-elf
+GetMachineHeaps.o: src\GetMachineHeaps.a68 src\heap.inc makefile-elf
+HeapAlloc.o: src\HeapAlloc.a68 src\heap.inc makefile-elf
+HeapAutoValidateFlagCheck.o: src\HeapAutoValidateFlagCheck.a68 src\heap.inc makefile-elf
+HeapCoalesce.o: src\HeapCoalesce.a68 src\heap.inc makefile-elf
+HeapCompact.o: src\HeapCompact.a68 src\heap.inc makefile-elf
+HeapCreate.o: src\HeapCreate.a68 src\heap.inc makefile-elf
+HeapData.o: src\HeapData.a68 src\heap.inc makefile-elf
+HeapDebugFillOnFree.o: src\HeapDebugFillOnFree.a68 src\heap.inc makefile-elf
+HeapDestroy.o: src\HeapDestroy.a68 src\heap.inc makefile-elf
+HeapFree.o: src\HeapFree.a68 src\heap.inc makefile-elf
+HeapGetError.o: src\HeapGetError.a68 makefile-elf
+HeapInitialize.o: src\HeapInitialize.a68 src\heap.inc makefile-elf
+HeapInvalidateBlockHeader.o: src\HeapInvalidateBlockHeader.a68 src\heap.inc makefile-elf
+HeapReAlloc.o: src\HeapReAlloc.a68 src\heap.inc makefile-elf
+HeapSize.o: src\HeapSize.a68 src\heap.inc makefile-elf
+HeapStats.o: src\HeapStats.a68 src\heap.inc makefile-elf
+HeapSmallCtl.o: src\HeapSmallCtl.a68 src\heap.inc makefile-elf
+HeapArena.o: src\HeapArena.a68 src\heap.inc makefile-elf
+HeapSlab.o: src\HeapSlab.a68 src\heap.inc makefile-elf
+HeapSmallAlloc.o: src\HeapSmallAlloc.a68 src\heap.inc makefile-elf
+HeapSmallFree.o: src\HeapSmallFree.a68 src\heap.inc makefile-elf
+HeapSmallReAlloc.o: src\HeapSmallReAlloc.a68 src\heap.inc makefile-elf
+HeapSmallValidate.o: src\HeapSmallValidate.a68 src\heap.inc makefile-elf
+HeapSmallCompact.o: src\HeapSmallCompact.a68 src\heap.inc makefile-elf
+HeapSmallWalk.o: src\HeapSmallWalk.a68 src\heap.inc makefile-elf
+HeapUnlinkFromBlockChain.o: src\HeapUnlinkFromBlockChain.a68 src\heap.inc makefile-elf
+HeapUnlinkFromFreeBlockChain.o: src\HeapUnlinkFromFreeBlockChain.a68 src\heap.inc makefile-elf
+HeapValidate.o: src\HeapValidate.a68 src\heap.inc makefile-elf
+HeapValidateHandle.o: src\HeapValidateHandle.a68 src\heap.inc makefile-elf
+HeapWalk.o: src\HeapWalk.a68 src\heap.inc makefile-elf
 
-test\HeapTest.o: test\HeapTest.a68 heap.inc libheap-elf.a makefile-elf
-test\HeapSmallTest.o: test\HeapSmallTest.a68 heap.inc libheap-elf.a makefile-elf
-test\HeapCompactTest.o: test\HeapCompactTest.a68 heap.inc libheap-elf.a makefile-elf
-test\stub.o: test\stub.a68 heap.inc libheap-elf.a makefile-elf
-test\test_kit.o: test\test_kit.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
-test\test_create.o: test\test_create.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
-test\test_block.o: test\test_block.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
-test\test_soa.o: test\test_soa.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
-test\test_debug.o: test\test_debug.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
-test\test_errors.o: test\test_errors.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
-test\test_stress.o: test\test_stress.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
-test\test_edges.o: test\test_edges.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
-test\test_aligned.o: test\test_aligned.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\HeapTest.o: test\HeapTest.a68 src\heap.inc libheap-elf.a makefile-elf
+test\HeapSmallTest.o: test\HeapSmallTest.a68 src\heap.inc libheap-elf.a makefile-elf
+test\HeapCompactTest.o: test\HeapCompactTest.a68 src\heap.inc libheap-elf.a makefile-elf
+test\stub.o: test\stub.a68 src\heap.inc libheap-elf.a makefile-elf
+test\test_kit.o: test\test_kit.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_create.o: test\test_create.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_block.o: test\test_block.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_soa.o: test\test_soa.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_debug.o: test\test_debug.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_errors.o: test\test_errors.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_stress.o: test\test_stress.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_edges.o: test\test_edges.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_aligned.o: test\test_aligned.a68 src\heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
 
 clean:
 	del *.68k

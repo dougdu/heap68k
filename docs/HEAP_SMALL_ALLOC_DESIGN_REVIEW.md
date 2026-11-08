@@ -1,7 +1,7 @@
 # Design Review — HEAP_SMALL_ALLOC_DESIGN.md
 
 **Reviewer:** GitHub Copilot  ·  **Date:** 2026-07-20  ·  **Doc reviewed:** [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md)
-**Scope:** Correctness and implementability of the Small Object Allocator (SOA) spec, verified against the current heap sources in the repository root.
+**Scope:** Correctness and implementability of the Small Object Allocator (SOA) spec, verified against the current heap sources in `src/`.
 **Rounds:** Round 1 reviewed Draft v1.0. **Round 2 (below) reviews Draft v1.1**, which applied the round-1 findings.
 
 ---
