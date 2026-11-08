@@ -1,6 +1,6 @@
 ************************************************************************
 *  heaptestkit.inc — shared macros + result protocol for the heap test
-*  suite.  See docs/HEAP_TEST_SUITE_DESIGN.md §7 (result convention) and §8.
+*  suite.  See ../docs/HEAP_TEST_SUITE_DESIGN.md §7 (result convention) and §8.
 *
 *  A test module looks like:
 *

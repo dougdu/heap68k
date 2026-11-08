@@ -23,6 +23,9 @@ INCDIR    = $(REPOROOT)/include
 .a68.o:
 	$(ASM) $(ELF_FLAGS) $(AINC) -c $<
 
+test/%.o: test/%.a68
+	$(ASM) $(ELF_FLAGS) $(AINC) -Itest -Fo$@ -Fl$(@:.o=.lst) -c $<
+
 # targets
 HEAP_OBJS = GetMachineHeap.o GetMachineHeaps.o \
 	   HeapAlloc.o HeapAutoValidateFlagCheck.o HeapCoalesce.o HeapCompact.o \
@@ -35,15 +38,15 @@ HEAP_OBJS = GetMachineHeap.o GetMachineHeaps.o \
 	   HeapSmallReAlloc.o HeapSmallValidate.o HeapSmallCompact.o HeapSmallWalk.o
 
 
-all: libheap.a heaptest.68k
+all: libheap.a test/heaptest.68k
 
 libheap.a: $(HEAP_OBJS)
 	$(AR) -rscv libheap.a $^
 	cp Heap.inc $(INCDIR)
 	cp libheap.a $(LIBDIR)
 
-heaptest.68k:  heaptest.o libheap.a
-	$(LD) -T $(LDSCRIPT) -Ttext 1700 heaptest.o -L $(LIBDIR) -lheap -o $@
+test/heaptest.68k: test/HeapTest.o libheap.a
+	$(LD) -T $(LDSCRIPT) -Ttext 1700 test/HeapTest.o -L $(LIBDIR) -lheap -o $@
 	cp $@ $(SIM68KDIR)
 
 # Dependencies for Heap source
@@ -80,7 +83,8 @@ HeapSmallCompact.o: HeapSmallCompact.a68 heap.inc
 HeapSmallWalk.o: HeapSmallWalk.a68 heap.inc
 
 # Test harness
-heaptest.o: heaptest.a68 heap.inc libheap.a
+test/HeapTest.o: test/HeapTest.a68 heap.inc libheap.a makefile.macos
 
 clean:
 	rm -f *.68k *.a *.o *.lst
+	rm -f test/*.68k test/*.o test/*.lst

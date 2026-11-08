@@ -663,7 +663,7 @@ Add an internal `__HeapStats(hHeap, pStruct)` (or extend `_HeapWalk`) that repor
 changing behavior: total committed bytes, total requested bytes, per-size-bucket allocation
 counts, and (once the SOA exists) live cells / slabs / arenas. This lets us **quantify the
 before/after** on a real workload and drives class-table tuning (§16). The
-[HeapTest.a68](../HeapTest.a68) driver gains a scripted allocation mix.
+[HeapTest.a68](../test/HeapTest.a68) driver gains a scripted allocation mix.
 
 ### 12.2 Correctness tests
 - **Unit:** `soa_size_to_class` vs. `__HeapSoaClassTbl` for all `n` in `1..256`; slab format
@@ -767,7 +767,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 - [x] `hhReserved` → `hhSmallPool` alias at the same offset `$3C`; create/init already zero it.
 - [x] Implement [`__HeapStats`](../HeapStats.a68): block-chain walk → committed vs. requested bytes,
       free/overhead totals, largest free block, and a request-size histogram (`HEAP_STATS`).
-- [x] Extend [HeapTest.a68](../HeapTest.a68) with a scripted small-allocation mix + `__HeapStats` snapshot.
+- [x] Extend [HeapTest.a68](../test/HeapTest.a68) with a scripted small-allocation mix + `__HeapStats` snapshot.
 - [x] `makefile-elf` builds clean; `libheap-elf.a` + `heaptest.elf` produced (nmake).
 - [~] `makefile-coff`: all objects assemble under `/coff`; **archiving deferred** — `m68k-coff-ar.exe`
       (GNU ar 2.16.1) crashes (`0xC0000005`) on the multi-object list, reproduced without the new

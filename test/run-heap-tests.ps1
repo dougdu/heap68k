@@ -1,5 +1,5 @@
 <#
-    run-heap-tests.ps1 — automated heap test runner (see docs/HEAP_TEST_SUITE_DESIGN.md §10).
+    run-heap-tests.ps1 — automated heap test runner (see ../docs/HEAP_TEST_SUITE_DESIGN.md §10).
 
     For each test module it:
       1. starts a fresh `sim68k --gdb` RSP stub,
@@ -11,10 +11,10 @@
 
     Usage:
       nmake /f makefile-elf test                    # canonical one-step: build + run + verdict (CI)
-      pwsh -File run-heap-tests.ps1                 # build + run the default modules
-      pwsh -File run-heap-tests.ps1 -Modules stub   # a single module
-      pwsh -File run-heap-tests.ps1 -NoBuild        # skip the nmake build step
-      pwsh -File run-heap-tests.ps1 -Port 4321 -TimeoutSec 40
+      pwsh -File test\run-heap-tests.ps1                 # build + run the default modules
+      pwsh -File test\run-heap-tests.ps1 -Modules stub   # a single module
+      pwsh -File test\run-heap-tests.ps1 -NoBuild        # skip the nmake build step
+      pwsh -File test\run-heap-tests.ps1 -Port 4321 -TimeoutSec 40
 
     A FAIL row's Note decodes RESULT=$0000PPCC as "phase P, check 0xCC"; DETAIL is the
     failing value/code (see the module source for that check).
@@ -31,6 +31,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$RepoRoot = Split-Path -Parent $PSScriptRoot
 Set-Location -LiteralPath $PSScriptRoot
 
 $GdbScript = Join-Path $PSScriptRoot 'heaptest.gdb'
@@ -100,7 +101,9 @@ function Record([string]$path) {
 
 if (-not $NoBuild) {
     Write-Host "Building test ELFs (nmake /f makefile-elf tests)..."
-    $buildLog = & nmake /f makefile-elf tests 2>&1
+    Push-Location -LiteralPath $RepoRoot
+    try { $buildLog = & nmake /f makefile-elf tests 2>&1 }
+    finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) {
         $buildLog | Select-Object -Last 25 | ForEach-Object { Write-Host $_ }
         Write-Error "build failed (nmake exit $LASTEXITCODE)"; exit 255
@@ -207,7 +210,7 @@ $pass = @($results | Where-Object { $_.Status -eq 'PASS' }).Count
 $fail = @($results | Where-Object { $_.Status -ne 'PASS' }).Count
 Write-Host ("heap tests: {0} passed, {1} failed, {2} total" -f $pass, $fail, $results.Count)
 if ($ReportPath) {
-    $sources = @(Get-ChildItem $PSScriptRoot -File | Where-Object {
+    $sources = @(Get-ChildItem $RepoRoot -File | Where-Object {
         ($_.Extension -eq '.a68' -and $_.Name -notlike '*Test.a68' -and
          ($_.Name -like 'Heap*' -or $_.Name -like 'GetMachine*')) -or $_.Name -eq 'heap.inc'
     } | Sort-Object Name | ForEach-Object { Record $_.FullName })
@@ -215,7 +218,7 @@ if ($ReportPath) {
         schema=1;phase='NM1-upstream';port=$Port;passed=$pass;failed=$fail;total=$results.Count
         simulator=Record $Sim;gdb=Record $Gdb;runner=Record $PSCommandPath
         gdbScript=Record $GdbScript;testKit=Record (Join-Path $PSScriptRoot 'heaptestkit.inc')
-        library=Record (Join-Path $PSScriptRoot 'libheap-elf.a')
+        library=Record (Join-Path $RepoRoot 'libheap-elf.a')
         librarySources=$sources
         tests=$results
     }

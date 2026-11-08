@@ -22,6 +22,9 @@ BINDIR    =C:\git\worm68k\bin
 .a68.o:
 	$(ASM) $(ELF_FLAGS) $(AINC) /c $<
 
+{test}.a68{test}.o:
+	$(ASM) $(ELF_FLAGS) $(AINC) /Itest /Fo$@ /Fl$(@R).lst /c $<
+
 # targets
 
 HEAP_ELF_OBJS = GetMachineHeap.o GetMachineHeaps.o \
@@ -35,58 +38,60 @@ HEAP_ELF_OBJS = GetMachineHeap.o GetMachineHeaps.o \
 	   HeapSmallReAlloc.o HeapSmallValidate.o HeapSmallCompact.o HeapSmallWalk.o
 
 
-all: libheap-elf.a heaptest.elf heapsmalltest.elf
+all: libheap-elf.a test\heaptest.elf test\heapsmalltest.elf
 
 libheap-elf.a: $(HEAP_ELF_OBJS)
 	$(AR) -rscv $@ $**
 	copy Heap.inc $(INCDIR)
 	copy $@ $(LIBDIR)
 
-heaptest.elf:  heaptest.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 heaptest.o -L $(LIBDIR) -lheap-elf -o $@ 
+test\heaptest.elf: test\HeapTest.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\HeapTest.o -L $(LIBDIR) -lheap-elf -o $@
 	copy $@ $(BINDIR)
 
-heapsmalltest.elf:  heapsmalltest.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 heapsmalltest.o -L $(LIBDIR) -lheap-elf -o $@ 
+test\heapsmalltest.elf: test\HeapSmallTest.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\HeapSmallTest.o -L $(LIBDIR) -lheap-elf -o $@
 	copy $@ $(BINDIR)
 
 # --- automated test suite (see docs/HEAP_TEST_SUITE_DESIGN.md) ---
-TEST_ELFS = stub.elf test_kit.elf test_create.elf test_block.elf test_soa.elf test_debug.elf test_errors.elf test_stress.elf test_edges.elf test_aligned.elf
+TEST_ELFS = test\stub.elf test\test_kit.elf test\test_create.elf test\test_block.elf \
+	    test\test_soa.elf test\test_debug.elf test\test_errors.elf \
+	    test\test_stress.elf test\test_edges.elf test\test_aligned.elf
 
 tests: $(TEST_ELFS)
 
 test: tests
-	powershell -NoProfile -ExecutionPolicy Bypass -File run-heap-tests.ps1 -NoBuild
+	pwsh -NoProfile -ExecutionPolicy Bypass -File test\run-heap-tests.ps1 -NoBuild
 
-stub.elf:  stub.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 stub.o -L $(LIBDIR) -lheap-elf -o $@
+test\stub.elf: test\stub.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\stub.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_kit.elf:  test_kit.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_kit.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_kit.elf: test\test_kit.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_kit.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_create.elf:  test_create.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_create.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_create.elf: test\test_create.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_create.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_block.elf:  test_block.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_block.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_block.elf: test\test_block.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_block.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_soa.elf:  test_soa.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_soa.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_soa.elf: test\test_soa.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_soa.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_debug.elf:  test_debug.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_debug.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_debug.elf: test\test_debug.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_debug.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_errors.elf:  test_errors.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_errors.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_errors.elf: test\test_errors.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_errors.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_stress.elf:  test_stress.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_stress.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_stress.elf: test\test_stress.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_stress.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_edges.elf:  test_edges.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_edges.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_edges.elf: test\test_edges.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_edges.o -L $(LIBDIR) -lheap-elf -o $@
 
-test_aligned.elf: test_aligned.o libheap-elf.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 test_aligned.o -L $(LIBDIR) -lheap-elf -o $@
+test\test_aligned.elf: test\test_aligned.o libheap-elf.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\test_aligned.o -L $(LIBDIR) -lheap-elf -o $@
 
 # Dependencies for ELF objects
 GetMachineHeap.o: GetMachineHeap.a68
@@ -121,21 +126,23 @@ HeapValidate.o: HeapValidate.a68 heap.inc
 HeapValidateHandle.o: HeapValidateHandle.a68 heap.inc
 HeapWalk.o: HeapWalk.a68 heap.inc
 
-heaptest.o: heaptest.a68 heap.inc libheap-elf.a
-heapsmalltest.o: heapsmalltest.a68 heap.inc libheap-elf.a
-stub.o: stub.a68 heap.inc libheap-elf.a
-test_kit.o: test_kit.a68 heap.inc heaptestkit.inc libheap-elf.a
-test_create.o: test_create.a68 heap.inc heaptestkit.inc libheap-elf.a
-test_block.o: test_block.a68 heap.inc heaptestkit.inc libheap-elf.a
-test_soa.o: test_soa.a68 heap.inc heaptestkit.inc libheap-elf.a
-test_debug.o: test_debug.a68 heap.inc heaptestkit.inc libheap-elf.a
-test_errors.o: test_errors.a68 heap.inc heaptestkit.inc libheap-elf.a
-test_stress.o: test_stress.a68 heap.inc heaptestkit.inc libheap-elf.a
-test_edges.o: test_edges.a68 heap.inc heaptestkit.inc libheap-elf.a
-test_aligned.o: test_aligned.a68 heap.inc heaptestkit.inc libheap-elf.a
+test\HeapTest.o: test\HeapTest.a68 heap.inc libheap-elf.a makefile-elf
+test\HeapSmallTest.o: test\HeapSmallTest.a68 heap.inc libheap-elf.a makefile-elf
+test\HeapCompactTest.o: test\HeapCompactTest.a68 heap.inc libheap-elf.a makefile-elf
+test\stub.o: test\stub.a68 heap.inc libheap-elf.a makefile-elf
+test\test_kit.o: test\test_kit.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_create.o: test\test_create.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_block.o: test\test_block.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_soa.o: test\test_soa.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_debug.o: test\test_debug.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_errors.o: test\test_errors.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_stress.o: test\test_stress.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_edges.o: test\test_edges.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
+test\test_aligned.o: test\test_aligned.a68 heap.inc test\heaptestkit.inc libheap-elf.a makefile-elf
 
 clean:
 	del *.68k
 	del *.a
 	del *.o
 	del *.lst
+	del test\*.68k test\*.elf test\*.o test\*.lst

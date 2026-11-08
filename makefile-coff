@@ -22,6 +22,9 @@ INCDIR    =C:\git\worm68k\include
 .a68.obj:
 	$(ASM) $(COFF_FLAGS) $(AINC) /c $<
 
+{test}.a68{test}.obj:
+	$(ASM) $(COFF_FLAGS) $(AINC) /Itest /Fo$@ /Fl$(@R).lst /c $<
+
 # targets
 HEAP_COFF_OBJS = GetMachineHeap.obj GetMachineHeaps.obj \
 	   HeapAlloc.obj HeapAutoValidateFlagCheck.obj HeapCoalesce.obj HeapCompact.obj \
@@ -33,15 +36,15 @@ HEAP_COFF_OBJS = GetMachineHeap.obj GetMachineHeaps.obj \
 	   HeapSmallCtl.obj HeapArena.obj HeapSlab.obj HeapSmallAlloc.obj HeapSmallFree.obj \
 	   HeapSmallReAlloc.obj HeapSmallValidate.obj HeapSmallCompact.obj HeapSmallWalk.obj
 
-all: libheap-coff.a heaptest.cof
+all: libheap-coff.a test\heaptest.cof
 
 libheap-coff.a: $(HEAP_COFF_OBJS)
 	$(AR) -rscv libheap-coff.a $**
 	copy Heap.inc $(INCDIR)
 	copy libheap-coff.a $(LIBDIR)
 
-heaptest.cof:  heaptest.obj libheap-coff.a
-	$(LD) -T $(LDSCRIPT) -Ttext 500 heaptest.obj -L $(LIBDIR) -lheap-coff -o $@
+test\heaptest.cof: test\HeapTest.obj libheap-coff.a
+	$(LD) -T $(LDSCRIPT) -Ttext 500 test\HeapTest.obj -L $(LIBDIR) -lheap-coff -o $@
 	copy $@ $(BINDIR)
 
 # Dependencies for COFF objects
@@ -78,10 +81,11 @@ HeapSmallCompact.obj: HeapSmallCompact.a68 heap.inc
 HeapSmallWalk.obj: HeapSmallWalk.a68 heap.inc
 
 # Test program for libheap-coff.a
-heaptest.obj: heaptest.a68 heap.inc libheap-coff.a
+test\HeapTest.obj: test\HeapTest.a68 heap.inc libheap-coff.a makefile-coff
 
 clean:
 	del *.68k
 	del *.a
 	del *.obj
 	del *.lst
+	del test\*.68k test\*.cof test\*.obj test\*.lst
