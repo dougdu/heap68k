@@ -1,6 +1,6 @@
 # Heap Small-Allocation Efficiency — Architecture & Design Spec
 
-**Status:** Draft v1.2 (round-2 review applied) · **Phases 0–6 complete — SOA default-on**  ·  **Target:** `libheap-elf.a` / `libheap` (m68k)  ·  **Owner:** _unassigned_
+**Status:** Draft v1.2 (round-2 review applied) · **Phases 0–6 complete — SOA default-on**  ·  **Target:** `libheap.a` (m68k)  ·  **Owner:** _unassigned_
 **Related docs:** [HEAP_API.md](HEAP_API.md), [heap.inc](../src/heap.inc)
 
 **NM1 backing update (2026-10-05):** The aligned regular allocator and separately
@@ -770,7 +770,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 - [x] Implement [`__HeapStats`](../src/HeapStats.a68): block-chain walk → committed vs. requested bytes,
       free/overhead totals, largest free block, and a request-size histogram (`HEAP_STATS`).
 - [x] Extend [HeapTest.a68](../test/HeapTest.a68) with a scripted small-allocation mix + `__HeapStats` snapshot.
-- [x] `makefile-elf` builds clean; `libheap-elf.a` + `heaptest.elf` produced (nmake).
+- [x] `makefile-elf` builds clean; `libheap.a` + `heaptest.elf` produced (nmake).
 - [~] `makefile.macos`: corrected `-Cu` → `-Cx`; not buildable on the Windows host (macOS toolchain).
 
 > Historical note: the retired COFF backend assembled its objects, but

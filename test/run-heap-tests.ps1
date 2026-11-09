@@ -218,7 +218,7 @@ if ($ReportPath) {
         schema=1;phase='NM1-upstream';port=$Port;passed=$pass;failed=$fail;total=$results.Count
         simulator=Record $Sim;gdb=Record $Gdb;runner=Record $PSCommandPath
         gdbScript=Record $GdbScript;testKit=Record (Join-Path $PSScriptRoot 'heaptestkit.inc')
-        library=Record (Join-Path $RepoRoot 'libheap-elf.a')
+        library=Record (Join-Path $RepoRoot 'libheap.a')
         librarySources=$sources
         tests=$results
     }

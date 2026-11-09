@@ -61,7 +61,7 @@ The Heap API is a dynamic memory management library for the Motorola 68000 famil
 - **Heap identity**: every heap and every block carries a 16-bit ID in the high word of their flags field so cross-heap frees are detected at runtime.
 - **Portable calling convention**: all functions use the 68K stack for parameters and return values in D0; registers are preserved according to the 68K ABI (`PROC`/`ENDP` with explicit `USES` lists).
 
-The implementation lives in `src/` and is split across individual `.a68` source files, one per function, assembled to ELF object files and linked into `libheap-elf.a`. Public constants, structures, and API prototypes are in `src/heap.inc`. Library object files and archives are built in the repository root.
+The implementation lives in `src/` and is split across individual `.a68` source files, one per function, assembled to ELF object files and linked into `libheap.a`. Public constants, structures, and API prototypes are in `src/heap.inc`. Library object files and archives are built in the repository root.
 
 ELF is the only supported object format. Build with [makefile-elf](../makefile-elf)
 on Windows or [makefile.macos](../makefile.macos) on macOS.
@@ -942,7 +942,7 @@ Parameters are pushed right-to-left. The assembler validates the parameter count
 
 10. **`HEAP_ENABLE_TAGGING` not implemented**: similarly defined but not implemented. No tags are assigned to allocations.
 
-11. **`ar.exe` wildcard limitation on Windows**: the build system invokes `ar.exe -rscv libheap-elf.a libheap-elf*` which fails on Windows because `cmd.exe` and PowerShell do not expand wildcards for native executables. The archive must be rebuilt manually with an explicit file list.
+11. **`ar.exe` wildcard limitation on Windows**: `cmd.exe` and PowerShell do not expand wildcards for native executables, so archive commands must supply an explicit object-file list. Both makefiles supply that list when building `libheap.a`.
 
 12. **`GetMachineHeaps` heuristic detection**: `_GetMachineHeaps` detects private heaps by scanning the machine heap block chain for allocated blocks whose first four bytes are `'HEAP'`. If application data happens to begin with those bytes, it will be misidentified as a heap handle.
 

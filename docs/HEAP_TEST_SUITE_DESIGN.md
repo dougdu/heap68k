@@ -164,7 +164,7 @@ flowchart LR
         A[test/*.a68 modules] -->|asm68K /Cx /elf /Zi| B[test/*.o]
         K[test/heaptestkit.inc] --> A
         B -->|m68k-elf-ld -Ttext 500| C[test/test_*.elf]
-        L[libheap-elf.a] --> C
+        L[libheap.a] --> C
     end
     subgraph Run per module
         C --> D[sim68k --gdb  RSP :1234]
@@ -481,7 +481,7 @@ the process using it. The default per-module watchdog remains 20 seconds.
 - Add a **`tests`** target to [makefile-elf](../makefile-elf) building the module ELFs
   (`test\test_create.elf`, `test\test_block.elf`, `test\test_soa.elf`, `test\test_debug.elf`,
   `test\test_stress.elf`), each linked like the existing `test\heapsmalltest.elf`
-  (`$(LD) -T $(LDSCRIPT) -Ttext 500 test\<obj>.o -L $(LIBDIR) -lheap-elf -o $@`).
+  (`$(LD) -T $(LDSCRIPT) -Ttext 500 test\<obj>.o -L $(LIBDIR) -lheap -o $@`).
 - Add a **`test`** (a.k.a. `check`) target that builds `tests` then invokes
   `test\run-heap-tests.ps1`, propagating its exit code so CI fails on any red.
 - `test\heaptestkit.inc` sits beside the test modules; the public include is
