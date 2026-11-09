@@ -59,6 +59,9 @@ generated outputs; sources and the bundled toolchain are retained.
 
 ## Notices
 
+The library's [MIT license](../LICENSE) does not apply to the bundled toolchain
+files.
+
 The bundled files retain their upstream licensing and copyright terms; this
 directory grants no additional redistribution rights. GNU and Python notices
 are retained under `windows/licenses/`.
