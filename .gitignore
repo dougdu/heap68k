@@ -8,6 +8,7 @@ lib/
 build/
 builds/
 build_test/
+/out/
 
 *.o
 *.obj

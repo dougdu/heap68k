@@ -9,9 +9,10 @@ reservations, legal prefix/suffix reuse, fragmented-bucket search, exact failure
 rollback, separate descriptor cleanup, adaptive tile fallback, tile-count
 clamping, and zero/debug/tail semantics. The complete suite passes 10/10.
 
-**Repository layout:** Test sources, helpers, scripts, and generated test artifacts
-live in `test/`; library sources and the public include live in `src/`. Library
-object files and archives remain in the repository root.
+**Repository layout:** Test sources, helpers, and scripts live in `test/`; library
+sources and the public include live in `src/`. All generated artifacts live under
+the Git-ignored `out/` directory: test objects/listings/executables in `out/bin/`,
+the public include in `out/include/`, and library objects/listings/archive in `out/lib/`.
 
 ELF is the only supported library object format; COFF build support is retired.
 
@@ -161,10 +162,10 @@ Two test artifacts exist today; neither is a maintainable automated **suite**.
 ```mermaid
 flowchart LR
     subgraph Build
-        A[test/*.a68 modules] -->|asm68K /Cx /elf /Zi| B[test/*.o]
+        A[test/*.a68 modules] -->|asm68K /Cx /elf /Zi| B[out/bin/*.o]
         K[test/heaptestkit.inc] --> A
-        B -->|m68k-elf-ld -Ttext 500| C[test/test_*.elf]
-        L[libheap.a] --> C
+        B -->|m68k-elf-ld -Ttext 500| C[out/bin/test_*.elf]
+        L[out/lib/libheap.a] --> C
     end
     subgraph Run per module
         C --> D[sim68k --gdb  RSP :1234]
@@ -397,8 +398,8 @@ completion.
 
 ### 10.1 `heaptest.gdb` (command file, symbolic — no addresses)
 
-Run manual debugger commands from `test/`; the runner selects this directory
-automatically.
+Run manual debugger commands from the repository root, selecting the ELF in
+`out/bin/` and the command file in `test/`.
 
 ```gdb
 set pagination off
@@ -411,7 +412,7 @@ printf "RESULT=%08x DETAIL=%08x\n", *(unsigned int *)&tResult, *(unsigned int *)
 kill
 quit
 ```
-`m68k-elf-gdb <module>.elf -nx --batch -x heaptest.gdb` connects to the running sim,
+`toolchain\windows\m68k-elf-gdb.exe out\bin\<module>.elf -nx --batch -x test\heaptest.gdb` connects to the running sim,
 transfers the image with **`load`** (sim68k ignores the positional `[file]` under `--gdb`;
 `load` also sets `$pc` to the entry, `0x500`), breaks at **`_tdone` only** (on the fail
 path `_tfail` writes `tResult`/`tDetail` and *falls through* into `_tdone`, so the value is
@@ -421,12 +422,12 @@ carry no C type. **Validated in Phase 0.**
 
 ### 10.2 `run-heap-tests.ps1` (driver)
 1. **Build** the test ELFs (`nmake tests`) from the repository root,
-   then run the module ELFs from `test/`.
+   then run the module ELFs from `out/bin/`.
 2. For each module ELF:
    a. verify the selected RSP port is free; never stop unrelated processes;
    b. start a fresh `sim68k --gdb <port>` (the program is **not** passed on the command
       line — it is transferred by the gdb `load` in §10.1); wait for the RSP port to open;
-   c. run `m68k-elf-gdb <module>.elf -nx --batch -x heaptest.gdb`, capture stdout;
+   c. run the bundled GDB against `out/bin/<module>.elf` with `test/heaptest.gdb`, capture stdout;
    d. **watchdog:** `WaitForExit(timeout)`; on timeout kill gdb+sim → `TIMEOUT` (a storm
       fails fast instead of hanging);
    e. parse `RESULT=`/`DETAIL=`; `0` → pass, else decode `$PPCC` + detail;
@@ -435,7 +436,7 @@ carry no C type. **Validated in Phase 0.**
    the process **exit code** = number of failing modules.
 
 ### 10.3 Interactive debug path (`sid68k`, secondary)
-For triage, not CI: from `test/`, run `sim68k --gdb`; then `sid68k` (no argv); at `-` type
+For triage, not CI: from `out/bin/`, run `sim68k --gdb`; then `sid68k` (no argv); at `-` type
 `e<module>.elf` (loads image **and** DDT symbols + sets PC), `x`, `g,_tdone`, then inspect
 with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C2.)
 Use the standalone sid68k checkout for NM1-aware descriptor/padding views;
@@ -459,8 +460,9 @@ The NMake `test` target uses PowerShell 7 (`pwsh`), matching the standalone exam
   Relative report paths resolve from `test/`.
 
 The makefile and runner use the tools in `toolchain\windows` by default.
-The legacy harness build targets are `test\heaptest.elf` and
-`test\heapsmalltest.elf` (for example, `nmake test\heapsmalltest.elf`).
+The legacy harness build targets are `out\bin\heaptest.elf` and
+`out\bin\heapsmalltest.elf` (for example, `nmake out\bin\heapsmalltest.elf`).
+`nmake clean` removes generated outputs without deleting source files.
 
 **Reading the summary.** A `PASS` row is `RESULT=00000000`. A `FAIL` row's `Note` decodes
 `RESULT=$0000PPCC` as `phase P, check 0xCC`, and `DETAIL` is the failing value / error code —
@@ -481,9 +483,9 @@ the process using it. The default per-module watchdog remains 20 seconds.
 ## 11. Build Integration
 
 - Add a **`tests`** target to [makefile](../makefile) building the module ELFs
-  (`test\test_create.elf`, `test\test_block.elf`, `test\test_soa.elf`, `test\test_debug.elf`,
-  `test\test_stress.elf`), each linked like the existing `test\heapsmalltest.elf`
-  (`$(LD) -T $(LDSCRIPT) -Ttext 500 test\<obj>.o -L $(LIBDIR) -lheap -o $@`).
+  (`out\bin\test_create.elf`, `out\bin\test_block.elf`, `out\bin\test_soa.elf`, `out\bin\test_debug.elf`,
+  `out\bin\test_stress.elf`), each linked like the existing `out\bin\heapsmalltest.elf`
+  (`$(LD) -T $(LDSCRIPT) -Ttext 500 $(BINDIR)\<obj>.o -L $(LIBDIR) -lheap -o $@`).
 - Add a **`test`** (a.k.a. `check`) target that builds `tests` then invokes
   `test\run-heap-tests.ps1`, propagating its exit code so CI fails on any red.
 - `test\heaptestkit.inc` sits beside the test modules; the public include is
@@ -491,7 +493,8 @@ the process using it. The default per-module watchdog remains 20 seconds.
   directories, and each module `include`s both files.
 - Mirror the targets into `makefile.macos` for ELF source parity, carrying the known
   caveat that the macOS toolchain is not host-buildable on Windows (§14 R8).
-- Keep artifacts git-ignored (`*.elf`, `*.o`, `*.lst`, `*.68k`).
+- Create `out/bin/`, `out/include/`, and `out/lib/` as needed; exclude the entire
+  root `out/` directory from Git.
 
 ---
 
@@ -506,6 +509,10 @@ heap68k/
 │  ├─ HeapAlloc.a68            ; allocation implementation
 │  └─ ...                      ; remaining library assembly sources
 ├─ makefile                    ; library + test build/run targets
+├─ out/                       ; generated, Git-ignored
+│  ├─ bin/                    ; test objects, listings, and executables
+│  ├─ include/                ; exported heap.inc
+│  └─ lib/                    ; library objects, listings, and libheap.a
 └─ test/
    ├─ heaptestkit.inc          ; macros + result convention (§8)
    ├─ heaptest.gdb             ; GDB batch command file (§10.1)

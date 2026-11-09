@@ -61,7 +61,7 @@ The Heap API is a dynamic memory management library for the Motorola 68000 famil
 - **Heap identity**: every heap and every block carries a 16-bit ID in the high word of their flags field so cross-heap frees are detected at runtime.
 - **Portable calling convention**: all functions use the 68K stack for parameters and return values in D0; registers are preserved according to the 68K ABI (`PROC`/`ENDP` with explicit `USES` lists).
 
-The implementation lives in `src/` and is split across individual `.a68` source files, one per function, assembled to ELF object files and linked into `libheap.a`. Public constants, structures, and API prototypes are in `src/heap.inc`. Library object files and archives are built in the repository root.
+The implementation lives in `src/` and is split across individual `.a68` source files, one per function, assembled to ELF object files and linked into `out/lib/libheap.a`. Public constants, structures, and API prototypes are in `src/heap.inc`, copied to `out/include/heap.inc` when built. Library objects and listings are placed in `out/lib/`; test objects, listings, and executables are placed in `out/bin/`. The entire `out/` directory is excluded from Git.
 
 ELF is the only supported object format. Build with [makefile](../makefile)
 on Windows or [makefile.macos](../makefile.macos) on macOS.

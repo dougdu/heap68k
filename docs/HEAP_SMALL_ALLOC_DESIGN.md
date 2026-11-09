@@ -770,7 +770,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 - [x] Implement [`__HeapStats`](../src/HeapStats.a68): block-chain walk → committed vs. requested bytes,
       free/overhead totals, largest free block, and a request-size histogram (`HEAP_STATS`).
 - [x] Extend [HeapTest.a68](../test/HeapTest.a68) with a scripted small-allocation mix + `__HeapStats` snapshot.
-- [x] `makefile` builds clean; `libheap.a` + `heaptest.elf` produced (nmake).
+- [x] `makefile` builds clean; `out/lib/libheap.a` + `out/bin/heaptest.elf` produced (nmake).
 - [~] `makefile.macos`: corrected `-Cu` → `-Cx`; not buildable on the Windows host (macOS toolchain).
 
 > Historical note: the retired COFF backend assembled its objects, but
@@ -785,7 +785,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 - [x] Unit-test primitives via `HeapSmallTest.a68` (no public-API routing): size→class (n=1..256), SCB create,
       arena create, slab create + free-list walk, and `__HeapSlabFromPtr` recognition (valid / mid-cell / out-of-range /
       foreign) all pass (`tResult=0`) under sim68k `--gdb` + sid68k. **Run:** `sim68k --gdb` then
-      `G 500,A58,A4C` in `sid68k heapsmalltest.elf` (start addr **required**; A58=`_tdone`, A4C=`_tfail`).
+      `G 500,A58,A4C` in `sid68k out\bin\heapsmalltest.elf` from the repository root (start addr **required**; A58=`_tdone`, A4C=`_tfail`).
 - [x] Add new objects to both ELF makefiles (Windows ELF green; macOS carries the same Phase 0 caveat).
 
 ### Phase 2 — Allocation path  ✅ (2026-07-21)

@@ -46,10 +46,16 @@ Use NMake's `/A` option when switching tool versions to rebuild cached objects.
 The makefile supplies assembly-only flags: `/Cx /elf /Fl /Zi /nologo`.
 The assembler rejects the linker-only `/Fm` map option with `/c`.
 
-The existing `LIBDIR`, `INCDIR`, and `BINDIR` export destinations are unchanged.
-Override them on the NMake command line if a different installation location is
-needed. `TOOLCHAIN_DIR` selects another build-tool directory; the runner's `-Sim`
-and `-Gdb` options select alternate test tools.
+Builds create a Git-ignored `out/` directory in the repository root:
+
+- `out/bin/`: test objects, listings, and executables.
+- `out/include/`: the exported `heap.inc`.
+- `out/lib/`: library objects, listings, and `libheap.a`.
+
+The runner reads its ELFs and archive from this layout. `nmake clean` removes
+generated outputs; sources and the bundled toolchain are retained.
+`TOOLCHAIN_DIR` selects another build-tool directory; the runner's `-Sim` and
+`-Gdb` options select alternate test tools.
 
 ## Notices
 

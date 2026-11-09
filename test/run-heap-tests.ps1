@@ -33,6 +33,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $SourceRoot = Join-Path $RepoRoot 'src'
+$OutputRoot = Join-Path $RepoRoot 'out'
+$BinaryRoot = Join-Path $OutputRoot 'bin'
 Set-Location -LiteralPath $PSScriptRoot
 
 $GdbScript = Join-Path $PSScriptRoot 'heaptest.gdb'
@@ -126,7 +128,7 @@ $scriptLines -replace '^target remote .+$', "target remote 127.0.0.1:$Port" |
 
 try {
 foreach ($m in $Modules) {
-    $elf = "$m.elf"
+    $elf = Join-Path $BinaryRoot "$m.elf"
     if (-not (Test-Path -LiteralPath $elf)) {
         $results += [pscustomobject]@{ Module=$m; Status='NOBUILD'; Result='--------'; Detail='--------'; Note='ELF not found' }
         continue
@@ -150,7 +152,7 @@ foreach ($m in $Modules) {
     $gdbOut = [System.IO.Path]::GetTempFileName()
     $temporaryFiles.Add($gdbOut)
     $temporaryFiles.Add("$gdbOut.err")
-    $gdbProc = Start-Process -FilePath $Gdb -ArgumentList $elf, '-nx', '--batch', '-x', $commands `
+    $gdbProc = Start-Process -FilePath $Gdb -ArgumentList "`"$elf`"", '-nx', '--batch', '-x', "`"$commands`"" `
              -PassThru -WindowStyle Hidden -RedirectStandardOutput $gdbOut -RedirectStandardError "$gdbOut.err"
 
     $exited = $gdbProc.WaitForExit($TimeoutSec * 1000)
@@ -218,7 +220,7 @@ if ($ReportPath) {
         schema=1;phase='NM1-upstream';port=$Port;passed=$pass;failed=$fail;total=$results.Count
         simulator=Record $Sim;gdb=Record $Gdb;runner=Record $PSCommandPath
         gdbScript=Record $GdbScript;testKit=Record (Join-Path $PSScriptRoot 'heaptestkit.inc')
-        library=Record (Join-Path $RepoRoot 'libheap.a')
+        library=Record (Join-Path $OutputRoot 'lib\libheap.a')
         librarySources=$sources
         tests=$results
     }
