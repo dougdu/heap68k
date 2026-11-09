@@ -31,6 +31,10 @@ from that exact revision.
 The manifest pins 19 payload files. Preserve their bytes and upstream notice
 formatting; [`.gitattributes`](../.gitattributes) disables text conversion
 for `toolchain/windows/**` so line-ending changes cannot invalidate hashes.
+The same rule marks the bundle as `linguist-vendored`, excluding its GDB
+Python support and other bundled dependencies from GitHub language statistics.
+GitHub applies this classification from the committed default branch; local
+attribute edits alone do not update the language bar.
 
 ## Host prerequisites
 

@@ -1,2 +1,3 @@
 # Preserve bundled tool/runtime bytes and upstream notice formatting.
-toolchain/windows/** -text -whitespace
+# Exclude bundled dependencies, including GDB's Python support, from language statistics.
+toolchain/windows/** -text -whitespace linguist-vendored
