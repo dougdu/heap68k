@@ -1,0 +1,2 @@
+# Preserve bundled tool/runtime bytes and upstream notice formatting.
+toolchain/windows/** -text -whitespace

@@ -1,0 +1,198 @@
+{
+  "schema": 1,
+  "platform": "windows-x64",
+  "selection": "Newest existing non-sanitized Release executables; canonical ELF-prefixed GNU binaries match the unprefixed copies.",
+  "repositoryRevisions": {
+    "asm68k": {
+      "headAtCollection": "503a9493e93366ab75a13a7ef0d0b559fac37fef"
+    },
+    "sim68k": {
+      "headAtCollection": "d62f48e1cec9523d3193d304334fcfa35c2db5c4"
+    },
+    "worm68k": {
+      "headAtCollection": "843eb09ac870fb98c065b1bb70ba3a2db6a0a9ee"
+    }
+  },
+  "pythonRuntime": {
+    "version": "3.14",
+    "archive": "lib\\python314.zip",
+    "sourceAndDataFiles": 618,
+    "nativeExtensions": [
+      "_struct",
+      "zlib"
+    ],
+    "excluded": [
+      "regression tests",
+      "bytecode caches",
+      "site-packages",
+      "IDLE/Tkinter/turtledemo",
+      "ensurepip"
+    ]
+  },
+  "files": [
+    {
+      "path": "asm68K.exe",
+      "bytes": 664576,
+      "sha256": "C8CE7FC6133B6AEAD5F80394E5DDABBD3AA0395A8185CCC03022AB6E7E396F44",
+      "sourceRepository": "asm68k",
+      "sourcePath": "build\\bin\\Release\\asm68K.exe",
+      "version": "1.0.1088.0",
+      "sourceLastWriteTimeUtc": "2026-10-28T23:18:43.4598236Z"
+    },
+    {
+      "path": "cpm68k.ld",
+      "bytes": 2441,
+      "sha256": "C20800AD01178FAF6C14FF897020C743B96E67A3D8533C02E6EFA85DAABEC680",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\cpm68k.ld",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:15.9536880Z"
+    },
+    {
+      "path": "lib\\python3.14\\lib-dynload\\_struct.cp314-mingw_x86_64_msvcrt_gnu.pyd",
+      "bytes": 61189,
+      "sha256": "13CF9C49A9907DD8D52415AE68B7F8C7EF9C44B0D419561C8CB2F836D606D736",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\lib\\python3.14\\lib-dynload\\_struct.cp314-mingw_x86_64_msvcrt_gnu.pyd",
+      "sourceLastWriteTimeUtc": "2026-04-11T07:13:00.0000000Z"
+    },
+    {
+      "path": "lib\\python3.14\\lib-dynload\\zlib.cp314-mingw_x86_64_msvcrt_gnu.pyd",
+      "bytes": 50906,
+      "sha256": "A75E25DD8B12FADA729AD41DBF48EE060E64C8A3B4E1EE5288E71F82DA4ACFB5",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\lib\\python3.14\\lib-dynload\\zlib.cp314-mingw_x86_64_msvcrt_gnu.pyd",
+      "sourceLastWriteTimeUtc": "2026-04-11T07:13:00.0000000Z"
+    },
+    {
+      "path": "lib\\python3.14\\os.py",
+      "bytes": 41959,
+      "sha256": "1494F3B93C6714D7A511963586F2B392DC92F3181C0D1EAD82C621A4B0AAD969",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\lib\\python3.14\\os.py",
+      "sourceLastWriteTimeUtc": "2026-04-11T07:13:00.0000000Z"
+    },
+    {
+      "path": "lib\\python314.zip",
+      "bytes": 2935826,
+      "sha256": "31B8FDE68EC9B62EDE88A949D76A5542ECDB5DF92379F96E174E4DC6840AC7EC",
+      "sourceRepository": "worm68k",
+      "sourcePath": "packaged from tools\\elf\\lib\\python3.14 (Python/GDB sources and LICENSE.txt)"
+    },
+    {
+      "path": "libgcc_s_seh-1.dll",
+      "bytes": 151732,
+      "sha256": "41C0496474A2AC001F26C3E2EE789C885258697581105C2D666737AD01D7E770",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\libgcc_s_seh-1.dll",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.0167433Z"
+    },
+    {
+      "path": "liblzma-5.dll",
+      "bytes": 191836,
+      "sha256": "DC9EDB9BD83B0371FE68D96CB3E70CD17B7A5ABA958326A18F8210CB812432E9",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\liblzma-5.dll",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.0295330Z"
+    },
+    {
+      "path": "libncursesw6.dll",
+      "bytes": 548227,
+      "sha256": "946A84047652D337349D4880FDFE88E81D64DCD36D5B042B0A28D0B185BE45C8",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\libncursesw6.dll",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.0367082Z"
+    },
+    {
+      "path": "libpython3.14.dll",
+      "bytes": 5447914,
+      "sha256": "455B72BF31C90DB68EC722EE4668B3E00ADD4FAA6384827C028CE2B30B66AF8E",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\libpython3.14.dll",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.0616575Z"
+    },
+    {
+      "path": "libwinpthread-1.dll",
+      "bytes": 65442,
+      "sha256": "851F61482AD5B6AAC7C6ABC54BBE31D24F89E0CA683A75FCEC2D47F86B2D2242",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\libwinpthread-1.dll",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.0616575Z"
+    },
+    {
+      "path": "licenses\\GPL-3.0.txt",
+      "bytes": 31364,
+      "sha256": "1EB9C59BC5DBEAEE3DF70E3F54E3BA73A62DA4898A0DF1D28A9E155199E4AD75",
+      "sourceRepository": "worm68k",
+      "sourcePath": "generated verbatim by m68k-elf-gdb.exe -nx --batch -ex \"show copying\""
+    },
+    {
+      "path": "licenses\\Python-3.14.txt",
+      "bytes": 13804,
+      "sha256": "B0E25A78CFFB43F4D92DE8B61CCFA1F1F98ECBC22330B54B5251E7B6BA010231",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\lib\\python3.14\\LICENSE.txt",
+      "sourceLastWriteTimeUtc": "2026-04-11T07:13:00.0000000Z"
+    },
+    {
+      "path": "m68k-elf-ar.exe",
+      "bytes": 944640,
+      "sha256": "B3F943A25463CEFF0878A88D41185BCA6560B087D51790220FDC72111919D78A",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\m68k-elf-ar.exe",
+      "version": "2.44",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.0787110Z"
+    },
+    {
+      "path": "m68k-elf-gdb.exe",
+      "bytes": 10181632,
+      "sha256": "A7F96BDFE49F96216FC9FAFC54A5952849B086AE4D8FD266DB93E4A9970FD25B",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\m68k-elf-gdb.exe",
+      "version": "15.2",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.1223702Z"
+    },
+    {
+      "path": "m68k-elf-ld.exe",
+      "bytes": 1653760,
+      "sha256": "A69D0ADDCA7F758763D5A1F3DEB77BBFA08FE0A8F56D1631D094727BEC443608",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\m68k-elf-ld.exe",
+      "version": "2.44",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.1449340Z"
+    },
+    {
+      "path": "m68k-elf-objdump.exe",
+      "bytes": 1595392,
+      "sha256": "D7BD00724ECF44738B2A8C0AAC0436BC3DACD3132E98A385BC7BA9FF46CEC8F3",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\m68k-elf-objdump.exe",
+      "version": "2.44",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.1590905Z"
+    },
+    {
+      "path": "m68k-elf-ranlib.exe",
+      "bytes": 944640,
+      "sha256": "92E0038CEBDC93FFE37BB576A94C5731BCBFAD9BF1F63DA0F889603E34C034FD",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\m68k-elf-ranlib.exe",
+      "version": "2.44",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.1652041Z"
+    },
+    {
+      "path": "sim68k.exe",
+      "bytes": 257024,
+      "sha256": "F03439DBA71093D2429497C3837C3973B0790501599306A8AC79BDC5BEFBB506",
+      "sourceRepository": "sim68k",
+      "sourcePath": "build\\bin\\Release\\sim68k.exe",
+      "sourceLastWriteTimeUtc": "2026-11-06T01:11:16.6954636Z"
+    },
+    {
+      "path": "zlib1.dll",
+      "bytes": 128488,
+      "sha256": "93E9243A44C29200EEACAF9658EFE2558581770E4B11CA4B500E18E424A6E3B5",
+      "sourceRepository": "worm68k",
+      "sourcePath": "tools\\elf\\zlib1.dll",
+      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.1830900Z"
+    }
+  ]
+}
