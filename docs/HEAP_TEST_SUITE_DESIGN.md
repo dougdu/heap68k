@@ -1,7 +1,10 @@
 # Heap Test Suite & Harness — Architecture & Design
 
-**Status:** All phases complete (A–8) — full functional / SOA / debug / error / stress coverage + the §9 edge-case backfill, run by a hardened one-step CI runner (`stub`/`test_kit`/`test_create`/`test_block`/`test_soa`/`test_debug`/`test_errors`/`test_stress`/`test_edges` green via `nmake test`, exit 0). The stress suite found & fixed a real SOA bug (stale slab/arena magic in released memory).
-**Component:** `68kTools/libraries/heap`
+**Status:** Ten automated modules implemented, including `test_aligned`;
+source/coverage audit 2026-11-09. The original phases A–8 are complete, but this
+is a regression suite, not exhaustive coverage of every flag/input combination
+(see §9.11). The earlier stress suite found the released slab/arena magic bug.
+**Component:** `heap68k`
 **Related:** [HEAP_API.md](HEAP_API.md) · [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md) · [heap.inc](../src/heap.inc)
 
 **NM1 extension (2026-10-05):** `test_aligned.a68` adds checked aligned
@@ -47,13 +50,16 @@ library, plus a **repeatable harness** that builds, runs, and reports pass/fail
 localization and no human in the loop.
 
 **In scope:**
-- Functional coverage of all 13 public API entry points ([heap.inc](../src/heap.inc) §"Heap API
+- Functional coverage of 14 public entry points: the 13 PROTO declarations in
+  [heap.inc](../src/heap.inc) plus the `_HeapGetError` leaf:
   Prototypes"): `_MachineHeapInitialize`, `_GetMachineHeap`, `_GetMachineHeaps`,
   `_HeapCreate`, `_HeapDestroy`, `_HeapAlloc`, `_HeapFree`, `_HeapReAlloc`, `_HeapSize`,
-  `_HeapValidate`, `_HeapValidateHandle`, `_HeapWalk`, `_HeapCompact`.
+  `_HeapValidate`, `_HeapValidateHandle`, `_HeapWalk`, `_HeapCompact`, `_HeapGetError`.
 - The Small Object Allocator (SOA) path (cells, slabs, arenas) — both **on** (default)
   and **disabled** (`HEAP_DISABLE_SMALL_POOL`).
-- Every allocation/heap **flag** and every reachable **error code** (`$00`–`$17`).
+- Representative implemented allocation/heap flags and explicit assertions
+  for every current error code (`$00`–`$17`). Remaining flag gaps are in §9.11;
+  tagging and trap-on-error are reserved, unimplemented options.
 - Debug/validation features: debug-fill on alloc/free, tail-guard overrun detection,
   auto-validate-on-call.
 - Negative / near-miss / corruption-detection cases.
@@ -69,13 +75,16 @@ localization and no human in the loop.
 
 ## 2. Current State & Gap Analysis
 
-Two test artifacts exist today; neither is a maintainable automated **suite**.
+The current automated suite is the ten modules in §6, built by the Windows
+makefile and run by the PowerShell driver. The following legacy-driver
+assessment and original gaps explain its starting point; they are not a
+claim that automation is still missing.
 
 ### 2.1 `HeapTest.a68` — legacy scratch driver
 - **Base-page dependent:** reads a CP/M base page off the stack at entry
   (`move.l (sp)+,a0`), so it **cannot run headless** under a bare `sim68k --gdb`
-  start — SP is undefined, the read yields garbage, and the CPU bus-errors at
-  `~0x520` before any heap call (a storm), identically at `SOA_ROUTE=0/1`.
+  start — the required loader-provided base-page pointer is absent, so the
+  driver fails before a heap call.
 - **Ad-hoc & short-circuited:** a linear sequence of `tt*` steps stitched together with
   `bra done`, so only a small fraction actually executes on any given run.
 - **No automated verdict:** results are inspected by hand; there is no `tResult`, no
@@ -83,17 +92,20 @@ Two test artifacts exist today; neither is a maintainable automated **suite**.
 - **Verdict:** useful as a manual CP/M-hosted scratchpad; not suitable as the suite.
 
 ### 2.2 `HeapSmallTest.a68` — the good model (SOA only)
-- **Self-contained:** allocates its heap from an in-BSS `heapbuf` (`$40000`) via
-  `_MachineHeapInitialize(0, heapbuf, size)` — **no base page**, runs headless.
+- **Self-contained:** initializes an in-BSS heap with capacity
+  `HEAPBUFSIZE-128` — **no base page**, runs headless.
 - **Self-checking:** `tResult` (`$0000FFFF` sentinel → `0` pass → `$PPCC` fail code),
   `tDetail` for context, mirrored in `D7`/`D6`; converges on a `_tdone` self-loop.
 - **Phased & precise:** per-check codes `$PPCC` (phase, check) localize any failure
   exactly.
-- **Limits:** SOA-only; a single monolithic file; **hand-rolls every check**
-  (`move.l #code,d7 / cmp / bne _tfail` — heavy boilerplate); and running it is a
-  **manual** `sid68k` session with hardcoded addresses (`g,1780`, `DL 3948`).
+- **Legacy structure:** SOA-only, monolithic, and hand-written assertions
+  (`move.l #code,d7 / cmp / bne _tfail`) rather than the kit's value macros.
+- **Current use:** the checks are preserved in `test_soa`. The legacy ELF
+  also works with the symbolic runner after `nmake` builds it:
+  `pwsh -File test\run-heap-tests.ps1 -NoBuild -Modules heapsmalltest`.
+  The original hardcoded-address sid68k procedure is not a current run command.
 
-### 2.3 Gaps to close
+### 2.3 Original gaps addressed by the suite
 | # | Gap | Addressed by |
 |---|-----|--------------|
 | 1 | No automated coverage of the **block-path** public API | §6, §9, Phase 2 |
@@ -108,16 +120,18 @@ Two test artifacts exist today; neither is a maintainable automated **suite**.
 ## 3. Goals & Non-Goals
 
 **Goals**
-- **G1 — Coverage:** every public entry point, every flag, every reachable error code,
-  plus SOA on/off, debug features, and negative/near-miss cases.
+- **G1 — Coverage:** public entry points and current error codes, plus
+  representative SOA on/off, flag, debug, and controlled negative cases.
+  Expand the focused regressions listed in §9.11 rather than claiming exhaustion.
 - **G2 — Automated & headless:** one command builds, runs, and verdicts the whole suite
   with **no interaction**; nonzero process exit on any failure.
 - **G3 — Precise localization:** a failure yields a unique code + detail that maps to an
   exact assertion.
 - **G4 — Self-contained & deterministic:** no CP/M/base page; fixed heap base/size and
   fixed sequences ⇒ reproducible addresses and golden values.
-- **G5 — Low-boilerplate authoring:** adding a check is a one-line macro; adding an area
-  is a new module + one runner-registry line.
+- **G5 — Low-boilerplate authoring:** most checks use one-line macros.
+  A new default module also needs makefile ELF/object dependencies and link
+  rules, the runner's default module list, and a coverage-matrix update.
 - **G6 — Fast:** the whole suite runs in seconds under the simulator.
 - **G7 — CI-friendly:** machine-parseable summary; decoded failures; exit code.
 
@@ -130,19 +144,22 @@ Two test artifacts exist today; neither is a maintainable automated **suite**.
 
 ## 4. Constraints & Invariants
 
-- **C1 — Headless simulator:** tests run under `sim68k --gdb` (a GDB **RSP stub** on TCP
-  `1234`; the FDC worker is forced synchronous under `--gdb`, giving a deterministic
-  instruction stream). No console/BDOS is assumed.
+- **C1 — Headless simulator:** tests run through the bundled simulator's GDB
+  RSP stub, default TCP port `1234`. No console/BDOS is assumed.
 - **C2 — No exception vectors:** a bare self-contained test installs **no** exception
   vector table. Any **mid-run** trap or breakpoint vectors through the zero table → wild
   jump → CPU storm (runaway SSP). **Therefore the only safe stop is the `_tdone`/`_tfail`
-  convergence point**, reached by a normal `bra`/`jmp`, never by a trap. The harness sets
-  breakpoints **only** on those symbols.
+  convergence point**, reached by a normal `bra`/`jmp`, never by a test-issued
+  trap. The command file sets **only `break _tdone`**; `_tfail` records the
+  failure and falls through there.
 - **C3 — Calling convention:** args pushed right-to-left, **caller cleans** (`adda.l
   #n,sp`); `D0/D1/A0/A1` scratch (caller-saved); `D2–D7/A2–A6` callee-saved. `D0` returns
-  the handle/pointer/status. Test code that must survive a call keeps values in `D2–D7`.
+  the handle/pointer/status for most APIs. `_HeapValidate` and
+  `_HeapValidateHandle` preserve D0 and report through CCR.Z. Test values must
+  also avoid D6/D7, which the assertion macros reserve.
 - **C4 — Determinism:** fixed `heapbuf` base + size and fixed allocation order ⇒ stable
-  addresses, enabling golden-value assertions. Any randomness uses a **fixed-seed** LCG.
+  addresses within a particular build. Prefer structural/relative assertions
+  across code changes. Stress randomness uses fixed-seed **xorshift-32**, not an LCG.
 - **C5 — Symbols:** ELF is built `/Cx` (case-sensitive labels) with `/Zi` debug info, so
   `m68k-elf-gdb` resolves `_tdone`, `_tfail`, `tResult`, `tDetail` **by name** — the
   runner carries **no hardcoded addresses**.
@@ -150,9 +167,12 @@ Two test artifacts exist today; neither is a maintainable automated **suite**.
   `HEAP_DISABLE_SMALL_POOL` is set (per-heap or per-call). The suite must exercise **both**
   paths.
 - **C7 — SOA authoring traps** (see [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md)
-  §12 and repo notes): never write into a *free* cell (its first 4 bytes are the intrusive
-  free-list control word — dirtying them corrupts `slFreeHd`); and freeing the *last* cell
-  of a slab releases the arena (on a debug-fill heap the released block is poisoned,
+  §12): never overwrite a free cell's first four bytes (its intrusive
+  free-list control word). White-box fill tests that intentionally dirty a
+  free-cell body preserve that word; production callers must not touch freed memory.
+  Freeing the *last* cell
+  of a slab releases that slab and, if its arena has no other live tiles, the
+  arena (on a debug-fill heap the released backing is poisoned,
   clobbering the just-freed cell). Tests use an **anchor cell** helper to keep a slab alive.
 
 ---
@@ -170,7 +190,7 @@ flowchart LR
     subgraph Run per module
         C --> D[sim68k --gdb  RSP :1234]
         D <-->|RSP| E[m68k-elf-gdb --batch -x heaptest.gdb]
-        E -->|break _tdone/_tfail; printf tResult| F[RESULT=.. DETAIL=..]
+        E -->|break _tdone; printf tResult| F[RESULT=.. DETAIL=..]
     end
     F --> G[test/run-heap-tests.ps1]
     G --> H[summary table + exit code]
@@ -183,18 +203,16 @@ The harness has four layers:
 2. **A test-support kit** (§8) — `heaptestkit.inc`: macros for setup, checks, and API-call
    boilerplate, plus the shared result convention.
 3. **An automated runner** (§10) — `m68k-elf-gdb --batch` driven by a `heaptest.gdb`
-   command file against the sim68k stub. GDB resolves symbols, breaks at `_tdone`/`_tfail`,
+   command file against the sim68k stub. GDB resolves symbols, breaks at `_tdone`,
    prints `tResult`/`tDetail`, and **exits cleanly** (`--batch`). This is the CI path.
 4. **A driver script** — `run-heap-tests.ps1` builds, iterates modules, parses the
    `RESULT=`/`DETAIL=` line, decodes it, prints a summary, and sets the process exit code.
 
-**Why GDB-batch, not scripted `sid68k`:** `sid68k` is the right tool for **interactive**
-triage (`!heap`, `!heap -p`), but with no argv + piped stdin it does **not** exit on EOF
-(it hangs the pipe), and an argv-loaded ELF skips the DDT symbol table. `m68k-elf-gdb
---batch` is fully scriptable, symbol-aware from the ELF, and exits cleanly — and sim68k's
-own banner endorses `m68k-elf-gdb` + `target remote localhost:1234` as a first-class
-client. The runner defaults to `toolchain\windows\m68k-elf-gdb.exe` in this
-repository. `sid68k` remains documented as the **debug** path (§10.3).
+**Why GDB-batch:** it resolves ELF symbols, transfers the image with `load`,
+prints machine-parseable results, and exits without interaction. Historical
+sid68k scripting had EOF/symbol-loading limitations; that external debugger
+is neither bundled nor required. The runner defaults to
+`toolchain\windows\m68k-elf-gdb.exe`; optional interactive debugging is in §10.3.
 
 ---
 
@@ -202,37 +220,52 @@ repository. `sid68k` remains documented as the **debug** path (§10.3).
 
 Tests are grouped into a small number of **self-contained ELF modules** (isolation +
 clear attribution, without a launch per micro-test). Each module mirrors the proven
-`HeapSmallTest.a68` skeleton via the kit:
+`HeapSmallTest.a68` result protocol. Most use the kit; `stub` hand-writes its
+bootstrap, and `test_soa` retains the legacy manual assertions with kit lifecycle:
 
 ```asm
         .model  flat
         include heap.inc
         include heaptestkit.inc         ; macros + result convention
         .code
-start:  TEST_INIT  heapbuf,HEAPBUFSIZE  ; in-BSS heap, sentinel, clear D6/D7
+HEAPBUFSIZE equ $40000
+start:  TEST_INIT  heapbuf,HEAPBUFSIZE-128 ; usable capacity excludes metadata
         PHASE   1                       ; ... groups of checks ...
         ; EXPECT_* / HALLOC / HFREE ...
         TEST_PASS                       ; clr tResult; fall into _tdone
-        TEST_EPILOGUE                   ; _tfail / _tdone / .bss (tResult,tDetail,heapbuf)
+        TEST_EPILOGUE                   ; _tfail / _tdone code only
+        .bss
+hMachineHeap ds.l 1
+tResult      ds.l 1
+tDetail      ds.l 1
+heapbuf      ds.b HEAPBUFSIZE+BLK_HDR_SIZE ; allow start-alignment loss too
+        end
 ```
 
-Proposed modules:
+Current default modules:
 
 | Module | Area under test |
 |--------|-----------------|
+| `stub.a68` | Minimal machine-heap/bootstrap check of the runner protocol. |
+| `test_kit.a68` | Core lifecycle, assertions, API wrappers, and safety helpers. |
 | `test_create.a68`  | `_MachineHeapInitialize`, `_GetMachineHeap(s)`, `_HeapCreate`, `_HeapDestroy`, `_HeapValidateHandle` |
 | `test_block.a68`   | Block-path `_HeapAlloc`/`_HeapFree`/`_HeapReAlloc`/`_HeapSize`/`_HeapWalk`/`_HeapValidate`/`_HeapCompact` with the SOA **disabled** |
 | `test_soa.a68`     | SOA path — folds in / supersedes `HeapSmallTest.a68` (cells, slabs, arenas, discriminator, transitions) |
-| `test_debug.a68`   | Debug-fill (alloc/free), tail-guard overrun detection, auto-validate-on-call, corrupt-and-detect for each error code |
+| `test_debug.a68`   | Debug fill, tail-guard overrun detection, validate-all-on-call, selected corruption/repair cases. |
+| `test_errors.a68` | All error codes `$00`–`$17`, controlled corruptions, and mapped-buffer near-misses. |
 | `test_stress.a68`  | Fixed-seed randomized alloc/free/realloc soak with interleaved validation + invariant assertions |
+| `test_edges.a68` | Realloc NULL/zero/grow, compact effect, walks, destruction/enumeration, and oversized/wraparound requests. |
+| `test_aligned.a68` | Internal aligned regular allocations, rollback, fragmented search, separate descriptors, arena bounds/fallback, and fill/tail checks. |
 
 > **Module vs. omnibus:** grouping by area (rather than one giant ELF, or one ELF per
 > micro-test) balances isolation against per-launch overhead. Each module still uses the
 > phase/check code scheme internally; the runner tags results with the module name.
 
-Legacy [HeapTest.a68](../test/HeapTest.a68) is retained (or migrated) as an **optional
-CP/M-hosted integration test** run under a real CP/M image, covering the base-page/BDOS
-path the headless suite deliberately avoids (§15 Q6).
+Legacy [HeapTest.a68](../test/HeapTest.a68) and
+[HeapCompactTest.a68](../test/HeapCompactTest.a68) remain CP/M-base-page scratch
+drivers, not automated verdict modules. The latter has an object build rule,
+not a linked suite target. They are not reference initialization examples;
+use the backing-size rules in [the API guide](HEAP_API.md#71-initialization-sequence).
 
 ---
 
@@ -244,7 +277,7 @@ Generalized from `HeapSmallTest.a68`:
 |--------|---------|
 | `tResult` (long) | `$0000FFFF` = sentinel (did not complete); `0` = **all pass**; else = **failing code** |
 | `tDetail` (long) | context for the failure (e.g. the size `n`, an expected/actual value, or an address) |
-| `D7` / `D6` | mirror `tResult`/`tDetail` live at the stop, for eyeball inspection |
+| `D7` / `D6` | Failing code/context copied by `_tfail`; `TEST_PASS` clears D7 but does not reset D6 or `tDetail`. |
 | `_tfail` | `move.l d7,tResult / move.l d6,tDetail` then fall into `_tdone` |
 | `_tdone` | `jmp _tdone` self-loop — the **only** breakpoint target (C2) |
 
@@ -257,15 +290,17 @@ across modules. `tDetail` carries the discriminating value.
 > `$MMPPCC` (`MM` = module id) so every code is globally unique. Modules + per-module
 > `tResult` is the recommended default.
 
-The runner turns this into a human line via a **decode table** kept in lockstep with the
-codes (or emitted by each module as a `.legend` section — §15 Q2).
+The runner decodes nonzero results generically as `phase P, check 0xCC`, with
+a sentinel explanation and two optional friendly `stub` overrides.
+No per-module `.legend` section or exhaustive decode table is implemented.
+GDB must also exit zero for a zero result to count as `PASS`.
 
 ---
 
 ## 8. Test-Support Kit (`heaptestkit.inc`)
 
 A macro layer that removes boilerplate while expanding to the **same** proven explicit
-pattern. Sketch (names illustrative; final syntax per asm68K macro rules):
+pattern. The following names and operand forms are implemented:
 
 **Lifecycle**
 - `TEST_INIT hbuf,hsz` — init the machine heap from an in-BSS buffer, set the `$0000FFFF`
@@ -288,15 +323,19 @@ compares are **unsigned**)
 - `EXPECT_MAGIC code,src,magic` — assert a longword magic (`'HEAP'`, `'SCB '`, `'AREN'`,
   `'SLAB'`, `'BLKH'`).
 - `EXPECT_FILL code,addr,lenb,pat` — assert a longword pattern over `[addr, addr+lenb)`.
+  Use a positive multiple-of-four length no greater than 256 KB; it is a
+  longword/16-bit-DBRA helper, not a general arbitrary-length byte assertion.
 
 **Flag assertions** (read the CCR the preceding `H*` call left — for status-in-Z APIs)
 - `EXPECT_Z code` / `EXPECT_NZ code` — place **immediately** after `HVALIDATE` /
   `HVALIDATEH` (their trailing `ADDA` does not disturb CCR).
+  They set the failure code when needed; D6 may still contain earlier context.
 
 **Error assertion**
 - `EXPECT_ERR code,experr` — call `_HeapGetError`, compare to a `HEAP_ERROR_*` value.
 
-**API-call wrappers** (push right-to-left, `jsr`, `adda.l #n,sp`, result in `D0`)
+**API-call wrappers** (push right-to-left, `jsr`, `adda.l #n,sp`; result in D0
+except the validators, whose result is in CCR.Z)
 - `HALLOC hHeap,flags,bytes` · `HFREE hHeap,pMem` · `HREALLOC hHeap,flags,pMem,bytes`
 - `HSIZE hHeap,pMem` · `HCREATE opts,size` · `HDESTROY hHeap`
 - `HVALIDATE hHeap,pBlock` · `HVALIDATEH hHeap` · `HWALK hHeap,pEntry` · `HCOMPACT hHeap`
@@ -315,24 +354,24 @@ wrappers); keep live values in `D2-D5`/`A2-A5` or `.bss`.
 
 ## 9. Coverage Matrix
 
-The suite is "comprehensive" when every row below has at least the listed cases
-implemented and passing. `→err` means "assert via `_HeapGetError`".
+This maps current regression assertions, not exhaustive input coverage.
+`→err` means an assertion via `_HeapGetError`; §9.11 records remaining gaps.
 
 ### 9.1 Lifecycle & handles
 | Area | Cases |
 |------|-------|
 | `_MachineHeapInitialize` | valid handle returned; header magic `'HEAP'`; usable via alloc |
 | `_GetMachineHeap` / `_GetMachineHeaps` | returns the machine handle; enumerates N heaps into a buffer |
-| `_HeapCreate` | each flag combo; header magic + distinct id; too-small size → graceful fail →err |
+| `_HeapCreate` | selected flag combinations; header magic/distinct IDs; private heaps at sizes used by the functional, stress, and aligned modules |
 | `_HeapDestroy` | releases; subsequent validate of the handle →err (bad magic) |
 | `_HeapValidateHandle` | valid pass; corrupt magic →err; `hhSmallPool≠0` but bad SCB magic → `SLAB_CORRUPT ($15)` |
 
 ### 9.2 Allocation
 | Area | Cases |
 |------|-------|
-| `_HeapAlloc` sizes | `0` (defined behavior); `1`; boundaries around free buckets (64/128/256/512/1K/4K/…); around `SOA_MAX` (256 vs 257); very large |
+| `_HeapAlloc` sizes | representative block sizes; SOA class mapping 1..256 and all-class allocation sweep; aligned sizes 1/33/4096; oversized/high-bit/wraparound requests on regular/tail/SOA heaps (`test_edges` P6–P7) |
 | Flags | `HEAP_ZERO_MEMORY` (whole result zeroed); no-zero (debug-fill pattern present); `HEAP_DISABLE_SMALL_POOL` forces block path for a small size |
-| Failure | exhaust the heap → returns `0` + `OUT_OF_MEMORY` →err; heap unchanged |
+| Failure | oversized requests return `0` + `OUT_OF_MEMORY`; originals keep their sizes/data; aligned failures preserve regular-block accounting |
 | Alignment | block ≥ 32-byte; cell ≥ 8-byte; assert per path |
 | Accounting | `_HeapSize` / `__HeapStats` reflect committed vs requested |
 
@@ -341,8 +380,8 @@ implemented and passing. `→err` means "assert via `_HeapGetError`".
 |------|-------|
 | `_HeapFree` | free a valid block and a valid cell (SOA discriminator picks the path) |
 | NULL | free `NULL` → no-op (no error / defined) |
-| Double-free | second free →err (`DOUBLE_FREE $16` for cells; block equivalent) |
-| Cross-heap | free heap-A pointer to heap-B → `HANDLE_BLOCK_MISMATCH` →err |
+| Double-free | regular second free → `INVALID_BLOCK`; cell second free with a same-slab anchor → `DOUBLE_FREE` |
+| Cross-heap | regular free and size calls against the wrong heap → `HANDLE_BLOCK_MISMATCH`; SOA primitive tests compare the owning slab ID |
 | Coalesce | freeing adjacent blocks coalesces (validate neighbor links); `HEAP_DISABLE_COALESCE_ON_FREE` suppresses it |
 
 ### 9.4 ReAlloc & Size
@@ -351,46 +390,81 @@ implemented and passing. `→err` means "assert via `_HeapGetError`".
 | `_HeapReAlloc` | `NULL` ptr → `INVALID_BLOCK` (this heap is **strict**, not malloc-like); size `0` → a **minimal allocation** (not a free); grow (moved/kept), shrink — covered by [`test_edges.a68`](../test/test_edges.a68) P1 |
 | In-place | `HEAP_REALLOC_IN_PLACE_ONLY`: same-size/shrink succeed; a required move → `OUT_OF_MEMORY` →err, original preserved & intact |
 | Zeroing | `HEAP_ZERO_MEMORY` on grow zeroes the new tail; **no** zeroing on a same-class SOA grow (S3) |
-| Transitions | SOA matrix: same-class keep; cross-class cell→cell (copy+free); small→large cell→block; (block→cell only via disable toggling) |
-| `_HeapSize` | block usable size; cell class size; foreign ptr → `HANDLE_BLOCK_MISMATCH` →err |
+| Transitions | same-class cell reuse; cross-class cell→cell and cell→block copy/free; regular grow/shrink; no guaranteed regular→cell conversion on shrink |
+| `_HeapSize` | requested size for regular blocks; class size for cells; wrong-heap regular pointer → `HANDLE_BLOCK_MISMATCH`; oversized realloc preserves reported sizes |
 
 ### 9.5 Validation, Walk, Compact
 | Area | Cases |
 |------|-------|
 | `_HeapValidate` (whole) | clean heap passes; after a mixed workload still passes |
-| `_HeapValidate` (corrupt) | corrupt a block header magic / free links / counts → detected →err; SOA slab-magic corruption → `SLAB_CORRUPT`; arena corruption (bad magic, mis-aligned `arBase`, **`arTileMap` popcount ≠ `arSlabUse`**) → `SOA_ARENA_CORRUPT ($17)`; repair → clean |
-| `_HeapWalk` | enumerate every block; `NO_MORE_ITEMS` at end; empty heap; `NULL` cursor start; walk after frees |
+| `_HeapValidate` (corrupt) | regular magic/link/heap-end and handle-header mutations; SOA slab/arena magic corruption; repair/revalidate. Other implemented consistency checks are not each independently corrupted by the suite. |
+| `_HeapWalk` | regular-block traversal to `NO_MORE_ITEMS`; populated count and zero allocated blocks in a new heap; zero-initialized cursor storage (a NULL `pEntry` is an error) |
 | `_HeapCompact` | coalesces adjacent frees; releases empty slabs/arenas; live cells **prevent** release; idempotent second call |
 
 ### 9.6 Debug & tail-guard
 | Area | Cases |
 |------|-------|
-| Debug-fill on alloc | non-zeroed alloc is filled with the fill pattern (`CDCDCDCD`) over the whole result |
+| Debug-fill on alloc | debug-enabled heaps fill requested regular bytes / entire cells with `CDCDCDCD`; aligned test verifies debug fill takes precedence over zeroing |
 | Debug-fill on free | freed block/cell filled `BAADF00D`; for cells the free-list control word is written **after** the poison (survives) |
-| Tail-guard | alloc with `HEAP_TAIL_CHECKING_ENABLED`, write one byte past the request, then `_HeapValidate`/`_HeapFree` detects the overrun →err |
-| Auto-validate-on-call | with the flag set, corrupt the heap then call any API → the call detects it →err |
+| Tail-guard | corrupt the first guard byte/longword after a longword-aligned request; `_HeapFree` detects it, then repair/free succeeds. Whole-heap validation does not scan allocation tail guards. |
+| Auto-validate-on-call | `HEAP_VALIDATE_ALL_ENABLED` causes `_HeapAlloc` to refuse a deliberately corrupted heap; not every API/automatic-validation flag combination is tested |
 
 ### 9.7 Error-code sweep (assert every reachable code)
 Trigger and assert (`_HeapGetError`) each of `$00`–`$17`, including
 `OUT_OF_MEMORY`, `NO_MORE_ITEMS`, `HANDLE_BLOCK_MISMATCH`, `INVALID_FNXT_LINK ($14)`,
 `SLAB_CORRUPT ($15)`, `DOUBLE_FREE ($16)`, `SOA_ARENA_CORRUPT ($17)`, the heap-end magic
-codes, and invalid-handle/invalid-block-magic. Codes with no reachable trigger are noted
-in the matrix as "unreachable — documented".
+codes, and invalid-handle/invalid-block-magic. All current `$00`–`$17` values
+have a trigger in `test_errors`; this does not cover every path producing a code.
 
 ### 9.8 Near-miss / negative (no crash)
 `__HeapSlabFromPtr` classification for interior, off-by-one, mid-cell, and foreign
 pointers; a forged slab-magic chain with `slCellSz == 0` or `slClass ≥ SOA_NUM_CLASSES`
-is **rejected without a ÷0 trap** (the F2 guard); `_HeapFree`/`_HeapSize`/`_HeapReAlloc` on
-a pointer that belongs to no heap → error, **no crash**.
+is **rejected without a ÷0 trap** (the F2 guard). `_HeapFree`/`_HeapSize` reject
+the test's foreign **mapped BSS buffer**. These assertions are not a guarantee
+that arbitrary unmapped addresses are safe, nor a foreign-pointer realloc test.
 
 ### 9.9 Stress / soak
-Fixed-seed LCG driving a mix of alloc/free/realloc across sizes `1..4096` over the machine
-heap and private heaps, interleaved `_HeapValidate`, run to arena creation and full
-release; assert invariants (`live_cells == 0 ⇒ all slabs empty & releasable`) and compare
-the committed-byte high-water mark against a recorded baseline. Include a **small private
-heap** that forces the arena **adaptive shrink** (the `nTiles → 1` retry taken when a
-full-size arena will not fit), and drive the empty-slab → empty-arena reclamation path to
-completion.
+`test_stress` uses xorshift-32, seed `$12345678`, 3,000 iterations, and 64
+allocation slots. Slots 0–31 use the machine/SOA heap; 32–63 use a 128 KB
+regular-only private heap. Requests span 1..4096 and validation runs every
+256 iterations. Tags are checked before free/realloc and during drain.
+Drain asserts zero live cells/slabs/arenas (the SCB remains), then tests
+four-to-one arena fallback and release on a 12 KB private heap.
+
+The recorded goldens are peak **live requested bytes** `$0001B614` and peak
+live count `53`, maintained by the workload. They are not committed-byte
+measurements, a `__HeapStats` high-water mark, or an SOA-on/off benchmark.
+
+### 9.10 Aligned backing and oversized requests
+
+`test_aligned` exercises eight groups: invalid alignment/zero/oversized
+parameters with unchanged statistics; alignments 32..4096 for sizes 1/33/4096;
+reusable prefix/suffix blocks; fragmented-bucket fit selection; failed arena
+creation with an existing SCB; four-to-one retry; tile counts clamped to 1..32;
+and debug-over-zero / tail-guard behaviour. All 72 `HEAP_STATS` bytes are
+compared in the rollback/release checks.
+
+`test_edges` P6–P7 verifies huge/high-bit/wraparound alloc and realloc
+rejection on regular, tail-check, and SOA-enabled heaps, including in-place-only
+calls, preservation of old sizes/data, successful free, and subsequent validation.
+
+### 9.11 Known coverage gaps
+
+- There are no focused tests of every free-bucket boundary, every flag
+  combination, per-heap zeroing, or the distinct `HEAP_VALIDATE_PARAMETERS`
+  and `HEAP_FREE_CHECKING_ENABLED` automatic-validation branches.
+- Direct zero-byte allocation, all cell realloc/fill combinations, public
+  wrong-heap cell operations, and a regular-to-small shrink remaining regular
+  are not all permanent focused regressions. Realloc NULL/zero and selected
+  zero-on-grow behaviour **are** covered.
+- Exact D0 preservation/stale-error behaviour of public handle validation,
+  tiny SOA-backed private-heap enumeration, and the current unaligned
+  debug-shrink limitation are documented in the
+  [API reference](HEAP_API.md), but not permanent default-suite assertions.
+- The suite does not prove exhaustive metadata validation or arbitrary-pointer
+  memory safety. Trap-on-error and allocation tagging are unimplemented;
+  macOS suite targets, parallel runs, and a committed-memory density benchmark
+  are also not implemented.
 
 ---
 
@@ -430,17 +504,34 @@ carry no C type. **Validated in Phase 0.**
    c. run the bundled GDB against `out/bin/<module>.elf` with `test/heaptest.gdb`, capture stdout;
    d. **watchdog:** `WaitForExit(timeout)`; on timeout kill gdb+sim → `TIMEOUT` (a storm
       fails fast instead of hanging);
-   e. parse `RESULT=`/`DETAIL=`; `0` → pass, else decode `$PPCC` + detail;
+   e. parse `RESULT=`/`DETAIL=`; zero result **and** zero GDB exit code → pass;
+      otherwise report the debugger failure or decode `$PPCC`;
    f. tear down only the simulator/GDB PIDs started by this runner.
 3. Print a **summary table** (module · result · code · detail · decoded meaning) and set
-   the process **exit code** = number of failing modules.
+   the process **exit code** = number of non-passing modules on a normal run.
+   Setup/build/port errors can terminate earlier with a nonzero process exit.
+
+**Optional integrity report.** `-ReportPath` writes JSON with `schema=1`,
+`phase='NM1-upstream'`, selected port, pass/fail/total counts, and each module's
+status. It records path/byte-size/SHA-256 triples for simulator, GDB, runner,
+command file, test kit, `out/lib/libheap.a`, and all 32 library input files
+(31 `.a68` plus `heap.inc`). Completed result rows include source/ELF records
+and the GDB exit code.
+
+Completed GDB runs also save combined debugger output under `logs/` beside
+the report. Timeout/startup failures need not have a saved GDB log. Relative
+report paths resolve from `test/`; use an absolute path under ignored `out/`
+to avoid writing reports into the source directory. Report generation with
+`-NoBuild` still requires the referenced library and selected ELFs to exist.
 
 ### 10.3 Interactive debug path (`sid68k`, secondary)
-For triage, not CI: from `out/bin/`, run `sim68k --gdb`; then `sid68k` (no argv); at `-` type
-`e<module>.elf` (loads image **and** DDT symbols + sets PC), `x`, `g,_tdone`, then inspect
-with `DL tResult`, `!heap`, and `!heap -p`. (Do **not** breakpoint mid-run — C2.)
-Use the standalone sid68k checkout for NM1-aware descriptor/padding views;
-the old sid68k tree under worm68k is obsolete.
+sid68k is an optional **external** debugger, not part of this bundle or the
+validated workflow. Earlier versions supported symbolic `_tdone` stops and
+`!heap` / `!heap -p` inspection, but any extension must be compatible with the
+current NM1 separate-descriptor/padding layout. Do not copy historical numeric
+breakpoint addresses or assume an older extension understands the layout.
+The bundled GDB can also be used interactively; retain the `_tdone`-only stop
+discipline for these vectorless tests (C2).
 
 ### 10.4 Running the suite (quick start)
 
@@ -459,10 +550,18 @@ The NMake `test` target uses PowerShell 7 (`pwsh`), matching the standalone exam
   source/tool/archive/ELF hashes and preserves GDB logs.
   Relative report paths resolve from `test/`.
 
-The makefile and runner use the tools in `toolchain\windows` by default.
+For example, after building, save a report without leaving ignored output:
+
+```powershell
+$report = Join-Path (Get-Location) 'out\bin\heap-tests.json'
+pwsh -File test\run-heap-tests.ps1 -NoBuild -ReportPath $report
+```
+
 The legacy harness build targets are `out\bin\heaptest.elf` and
 `out\bin\heapsmalltest.elf` (for example, `nmake out\bin\heapsmalltest.elf`).
-`nmake clean` removes generated outputs without deleting source files.
+The makefile and runner use `toolchain\windows` by default.
+`nmake clean` removes compiled outputs and the exported include, not optional
+JSON reports/logs or source files.
 
 **Reading the summary.** A `PASS` row is `RESULT=00000000`. A `FAIL` row's `Note` decodes
 `RESULT=$0000PPCC` as `phase P, check 0xCC`, and `DETAIL` is the failing value / error code —
@@ -470,7 +569,7 @@ look that phase+check up in `<module>.a68`. Other statuses: `TIMEOUT` (watchdog 
 storm/hang), `NOSIM` (RSP port never opened), `NORESULT` (gdb emitted no `RESULT=` line, with a
 hint), `NOBUILD` (ELF missing). The process **exit code = number of non-passing modules**.
 
-**Prereqs** (the runner checks all three and aborts with exit `255` if any is missing):
+**Prereqs** (the runner checks all three and aborts nonzero if any is missing):
 `toolchain\windows\sim68k.exe`, `toolchain\windows\m68k-elf-gdb.exe`, and
 `heaptest.gdb` beside the runner. Retain the bundled DLLs and Python runtime alongside
 the tools. Teardown is wrapped in `try/finally` and targets
@@ -482,19 +581,28 @@ the process using it. The default per-module watchdog remains 20 seconds.
 
 ## 11. Build Integration
 
-- Add a **`tests`** target to [makefile](../makefile) building the module ELFs
-  (`out\bin\test_create.elf`, `out\bin\test_block.elf`, `out\bin\test_soa.elf`, `out\bin\test_debug.elf`,
-  `out\bin\test_stress.elf`), each linked like the existing `out\bin\heapsmalltest.elf`
-  (`$(LD) -T $(LDSCRIPT) -Ttext 500 $(BINDIR)\<obj>.o -L $(LIBDIR) -lheap -o $@`).
-- Add a **`test`** (a.k.a. `check`) target that builds `tests` then invokes
-  `test\run-heap-tests.ps1`, propagating its exit code so CI fails on any red.
-- `test\heaptestkit.inc` sits beside the test modules; the public include is
-  `src\heap.inc`. Test assembly rules search both the `src/` and `test/` include
-  directories, and each module `include`s both files.
-- Mirror the targets into `makefile.macos` for ELF source parity, carrying the known
-  caveat that the macOS toolchain is not host-buildable on Windows (§14 R8).
-- Create `out/bin/`, `out/include/`, and `out/lib/` as needed; exclude the entire
-  root `out/` directory from Git.
+The Windows [makefile](../makefile) implements:
+
+| Target | Current behaviour |
+|--------|-------------------|
+| default / `all` | Library, exported include, legacy `heaptest.elf` and `heapsmalltest.elf`. Does not run tests. |
+| `libheap.a` | Convenience alias for the library and exported include. |
+| `tests` | All ten default module ELFs in `out/bin/`, plus library/include dependencies. |
+| `test` | `tests`, then PowerShell 7 runs `test\run-heap-tests.ps1 -NoBuild`. |
+| `clean` | Removes compiled output patterns and the copied include; retains directories and optional reports/logs. |
+
+There is **no `check` alias**. Module linking uses
+`$(LD) -T $(LDSCRIPT) -Ttext 500 $(BINDIR)\<obj>.o -L $(LIBDIR) -lheap -o $@`.
+Rules search `src/` and `test/`; kit-based objects depend on both includes.
+The makefile automatically creates ignored `out/bin`, `out/include`, and
+`out/lib`. Changing the shared include invalidates dependent objects; use
+`nmake /A` when changing tools or untracked command-line flag values.
+
+[makefile.macos](../makefile.macos) has the same 31 library objects but only
+the library/include and legacy CP/M-driver build (`out/bin/heaptest.68k`,
+text origin `$1700`). It has **no `tests`, `test`, or `check` target**.
+Its external tools and legacy assembler flags need configuration for the
+selected macOS assembler; native macOS build/run remains unvalidated.
 
 ---
 
@@ -502,6 +610,8 @@ the process using it. The default per-module watchdog remains 20 seconds.
 
 ```
 heap68k/
+├─ README.md                   ; current build/use entry point
+├─ LICENSE                     ; MIT license for the library, not bundled tools
 ├─ docs/
 │  └─ HEAP_TEST_SUITE_DESIGN.md ; this document
 ├─ src/
@@ -509,6 +619,8 @@ heap68k/
 │  ├─ HeapAlloc.a68            ; allocation implementation
 │  └─ ...                      ; remaining library assembly sources
 ├─ makefile                    ; library + test build/run targets
+├─ makefile.macos              ; external-toolchain library/legacy-driver build
+├─ toolchain/                  ; Windows bundle + reserved macOS directory
 ├─ out/                       ; generated, Git-ignored
 │  ├─ bin/                    ; test objects, listings, and executables
 │  ├─ include/                ; exported heap.inc
@@ -536,18 +648,23 @@ heap68k/
 
 ## 13. Phased Implementation Plan & Progress Tracker
 
+The dated entries record the original rollout, including earlier tool
+limitations and nine-module counts. They are historical, not the current
+tool inventory or a proof that every coverage goal is satisfied. See §6,
+§9.11, and §10 for current modules, gaps, and runner behaviour.
+
 **Status legend:** ⬜ Not started · 🟨 In progress · ✅ Done · ⛔ Blocked
 
 | Phase | Title | Status | Exit criteria |
 |------:|-------|:------:|---------------|
 | A | Analysis & this spec | ✅ | Spec reviewed & accepted |
 | 0 | Harness bootstrap | ✅ | `heaptest.gdb` + `run-heap-tests.ps1` drive `stub.elf` end-to-end via `m68k-elf-gdb --batch`; green→exit 0, red→exit 1, watchdog→`TIMEOUT` all proven; `nmake test` green (2026-07-21) |
-| 1 | Kit & result convention | ✅ | [`heaptestkit.inc`](../test/heaptestkit.inc) (all macros) + [`test_kit.a68`](../test/test_kit.a68) exercising every macro; builds `/Cx` and passes via `nmake test` (2026-07-21) |
+| 1 | Kit & result convention | ✅ | [`heaptestkit.inc`](../test/heaptestkit.inc) + [`test_kit.a68`](../test/test_kit.a68) core macro smoke; later modules exercise value compares; builds `/Cx` and passes (2026-07-21) |
 | 2 | Block-path functional suite | ✅ | [`test_create.a68`](../test/test_create.a68) (§9.1) + [`test_block.a68`](../test/test_block.a68) (§9.2–§9.5, SOA disabled) pass via `nmake test` (2026-07-21) |
 | 3 | SOA suite integration | ✅ | [`test_soa.a68`](../test/test_soa.a68) refactored onto the kit from `HeapSmallTest.a68` (9 phases); passes headless via `nmake test` (2026-07-21) |
 | 4 | Debug & validation suite | ✅ | [`test_debug.a68`](../test/test_debug.a68) covers §9.6 (debug-fill alloc/free, tail-guard, auto-validate) + corrupt-and-detect (block magic, chain fwd-link, free-chain back-link, SOA slab/arena magic); passes via `nmake test` (2026-07-21) |
 | 5 | Error-code & near-miss coverage | ✅ | [`test_errors.a68`](../test/test_errors.a68) triggers & asserts every code `$00`–`$17` (§9.7) + §9.8 near-miss classification, F2 ÷0 guard, and foreign-pointer API safety (no crash); passes via `nmake test` (2026-07-21) |
-| 6 | Stress / soak | ✅ | [`test_stress.a68`](../test/test_stress.a68) (§9.9) fixed-seed xorshift mix (alloc/free/realloc, 1..4096, machine SOA + private block heaps) + interleaved validate + drain invariants + arena adaptive-shrink + high-water baseline; deterministic. **Found & fixed a real SOA bug** (released slab/arena kept its magic → reused memory mis-ID'd as a cell). Passes via `nmake test` (2026-07-21) |
+| 6 | Stress / soak | ✅ | [`test_stress.a68`](../test/test_stress.a68): deterministic xorshift workload, validation/drain, arena fallback, requested-byte/count goldens; found/fixed stale released magic (2026-07-21) |
 | 7 | Runner polish & CI | ✅ | one-step `nmake test` (build+run+verdict, exit 0/n); generic `$PPCC`→"phase P, check 0xCC" decode; `try/finally` teardown + port-free wait; §10.4 quick-start added. (2026-07-21) |
 | 8 | Coverage audit & backfill | ✅ | [`test_edges.a68`](../test/test_edges.a68) closes the §9 gaps — realloc NULL/0 + zero-on-grow, compact reclamation effect, walk block count, destroy-with-live-allocs, `_GetMachineHeaps` contents + truncation; §9.4 corrected. Passes via `nmake test` (2026-07-21) |
 
@@ -561,13 +678,13 @@ heap68k/
       handle is non-NULL and the header magic is `'HEAP'`). Proven: `RESULT=00000000` →
       runner exit `0` (green); a transient forced-fail variant → `RESULT=$000009EE`
       surfaced with exit `1` (red).
-- [x] Storm **watchdog** + stale-sim/port cleanup in
+- [x] Storm **watchdog** and owned-process cleanup in
       [`run-heap-tests.ps1`](../test/run-heap-tests.ps1): a transient never-reaches-`_tdone`
       variant → `TIMEOUT` at the cutoff, gdb+sim torn down, exit `1`. Fresh sim per
       module; socket-readiness wait on the RSP port.
-- [x] Exit-code mechanism decided: **PowerShell parses `RESULT=`** — this `m68k-elf-gdb`
-      build has **no Python** (its `.gdbinit` Python hook errors), so a gdb-python hook is
-      not viable (§15 Q2).
+- [x] Exit-code mechanism decided: **PowerShell parses `RESULT=`**. The
+      original debugger lacked usable Python support; the current bundled
+      GDB has Python 3.14 support, but the result protocol remains PowerShell-based.
 - [x] [makefile](../makefile) `tests`/`test` targets build `stub.elf` and run the
       runner; `nmake test` is green using PowerShell 7.
 
@@ -579,7 +696,7 @@ heap68k/
       `EXPECT_Z`/`EXPECT_NZ` (added for the status-in-Z `_HeapValidate*` APIs); `EXPECT_ERR`.
 - [x] API wrappers `HALLOC/HFREE/HREALLOC/HSIZE/HCREATE/HDESTROY/HVALIDATE/HVALIDATEH/HWALK/HCOMPACT`.
 - [x] Safety helpers `ANCHOR_CELL`, `DIRTY_BODY` (encode the §4 C7 traps).
-- [x] [`test_kit.a68`](../test/test_kit.a68) smoke test expands **every** macro across 6 phases;
+- [x] [`test_kit.a68`](../test/test_kit.a68) smoke test covers core macros across 6 phases;
       assembles `/Cx` and passes (`tResult=0`) via `nmake test` (alongside `stub`). Fixed a
       latent runner bug — `$sim`/`$Sim` (and `$gdb`/`$Gdb`) collided under PowerShell's
       case-insensitive variables, breaking the 2nd module; renamed to `$simProc`/`$gdbProc`.
@@ -652,7 +769,8 @@ heap68k/
       reclamation invariant (`scbLiveCells == 0` **and** `scbSlabCount == scbArenaCount == 0`),
       a clean compact, and heapP coalescing back to one large block; a 12 KB heap then exercises
       the arena **adaptive shrink** (4 → 1 tiles) and empty-arena reclamation; finally the
-      live-byte / live-count high-water marks are checked against recorded baselines.
+      live requested-byte / live-count high-water marks are checked against
+      recorded baselines (not committed-memory measurements).
 - [x] Deterministic: the exact high-water baselines are asserted every run, so an identical
       `RESULT` (and the same peak) is reproduced across repeated runs (verified back-to-back).
 - [x] **Bug found & fixed** (the point of the soak): `__HeapSlabRelease`/`__HeapArenaRelease`
@@ -670,13 +788,16 @@ heap68k/
 - [x] **Decoded** summary: any non-zero `RESULT` is decoded generically as `phase P, check 0xCC`
       (`Get-ResultNote`), with `$0000FFFF` as the "never reached `_tdone`" sentinel and an optional
       per-module override table; no more "unknown code".  Robust teardown (`try/finally` always
-      kills the sim), a **port-free wait** before each module (never attach to a dying sim on a
-      stale port), and a `NORESULT` hint from the gdb output.  Quick-start documented in §10.4.
+      stops owned processes), a **port-free assertion** before each module
+      (busy ports fail; unrelated processes are never stopped), and a
+      `NORESULT` hint. Quick-start documented in §10.4.
 - [ ] Not done (deferred): mirroring the `tests`/`test` targets into `makefile.macos`
       (the macOS toolchain is not host-buildable on Windows — §14 R8).
 
 ### Phase 8 — Coverage audit & backfill  ✅ (2026-07-21)
-- [x] Walked the §9 matrix against every module; every row now has an implemented, passing case.
+- [x] Audited the original §9 matrix and added edge-case regressions.
+      The current source audit identifies remaining focused gaps in §9.11;
+      the earlier assertion that every listed case was covered was too broad.
       [`test_edges.a68`](../test/test_edges.a68) closes the thin spots the functional/stress suites left:
       `_HeapReAlloc` corner cases (NULL ptr → `INVALID_BLOCK`, size 0 → minimal alloc,
       `HEAP_ZERO_MEMORY` zeroes the grown tail); `_HeapCompact`'s reclamation **effect** (a
@@ -688,8 +809,16 @@ heap68k/
       plus `N < count` **truncation** (returns the true count, writes only N, no overrun).
 - [x] Corrected design §9.4: this library's `_HeapReAlloc` is strict — a NULL pointer is
       `INVALID_BLOCK` and size 0 yields a minimal allocation (the earlier C-style wording was
-      aspirational and did not match the implementation).  Residual out-of-scope: `HEAP_TRAP_ON_ERROR`
-      (halts the CPU, not harness-testable) and Phase 7 runner/CI polish.
+      aspirational and did not match the implementation). `HEAP_TRAP_ON_ERROR`
+      is a reserved flag with **no implementation**, not an existing CPU-halting
+      branch. Phase 7 runner polish was subsequently completed.
+
+### Later regressions
+
+- `test_edges` now includes P6–P7 oversized/high-bit/wraparound request cases,
+  checking original sizes/data and heap validity after allocation/reallocation failure.
+- `test_aligned` adds the eight NM1 groups in §9.10. The default suite is now
+  ten modules, not the historical nine.
 
 ---
 
@@ -700,9 +829,9 @@ heap68k/
 | R1 | Bare test installs no vectors; a mid-run trap/BP storms the CPU | crash / hang | Break **only** at `_tdone` (reached by `bra`, never a trap — C2; `_tfail` falls through into it); watchdog timeout; fresh sim per module |
 | R2 | Scripted `sid68k` hangs (no EOF exit; argv-load drops symbols) | CI hang | Use `m68k-elf-gdb --batch` (clean exit, ELF symbols) as the runner; `sid68k` is interactive-only (§10.3) |
 | R3 | Hardcoded addresses drift as tests change | brittle suite | Resolve `_tdone`/`tResult`/… **by symbol** in GDB (C5); zero addresses in the runner |
-| R4 | TCP `1234` contention / stale `sim68k` | flaky runs | Kill stale sim + free the port before each module; optional per-run port (§15 Q5) |
-| R5 | Non-determinism (RNG/timing) breaks golden checks | flaky | Fixed-seed LCG (C4); sim FDC forced sync under `--gdb`; fixed heap base/size |
-| R6 | Debug-fill vs `ZERO_MEMORY` precedence surprises (the `$CDCDCDCD` SCB-init class of bug) | false failures / crashes | Encode the precedence in tests; explicit-zero where required; cover both flag orders |
+| R4 | TCP `1234` contention / unrelated `sim68k` | failed run | Assert the port is free; fail rather than stop unrelated processes; choose another `-Port` |
+| R5 | Non-determinism (RNG/timing) breaks golden checks | flaky | Fixed-seed xorshift-32, deterministic inputs, relative/structural assertions |
+| R6 | Debug-fill vs `ZERO_MEMORY` precedence surprises | false failures / crashes | Explicit SCB zeroing; aligned test verifies debug-over-zero precedence |
 | R7 | SOA authoring traps (dirtying a free cell; last-cell free releases the arena under debug-fill) | self-inflicted crash | `ANCHOR_CELL`/`DIRTY_BODY` helpers (§8); documented in the kit (C7) |
 | R8 | macOS toolchain can't archive/run on the Windows host | host-specific builds | Windows ELF is the reference/CI platform; macOS ELF builds require a macOS host |
 | R9 | Coverage rot as the library evolves | silent gaps | Keep the §9 matrix in lockstep; `nmake test` in CI; Phase 8 audit |
@@ -716,8 +845,8 @@ heap68k/
   vs. one ELF per micro-test. Grouped modules balance isolation and launch overhead; the
   omnibus needs `$MMPPCC` global codes (§7).
 - **Q2 — Exit-code mechanism:** **Resolved (Phase 0): PowerShell parses `RESULT=`.** The
-  installed `m68k-elf-gdb` has **no Python**, so the gdb-python `SystemExit(1)` hook is not
-  available. Open sub-item: emit a `.legend` decode table from each module (Phase 7).
+  current bundled GDB includes Python; no Python hook is needed or used.
+  Per-module `.legend` tables remain an unimplemented possible enhancement.
 - **Q3 — Console semihosting:** does sim68k expose a putchar/console device in its device
   window (`@0x0FF000`) that a bare ELF could write, letting tests print a human-readable
   `PASS`/`FAIL <code>` to the sim's stdout and drop the GDB memory-read step entirely?
@@ -725,9 +854,9 @@ heap68k/
 - **Q4 — Golden values vs. invariants:** how much to assert exact addresses/sizes (tight,
   but brittle across library changes) vs. structural invariants (robust). Recommend
   invariants + relative checks by default; reserve exact goldens for unit-level checks.
-- **Q5 — Parallelism:** `sim68k --gdb [port]` **does** accept a configurable RSP port
-  (confirmed in Phase 0 via [sim.cpp](../../../sim68k/sim.cpp)), so modules can run in parallel
-  on distinct ports; the runner currently serializes on one port (its `-Port` parameter).
+- **Q5 — Parallelism:** `sim68k --gdb [port]` accepts a configurable RSP port.
+  The runner currently serializes modules on its selected `-Port`; there is
+  no implemented parallel scheduling mode.
 - **Q6 — Legacy integration test:** migrate `HeapTest.a68` to run under a real CP/M image
   on sim68k (covering the base-page/BDOS path), or retire it once `test_block` supersedes
   its intent?
@@ -748,3 +877,5 @@ heap68k/
 | 2026-07-21 | **Phase 6 complete** — [`test_stress.a68`](../test/test_stress.a68) (§9.9): fixed-seed xorshift-32 soak (alloc/free/realloc 1..4096 over the SOA machine heap + a private block heap), interleaved validate, tagged data-integrity, drain reclamation invariants (`scbLiveCells`/`scbSlabCount`/`scbArenaCount == 0`), arena adaptive-shrink (4→1) + empty-arena reclamation, and a deterministic live-byte/count high-water baseline (identical across runs). 8/8 green via `nmake test`. **Found & fixed a real SOA defect:** `__HeapSlabRelease`/`__HeapArenaRelease` left `slMagic`/`arMagic` intact on freed memory, so reused blocks were mis-recognized as cells by `__HeapSlabFromPtr` (drove `scbLiveCells` to −6, mis-reported `_HeapSize`); fix clears both magics on release. Reclamation counts themselves were already correct. |
 | 2026-07-21 | **Phase 8 complete** — [`test_edges.a68`](../test/test_edges.a68): coverage-audit backfill of the §9 edge cases the functional/stress suites left thin — `_HeapReAlloc` NULL→`INVALID_BLOCK` / size-0→minimal-alloc / `ZERO_MEMORY`-zeroes-grown-tail, `_HeapCompact` reclamation **effect** on a no-coalesce heap (fragment→merge→fit + return grows), `_HeapWalk` block enumeration **count** (5 + empty), `_HeapDestroy` with **live allocations** inside, and `_GetMachineHeaps` buffer **contents** + `N < count` **truncation** (no overrun). Corrected the design §9.4 realloc wording to match the strict implementation. 9/9 green via `nmake test`. Only Phase 7 (runner polish/CI/README) remains. |
 | 2026-07-21 | **Phase 7 complete** — runner hardening in [`run-heap-tests.ps1`](../test/run-heap-tests.ps1): one-step `nmake test` (build+run+verdict, exit = #failures) confirmed; generic `$PPCC`→"phase P, check 0xCC" decode (`Get-ResultNote`) replacing the sparse lookup; `try/finally` teardown that always tears the sim down; a per-module **port-free wait** so gdb never attaches to a dying sim on a stale port; and a `NORESULT` hint. Added the §10.4 quick-start. Full suite still 9/9 green (exit 0). **All test-suite phases (A–8) are now complete.** |
+| 2026-10-05 | NM1 aligned regression module added, bringing the default suite to ten modules. |
+| 2026-11-09 | Source audit synchronized modules, actual coverage/gaps and oversized regressions, validation CCR contracts, xorshift requested-byte goldens, Windows-only test targets, report schema, bundled Python support, and owned-process/port policy. Historical rollout notes remain historical. |

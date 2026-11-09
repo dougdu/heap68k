@@ -21,7 +21,7 @@
 *  tResult      ds.l 1         ; vars + heapbuf.  (.bss labels can't be emitted
 *  tDetail      ds.l 1         ; from a macro — asm68K A2005 on macro-expanded
 *  ;   ...test vars...          ; ds.l across the two passes.)
-*  heapbuf ds.b HEAPBUFSIZE
+*  heapbuf ds.b HEAPBUFSIZE+BLK_HDR_SIZE ; also allow start-alignment loss
 *      end
 *
 *  Result protocol (read at the _tdone breakpoint by heaptest.gdb):

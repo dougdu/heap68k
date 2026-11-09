@@ -4,7 +4,7 @@
 *
 *  Small Object Allocator (SOA) slab management.  A slab is one
 *  SLAB_SIZE-aligned tile carved from an arena, serving one size class.
-*  Phase 1: primitives only (no public-API routing).
+*  Primitives introduced in Phase 1, now used by the default-on SOA route.
 *
 *    __HeapSlabCreate  - claim + format a new slab tile
 *    __HeapSlabFromPtr - recognize a cell pointer -> owning slab (or 0)

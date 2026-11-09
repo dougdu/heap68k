@@ -26,8 +26,9 @@
 *  HEAP_ERROR_OUT_OF_MEMORY and leaves the original cell untouched.
 *
 *  The new region is filled/zeroed by the underlying allocator, so when
-*  HEAP_ZERO_MEMORY is requested a cross-class/large grow gets its exposed
-*  tail zeroed for free; only same-class growth is exempt (above).
+*  HEAP_ZERO_MEMORY is requested a moving grow initializes bytes beyond
+*  the old class size, not beyond the unrecorded old request. Same-class
+*  growth is exempt (above); debug fill takes precedence over zeroing.
 *
 ************************************************************************
 *  PARAMETERS

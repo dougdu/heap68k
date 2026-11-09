@@ -12,10 +12,14 @@
 *	   allocated. This handle is returned by the HeapCreate
 *	   or GetMachineHeap function.
 *
-*  lFlags : The heap allocation options. Specifying any of these
-*           values will override the corresponding value specified
-*	    when the heap was created with HeapCreate. This parameter
-*           can be one or more of the following values.
+*  lFlags : Per-call options enable the corresponding behaviour;
+*           passing zero does not disable a heap-level option.
+*
+*	HEAP_DISABLE_SMALL_POOL - Force this request to use a regular
+*		block rather than an SOA cell.
+*
+*  Heap debug fill takes precedence over zeroing. Tail checking and
+*  debug fill are configured on the heap, not enabled by lFlags.
 *
 *	HEAP_ZERO_MEMORY - The allocated memory will be initialized
 *		to zero. Otherwise, the memory is not initialized to
@@ -28,7 +32,8 @@
 ************************************************************************
 *
 *  If the function succeeds, the return value is a pointer to the
-*  allocated memory block.
+*  allocation: a regular pointer is 32-byte aligned; an SOA cell is
+*  guaranteed 8-byte alignment.
 *
 *  If the function fails the return value is NULL
 *

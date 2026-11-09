@@ -22,9 +22,9 @@
 *  RETURN VALUE
 ************************************************************************
 *
-*  If the function succeeds, the return value is the requested size
-*  of the allocated memory block, in bytes. If the function fails,
-*  the return value is -1.
+*  On success, returns the latest requested size for a regular block,
+*  or the usable class size for an SOA cell (no per-cell request size
+*  is stored). On failure, returns -1.
 *
 ************************************************************************
 

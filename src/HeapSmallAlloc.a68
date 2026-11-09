@@ -8,8 +8,8 @@
 *                     request, carving slabs/arenas on demand.
 *
 *  This is the SOA counterpart of the block allocator's fast path.  It
-*  is called either directly (unit tests) or, once SOA_ROUTE is enabled
-*  (Phase 6), from _HeapAlloc for qualifying small requests.
+*  is called directly by primitive tests and, with the current
+*  SOA_ROUTE=1 default, by _HeapAlloc for qualifying small requests.
 *
 ************************************************************************
 

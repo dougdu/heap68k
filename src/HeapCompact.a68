@@ -20,9 +20,9 @@
 *  If the function succeeds, the return value is the size of the
 *  largest free block in the heap, in bytes.  If the function fails,
 *  the return value is zero. To get extended error information,
-*  call GetHeapError. In the unlikely case that there is absolutely
+*  call _HeapGetError. In the unlikely case that there is absolutely
 *  no space available in the heap, the function return value is zero,
-*  and GetHeapError returns the value HEAP_ERROR_SUCCESS.
+*  and _HeapGetError returns the value HEAP_ERROR_SUCCESS.
 *
 ************************************************************************
 

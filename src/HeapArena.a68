@@ -113,7 +113,8 @@ _arcExit:
 *  hHeap : DWORD - heap handle
 *  arena : DWORD - arena descriptor to release
 *
-*  Unlinks the arena from the SCB list and frees its underlying block.
+*  Unlinks the arena and frees its aligned backing, then its separate
+*  descriptor. The caller must already have released its live slabs.
 *  Returns D0 = nonzero on success, 0 on failure.
 ************************************************************************
 __HeapArenaRelease PROC USES d1-d2/a0-a3, hHeap:DWORD, arena:DWORD

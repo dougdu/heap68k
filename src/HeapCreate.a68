@@ -2,9 +2,8 @@
 *  _HeapCreate
 ************************************************************************
 *
-*  Creates a private heap object that can be used by the caller. The
-*  function allocates physical storage for a specified initial portion
-*  of this block.
+*  Creates a fixed-capacity private heap using storage allocated from
+*  the machine heap.
 *
 ************************************************************************
 *  PARAMETERS
@@ -13,7 +12,8 @@
 *  lOptions : The heap allocation options. These options affect
 *             subsequent access to the new heap through calls to
 *             the heap functions. This parameter can be 0 or one
-*             or more of the following values.
+*             or more of the following values. FLG names are bit positions;
+*             pass the corresponding HEAP_* masks from heap.inc.
 *
 *    	FLG_HEAP_ZERO_MEMORY : The allocated memory will be
 *		initialized to zero.
@@ -32,8 +32,7 @@
 *		pattern to the end of each allocation. The heap
 *		manager detects the pattern when the block is
 *		freed and, if the pattern was modified, the heap
-*		manager will return an error or TRAP into the
-*		debugger.
+*		manager will return a tail-validation error.
 *
 *    	FLG_HEAP_ENABLE_FREE_CHECK : Enable heap free checking.
 *		Validates the heap when a block is freed.
@@ -50,24 +49,24 @@
 *		destroyed. However, this flag is useful for
 *		detecting random corruption in a pool.
 *
-*    	FLG_HEAP_ENABLE_TAGGING : Enable heap tagging. Assigns
-*		unique tags to heap allocations. You can display
-*		the tag by using the !heap debugger extension with
-*		the -t parameter.
+*    	FLG_HEAP_ENABLE_TAGGING : Reserved; tagging is not implemented.
 *
 *    	FLG_HEAP_DISABLE_COALESCING : Leaves adjacent blocks of
 *		heap memory separate when they are freed. By default,
 *		the system combines ("coalesces") newly freed adjacent
 *		blocks into a single block. Combining the blocks takes
-*		time, but reduces fragmentation that might force the
-*		heap to allocate additional memory when it can't find
-*		contiguous memory. This flag is used to test optimizing
+*		time, but reduces fragmentation that could otherwise make
+*		a contiguous request fail despite enough total free memory.
+*		This flag is used to test optimizing
 *		strategies. It is not used for debugging.
 *
-*    	FLG_HEAP_TRAP_ON_ERROR : If a heap validation error occurs TRAP
-*		rather than return an error code.
+*    	FLG_HEAP_TRAP_ON_ERROR : Reserved; no trap-on-error is implemented.
 *
-*  lSize : The size of the heap, in bytes.
+*    	FLG_HEAP_DISABLE_SMALL_POOL : Use regular blocks for all requests.
+*
+*  lSize : Initial free data capacity, in bytes. The parent allocation
+*          requests round_up(lSize,32)+128 bytes. Tiny private heaps may
+*          be backed by machine-heap SOA cells.
 *
 ************************************************************************
 *  RETURN VALUE

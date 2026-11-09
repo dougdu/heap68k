@@ -62,6 +62,15 @@
 *	HEAP_ERROR_INVALID_FNXT_LINK : A block in the free chain
 *		has an invalid forward link.
 *
+*	HEAP_ERROR_SLAB_CORRUPT : SOA slab, free-list, or class-list
+*		metadata is inconsistent.
+*
+*	HEAP_ERROR_DOUBLE_FREE : A recognized cell is already on its
+*		live slab's free list.
+*
+*	HEAP_ERROR_SOA_ARENA_CORRUPT : SOA control-block or arena
+*		descriptor metadata is inconsistent.
+*
 ************************************************************************
 *  PARAMETERS
 ************************************************************************

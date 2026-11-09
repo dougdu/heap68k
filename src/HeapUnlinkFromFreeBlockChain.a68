@@ -81,15 +81,15 @@ _hufbcDone:
 ************************************************************************
 *
 *  Given the data size of a free block, returns the byte offset of
-*  the corresponding segregated free list head (hhFreeHeadN) within
-*  the heap header.  The offset is suitable for use as:
+*  the corresponding segregated free list head relative to hhFreeHead0.
+*  The offset is suitable for use as:
 *
 *    HEAP_FREE_BUCKET_BASE(a0,d0.l)
 *
 *  where A0 points to the heap header.
 *
 *  Input:  D0.l = data size of block (bhRequestSize)
-*  Output: D0.l = byte offset of bucket head relative to heap header base
+*  Output: D0.l = byte offset relative to HEAP_FREE_BUCKET_BASE
 *  Trashes: CCR only
 ************************************************************************
 __HeapGetBucketOffset:

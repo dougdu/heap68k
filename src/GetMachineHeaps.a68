@@ -2,18 +2,22 @@
 *  _GetMachineHeaps
 ************************************************************************
 *
-*  Returns the number of active heaps and retrieves handles to all
-*  of the active heaps.
+*  Counts the machine heap and private-heap candidates found by scanning
+*  regular machine-heap blocks for data starting with HEAP_MAGIC.
+*  Matching user data can be a false positive; tiny SOA-backed private
+*  heaps are not found by this scan.
 *
 ************************************************************************
 *  PARAMETERS
 ************************************************************************
 *
 *  NumHeaps : The maximum number of heap handles that can be stored
-*             into the buffer pointed to by
+*             into the buffer pointed to by pHeaps. Use (0, NULL) for
+*             a count-only query.
 *
 *  pHeaps : A pointer to a buffer that receives an array of heap
-*	    handles.
+*	    handles. Must be writable for NumHeaps entries when the
+*	    capacity is nonzero; NULL alone is not a safe count query.
 *
 ************************************************************************
 *  RETURN VALUE

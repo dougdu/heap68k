@@ -14,15 +14,16 @@
 *	   reallocated. This handle is returned by the HeapCreate
 *	   or GetMachineHeap function.
 *
-*  lFlags : The heap allocation options. Specifying any of these
-*           values will override the corresponding value specified
-*	    when the heap was created with HeapCreate. This parameter
-*           can be one or more of the following values.
+*  lFlags : Per-call options enable the corresponding behaviour;
+*           passing zero does not disable a heap-level option.
 *
 *	HEAP_ZERO_MEMORY - If the reallocation request is for a larger
 *		size, the additional region of memory beyond the
 *		original size be initialized to zero. The contents of
 *		the memory block up to its original size are unaffected.
+*		Debug fill takes precedence. Same-class SOA reuse does not
+*		initialize changed request bytes; moving cells preserve the
+*		old class-size range rather than an unrecorded old request.
 *
 *	HEAP_REALLOC_IN_PLACE_ONLY - There can be no movement when
 *		reallocating a memory block. If this value is not
@@ -33,11 +34,12 @@
 *
 *  pMem : A pointer to the block of memory that the function
 *         reallocates. This pointer is returned by an earlier call
-*         to the HeapAlloc or HeapReAlloc function.
+*         to the HeapAlloc or HeapReAlloc function. NULL is rejected.
 *
 *  lBytes : The new size of the memory block, in bytes. A memory
 * 	    block's size can be increased or decreased by using
-*           this function.
+*           this function. Zero means a minimal live allocation on
+*           success, not free.
 *
 ************************************************************************
 *  RETURN VALUE
@@ -49,11 +51,10 @@
 *  If HeapReAlloc fails, the original memory is not freed, and
 *  the original handle and pointer are still valid.
 *
-*  HeapReAlloc is guaranteed to preserve the content of the memory
-*  being reallocated, even if the new memory is allocated at a
-*  different location. The process of preserving the memory content
-*  involves a memory copy operation that is potentially very
-*  time-consuming.
+*  Reallocation preserves the retained content, except for the current
+*  regular debug-shrink partial-longword limitation documented in
+*  ../docs/HEAP_API.md. Shrinking a regular block below SOA_MAX keeps
+*  it regular; cell-origin class changes require a move.
 *
 ************************************************************************
 

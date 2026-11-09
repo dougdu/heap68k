@@ -2,10 +2,10 @@
 *  HeapSmallTest
 ************************************************************************
 *
-*  Phase 1 unit test for the SOA data-structure primitives.  Exercises
-*  size->class mapping, SCB create, arena create, slab create + free
-*  list, and pointer recognition (__HeapSlabFromPtr).  No public-API
-*  routing is involved.
+*  Legacy nine-phase SOA check: class/SCB/arena/slab primitives,
+*  recognition, cell alloc/free/realloc, validate/compact/walk.
+*  Most checks call internal helpers directly. The automated test_soa
+*  module preserves these checks with the shared kit lifecycle.
 *
 *  Result convention (inspect in the debugger / sim68k):
 *    tResult = 0          -> all checks passed

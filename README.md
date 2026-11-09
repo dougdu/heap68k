@@ -50,6 +50,10 @@ test harnesses. `nmake test` builds and runs the ten automated test modules in
 sim68k through GDB. GDB is needed by the test harness, not to build or use the
 library.
 
+The default-build `heaptest.elf` is a CP/M-base-page scratch driver, not a
+headless test module. The self-contained `heapsmalltest.elf` is retained as a
+legacy SOA check; the automated suite normally uses `test_soa` instead.
+
 | Command | Purpose |
 |---------|---------|
 | `nmake libheap.a` | Build only the library and exported include. |
@@ -81,8 +85,9 @@ pwsh -File test\run-heap-tests.ps1 -NoBuild -ReportPath $report
 ```
 
 The runner returns zero when all selected modules pass and a nonzero exit code
-on failure. See the [test suite guide](docs/HEAP_TEST_SUITE_DESIGN.md) for test
-coverage, diagnostics, and report details.
+on failure. See the [test suite guide](docs/HEAP_TEST_SUITE_DESIGN.md) for
+current coverage, known gaps, diagnostics, and integrity-report details.
+This is a regression suite, not exhaustive coverage of every flag/input combination.
 
 ## Build outputs
 
@@ -90,12 +95,13 @@ Builds automatically create the following directories under the repository root:
 
 | Directory | Contents |
 |-----------|----------|
-| `out/bin/` | Test executables, objects, and assembly listings. |
+| `out/bin/` | Test executables, objects, listings, and optional reports/logs saved there. |
 | `out/include/` | Exported `heap.inc`. |
 | `out/lib/` | `libheap.a`, library objects, and assembly listings. |
 
 The entire `out/` directory is ignored by Git. Builds do not place objects or
 listings alongside the sources.
+`nmake clean` leaves optional JSON reports/logs and the output directories in place.
 
 ## Using the library
 
@@ -107,9 +113,28 @@ listings alongside the sources.
    `_MachineHeapInitialize`, then allocate from it or create private heaps with
    `_HeapCreate`.
 
+Important contracts:
+
+- The initialization size is **usable capacity**, not the backing-buffer size.
+  Supply `round_up(lSize,32) + 128` writable bytes after the aligned start,
+  plus any leading alignment loss. See the
+  [initialization example](docs/HEAP_API.md#71-initialization-sequence).
+- Qualifying 1–256-byte allocations normally use 8-byte-aligned SOA cells.
+  `_HeapSize` returns their usable **class size**, not the original request.
+  Use `HEAP_DISABLE_SMALL_POOL` for regular 32-byte-aligned allocations with
+  exact requested-size reporting. Heap tail checking also selects the regular path.
+- `_HeapValidate` and `_HeapValidateHandle` preserve D0 and report through
+  CCR.Z, unlike the usual D0-returning APIs.
+- `_HeapReAlloc` rejects NULL rather than acting as allocation. A zero new
+  size is a minimal live allocation on success, not free. Same-class cell
+  growth does not initialize newly exposed bytes.
+
 The [API reference](docs/HEAP_API.md) documents the calling convention, constants,
 structures, initialization, allocation/free operations, and assembly examples.
-The [public include](src/heap.inc) contains the API prototypes.
+Its [limitations](docs/HEAP_API.md#9-limitations-and-known-issues) include
+current debug-shrink and heap-enumeration caveats.
+The [public include](src/heap.inc) contains 13 public PROTO declarations;
+the `_HeapGetError` leaf is declared `extern` by callers.
 
 ## Repository layout
 
@@ -126,6 +151,9 @@ The [public include](src/heap.inc) contains the API prototypes.
 
 The macOS makefile requires externally supplied asm68k and GNU m68k ELF tools.
 Configure its `ASM`, `LD`, `AR`, and `LDSCRIPT` variables for your installation.
+Its legacy `ELF_FLAGS` include linker-only `-Fm`; override them if the selected
+assembler rejects that option with `-c`. Unlike the Windows build, it has no
+automated `tests`/`test` targets.
 [toolchain/macos](toolchain/macos/) is reserved for a future bundle and is not
 populated yet. The build/test instructions above describe the Windows workflow;
 a native macOS build and test run has not been validated.

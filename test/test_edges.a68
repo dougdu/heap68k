@@ -7,6 +7,8 @@
 *    P3  _HeapWalk block enumeration count (populated + empty heap)
 *    P4  _HeapDestroy of a heap that still holds live allocations
 *    P5  _GetMachineHeaps buffer contents + N < count truncation
+*    P6  oversized realloc preserves the original allocation
+*    P7  high-bit/wraparound requests on regular, tail-check, and SOA heaps
 *
 *  Documents the ACTUAL realloc behavior (NULL -> INVALID_BLOCK, size 0 ->
 *  a minimal allocation), which differs from the aspirational C-style

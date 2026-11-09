@@ -1,8 +1,8 @@
 ************************************************************************
 *  test_kit.a68 — Phase 1 smoke test for heaptestkit.inc.
 *
-*  Exercises every kit macro at least once in a passing scenario, so a
-*  clean assemble + tResult == 0 proves the kit is well-formed.
+*  Exercises core lifecycle, assertion, API-wrapper, and safety macros
+*  in passing scenarios. Other modules cover the runtime-value compares.
 *  Self-contained (in-BSS heap, no CP/M base page).
 ************************************************************************
 

@@ -1,12 +1,39 @@
-# Design Review — HEAP_SMALL_ALLOC_DESIGN.md
+# Historical Design Review — HEAP_SMALL_ALLOC_DESIGN.md
 
 **Reviewer:** GitHub Copilot  ·  **Date:** 2026-07-20  ·  **Doc reviewed:** [HEAP_SMALL_ALLOC_DESIGN.md](HEAP_SMALL_ALLOC_DESIGN.md)
-**Scope:** Correctness and implementability of the Small Object Allocator (SOA) spec, verified against the current heap sources in `src/`.
+**Scope:** Correctness and implementability of the July 2026 SOA drafts,
+checked against the sources at that time, not a review of the current source.
 **Rounds:** Round 1 reviewed Draft v1.0. **Round 2 (below) reviews Draft v1.1**, which applied the round-1 findings.
 
 ---
 
-## Round 2 — follow-up review of Draft v1.1 (current)
+## Current implementation status (2026-11-09)
+
+The rounds below are an archived design discussion, not outstanding work.
+Draft v1.2 applied D1/D2 and the consistency fixes; the SOA is now implemented
+and default-on. Current contracts are in the [API reference](HEAP_API.md) and
+[implemented design](HEAP_SMALL_ALLOC_DESIGN.md).
+
+- Recognition and ownership are separate in
+  [the free path](../src/HeapFree.a68); the
+  [discriminator](../src/HeapSlab.a68) checks arena range, live tile bit,
+  class bounds, nonzero cell size, and cell offset/index before ownership.
+  These are structural checks, not the historical prose's "unforgeable" or
+  arbitrary-pointer safety guarantee.
+- Current `arTileMap` is a **longword at `$14`**, not the old offsets/word
+  proposal quoted below. NM1 uses a separate `$1C`-byte descriptor with
+  `arPadding` at `$18` and checked aligned backing; see
+  [arena management](../src/HeapArena.a68).
+- The live flag set includes bit 10 (`HEAP_DISABLE_SMALL_POOL`) and errors
+  through `$17`. Cells remain 8-byte aligned, `_HeapSize` reports class size,
+  and same-class realloc initialization remains deliberately different.
+- The original performance targets were not universal guarantees. Current
+  documentation accounts for class rounding, retained SCB, shared metadata,
+  occupancy, and the limits of the existing tests.
+
+---
+
+## Round 2 — follow-up review of Draft v1.1 (historical)
 
 **Verdict.** Draft v1.1 applied **all ten** round-1 findings (S1–S5, N1–N5), most of them well. However, the S2 discriminator rework left the prose (§6.7) and the normative pseudocode (§9.4) **out of sync**, and §6.7 as written has a **cross-heap reporting bug**. Two high-priority items remain, plus three consistency nits.
 

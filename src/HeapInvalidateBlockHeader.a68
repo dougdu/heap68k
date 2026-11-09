@@ -2,7 +2,7 @@
 *  __HeapInvalidateBlockHeader
 ************************************************************************
 *
-*  Zeros the block header of the specified block.
+*  Invalidates the block header with zero, or BAADFOOD under debug fill.
 *
 ************************************************************************
 *  ENTRY
@@ -15,7 +15,7 @@
 ************************************************************************
 *  EXIT
 ************************************************************************
-*  The block header of the specified block is zeroed.
+*  The block header no longer contains valid block metadata.
 ************************************************************************
 
 	.model	flat

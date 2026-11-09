@@ -12,7 +12,7 @@
 *           the HeapCreate or GetMachineHeap function.
 *
 *  pEntry : Pointer to a heap block header pointer. To initiate a
-*	    heap enumeration, set the pEntry parameter to NULL. To
+*	    heap enumeration, set *pEntry to zero, not pEntry to NULL. To
 *           continue a particular heap enumeration, call the
 *           HeapWalk function repeatedly, with no changes to
 *           hHeap or pEntry.
@@ -24,6 +24,8 @@
 *           HeapReAlloc. To obtain the user data pointer from
 *           a HeapWalk result, add BLK_HDR_SIZE ($20) to the
 *           stored value.
+*           The walk includes internal SOA backing/control blocks, not
+*           individual cells; do not free those internal allocations.
 *
 ************************************************************************
 *  RETURN VALUE

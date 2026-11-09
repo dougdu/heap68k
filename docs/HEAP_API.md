@@ -1,5 +1,8 @@
 # Heap API Reference
 
+**Source audit:** 2026-11-09. This reference describes the current implementation,
+including its limitations; the SOA design documents retain a separate phase history.
+
 ## Table of Contents
 
 1. [Overview](#1-overview)
@@ -36,6 +39,8 @@
    - 6.5 [__HeapGetBucketOffset](#65-__heapgetbucketoffset)
    - 6.6 [__HeapDebugFillOnFree](#66-__heapdebugfillonfree)
    - 6.7 [__HeapInvalidateBlockHeader](#67-__heapinvalidateblockheader)
+   - 6.8 [__HeapStats](#68-__heapstats)
+   - 6.9 [SOA Helpers](#69-soa-helpers)
 7. [Usage Guide](#7-usage-guide)
    - 7.1 [Initialization Sequence](#71-initialization-sequence)
    - 7.2 [Private Heaps](#72-private-heaps)
@@ -54,17 +59,27 @@
 The Heap API is a dynamic memory management library for the Motorola 68000 family processor, written in 68000 assembly language. It provides a `malloc`/`free`-style heap manager with the following key characteristics:
 
 - **Two-tier heap hierarchy**: a single *machine heap* (backed by a raw block of memory) acts as the system-wide pool. Zero or more *private heaps* are carved out of the machine heap on demand.
-- **Segregated free lists**: ten size-class buckets provide O(1) best-fit allocation for the common case without requiring a full scan of all free blocks.
+- **Segregated free lists**: ten size-class buckets narrow a first-fit search. Bucket selection is constant-time, but finding a fitting free block can require a linear scan.
 - **Block coalescing**: adjacent free blocks are merged on `HeapFree` (unless disabled) to control long-term fragmentation.
 - **In-place reallocation**: `HeapReAlloc` first attempts to grow or shrink a block without moving it by consuming or releasing the adjacent free block.
 - **Configurable debug instrumentation**: each heap can independently enable debug fill patterns, buffer-overrun tail guards, free-check validation, parameter validation, and full per-call validation.
 - **Heap identity**: every heap and every block carries a 16-bit ID in the high word of their flags field so cross-heap frees are detected at runtime.
-- **Portable calling convention**: all functions use the 68K stack for parameters and return values in D0; registers are preserved according to the 68K ABI (`PROC`/`ENDP` with explicit `USES` lists).
+- **Calling convention**: parameters are passed on the 68K stack and the caller removes them. Most functions return in D0; `_HeapValidate` and `_HeapValidateHandle` instead preserve D0 and report success in CCR.Z. Internal helpers have their own documented contracts.
 
-The implementation lives in `src/` and is split across individual `.a68` source files, one per function, assembled to ELF object files and linked into `out/lib/libheap.a`. Public constants, structures, and API prototypes are in `src/heap.inc`, copied to `out/include/heap.inc` when built. Library objects and listings are placed in `out/lib/`; test objects, listings, and executables are placed in `out/bin/`. The entire `out/` directory is excluded from Git.
+The implementation lives in `src/`: 31 `.a68` modules, some containing several
+functions, are assembled into `out/lib/libheap.a`. Public constants, structures,
+and 13 public PROTO declarations are in `src/heap.inc`, copied to
+`out/include/heap.inc` when built. The fourteenth public entry point,
+`_HeapGetError`, is a leaf symbol declared with `extern` by callers. Library
+objects and listings are placed in `out/lib/`; test objects, listings, and
+executables are placed in `out/bin/`. The entire `out/` directory is excluded
+from Git. The library uses the [MIT license](../LICENSE); bundled tools retain
+their [upstream terms](../toolchain/README.md#notices).
 
 ELF is the only supported object format. Build with [makefile](../makefile)
-on Windows or [makefile.macos](../makefile.macos) on macOS.
+on Windows using the bundled tools. [makefile.macos](../makefile.macos) retains
+an external-toolchain library/legacy-driver build, but has no automated suite
+targets and has not been validated on a native macOS host.
 
 ---
 
@@ -79,7 +94,7 @@ Low address
 │  • magic, flags/id, sizes         │
 │  • hhHeapHead pointer             │
 │  • 10 × hhFreeHeadN pointers      │
-│  • reserved                       │
+│  • hhSmallPool (SCB pointer)       │
 ├───────────────────────────────────┤  ← hhHeapHead points here
 │  Block Header  (BLK_HDR_SIZE=$20) │
 │  Block data area                  │
@@ -95,7 +110,12 @@ Low address
 High address
 ```
 
-All allocation units are aligned to `BLK_HDR_SIZE` (= `$20`, 32 bytes). The upper byte of any valid heap or block address is always zero (upper byte of the 32-bit address space is reserved for metadata detection); a non-zero upper byte is treated as corruption.
+Regular block headers and data pointers are aligned to `BLK_HDR_SIZE`
+(32 bytes); SOA cells are guaranteed only 8-byte alignment (§2.7). The heap
+must reside in readable/writable memory below `$01000000`: regular handle and
+block checks reject a nonzero upper address byte. Validation is not a safe
+probe of arbitrary or unmapped addresses; callers must supply valid storage
+and live handles/pointers.
 
 ### 2.2 Heap Header
 
@@ -104,7 +124,7 @@ Defined at offset 0 from the heap handle. Size: `HEAP_HDR_SIZE` = `$40` (64 byte
 | Offset | Symbol | Size | Description |
 |--------|--------|------|-------------|
 | `$00` | `hhMagic` | long | Magic number `'HEAP'` (`$48454150`) |
-| `$04` (lo word) | `hhFlags` | word | Configuration flags (see §3) |
+| `$04` (long base; low word at `$06`) | `hhFlags` | long / low word | Configuration flags in the low 16 bits (see §3) |
 | `$04` (hi word) | `hhId` | word | Heap ID (monotonically assigned on creation) |
 | `$08` | `hhRequestSize` | long | Size passed to `_MachineHeapInitialize` or `_HeapCreate` |
 | `$0C` | `hhSize` | long | Actual total heap size including all headers |
@@ -116,12 +136,14 @@ The heap handle returned by `_MachineHeapInitialize` and `_HeapCreate` is a poin
 
 ### 2.3 Block Header
 
-Every allocated or free block begins with a header immediately before the data area. Size: `BLK_HDR_SIZE` = `$20` (32 bytes). The user-visible pointer returned by `_HeapAlloc` points to the byte at offset `$20` from the block header (the `bhData` offset).
+Every regular allocated or free block begins with a header immediately before
+the data area. Size: `BLK_HDR_SIZE` = `$20` (32 bytes). A regular allocation's
+user pointer is at `bhData`, offset `$20`. SOA cells have no such per-cell header.
 
 | Offset | Symbol | Size | Description |
 |--------|--------|------|-------------|
 | `$00` | `bhMagic` | long | Magic number `'BLKH'` (`$424C4B48`) |
-| `$04` (lo word) | `bhFlags` | word | Block status flags (`FLG_FREE`, `FLG_GARBAGE`) |
+| `$04` (long base; low word at `$06`) | `bhFlags` | long / low word | Block status flags in the low 16 bits |
 | `$04` (hi word) | `bhId` | word | Heap ID this block belongs to |
 | `$08` | `bhRequestSize` | long | User-requested size (data area only; for free blocks this equals the data area size) |
 | `$0C` | `bhSize` | long | Total block size including this header |
@@ -136,17 +158,24 @@ Every allocated or free block begins with a header immediately before the data a
 | Bit | Name | Set when |
 |-----|------|----------|
 | 0 | `FLG_FREE` | Block is on the free list |
-| 1 | `FLG_GARBAGE` | Block is being coalesced (transient) |
+| 1 | `FLG_GARBAGE` | Reserved garbage marker; current paths clear it but do not set it |
 
-The physical block chain is a doubly-linked list in address order. The forward link in each block is always `bhPrev(next_block)` — that is, `bhNext` of block N points to the first byte of block N+1's header, and `bhNext - bhPrev` of that block equals `bhSize` of block N.
+The physical block chain is a doubly-linked list in address order. For a
+non-final block at address `B`, `bhNext(B) = B + bhSize(B)`, and
+`bhPrev(bhNext(B)) = B`. The last block has `bhNext = 0`.
 
 ### 2.4 End-of-Heap Marker
 
-The last `BLK_HDR_SIZE` bytes of every heap (including the machine heap) are filled with the longword `'PAEH'` (`$50414548`). `_HeapValidate` checks that the marker is intact and sits exactly where the block chain arithmetic predicts. The end marker is not part of the block chain (`bhNext` of the last real block is NULL).
+The last `HEAP_END_SIZE` bytes (32) of every heap are filled with the longword
+`'PAEH'` (`$50414548`). `_HeapValidate` checks the **first longword** and verifies
+that the marker starts where the final block's address plus size predicts.
+It does not scan all eight marker longwords. The marker is not a block-chain
+entry (`bhNext` of the last real block is NULL).
 
 ### 2.5 Segregated Free Lists
 
-Ten singly-typed doubly-linked free lists are maintained, indexed by the data-area size of the free block:
+Ten size-bucketed doubly-linked free lists are maintained, indexed by the
+data-area size of the free block:
 
 | Bucket | Offset in header | Maximum data size |
 |--------|-----------------|-------------------|
@@ -161,19 +190,27 @@ Ten singly-typed doubly-linked free lists are maintained, indexed by the data-ar
 | 8 | `hhFreeHead8` | ≤ 256 KB |
 | 9 | `hhFreeHead9` | > 256 KB |
 
-`__HeapGetBucketOffset` maps a data-area size to the byte offset of the correct `hhFreeHeadN` field. All insertions are LIFO (new head of bucket). Allocation starts in the smallest sufficient bucket and walks upward until a fitting block is found or all buckets are exhausted.
+`__HeapGetBucketOffset` maps a data-area size to a bucket offset **relative to
+`hhFreeHead0`**. All insertions are LIFO (new head of bucket). Allocation starts
+in the bucket containing the required data size, scans for the first fit, and
+walks upward until a fit is found or all buckets are exhausted.
 
-Bucket 9 is an overflow bucket for very large blocks. Because all blocks in bucket 9 are larger than 256 KB, the allocator must do a linear scan within that bucket; it finds the first block that is large enough (first-fit, not best-fit) for oversized requests.
+Bucket 9 is the overflow bucket for data areas larger than 256 KB. All buckets,
+not just bucket 9, use first-fit scans rather than best-fit ordering.
 
 ### 2.6 Global Data
 
-Three longword variables live in `HeapData.a68`:
+The following globals live in `HeapData.a68`:
 
 | Symbol | Description |
 |--------|-------------|
 | `__HeapId` (word) | Next heap ID counter. Incremented each time a new heap is created. The full longword is read to OR the ID into flags fields. |
 | `__MachineHeapHandle` | Pointer to the machine heap header, or NULL before initialization. |
 | `__HeapError` | Last error code set by any heap API function. |
+| `__HeapSoaClassTbl` | Sixteen word-sized SOA class values, shared by allocation, validation, and tests. |
+
+`__HeapId` is a word followed by a zero padding word; reading its longword form
+places the ID in the high word of a flags longword.
 
 ---
 
@@ -183,7 +220,8 @@ Small requests are expensive for the block allocator: every allocation carries a
 32-byte header and is rounded up to a 32-byte boundary, so a 1-byte request costs a
 64-byte footprint. The **Small Object Allocator** is a slab/segregated-fit sub-allocator
 layered on top of the block allocator to serve small requests densely. It is **on by
-default**; opt out per heap (or per call) with `FLG_HEAP_DISABLE_SMALL_POOL`.
+default**; opt out per heap (or per allocation call) with the mask
+`HEAP_DISABLE_SMALL_POOL` (bit position `FLG_HEAP_DISABLE_SMALL_POOL`).
 
 **Routing.** `_HeapAlloc` sends a request to the SOA when *all* of the following hold:
 `1 ≤ lBytes ≤ SOA_MAX` (256), the heap does **not** have `FLG_HEAP_DISABLE_SMALL_POOL`
@@ -194,8 +232,9 @@ back to the block path transparently.
 
 **Size classes.** A request maps to one of 16 size classes:
 `8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256` bytes. A cell is
-the class size (≥ the request); there is no per-block header, so overhead is a fraction
-of a bit-per-cell of slab metadata.
+the class size (≥ the request); there is no per-cell header. Actual overhead
+includes request-to-class rounding, the 32-byte slab header, unused slab
+capacity, the SCB, and arena descriptor/backing-block costs.
 
 **Structures.** Each heap that uses the SOA gets a lazily created **SCB** (small-pool
 control block), stored in the heap header's `hhSmallPool` field (the former reserved
@@ -234,7 +273,8 @@ The internal `__HeapAllocAligned(hHeap, lFlags, lBytes, lAlignment, pPadding)`
 returns an ordinary regular-block data pointer. Alignment must be a power of
 two of at least 32 bytes; requests must be nonzero. Arithmetic and the 24-bit
 address bound are checked before chain mutation. `pPadding` is an optional
-longword output. Failure returns zero with an explicit heap error and leaves
+longword output, initialized to zero before parameter checks after heap
+validation. Failure returns zero with an explicit heap error and leaves
 the physical/free chains unchanged. This is not a new public `HeapAlloc`
 alignment guarantee, and an ordinary moving `HeapReAlloc` need not preserve
 the internal allocation's larger alignment.
@@ -246,11 +286,15 @@ the internal allocation's larger alignment.
 - **`_HeapSize`.** For a cell, `_HeapSize` returns the **class (usable) size**, not the
   original request (analogous to `malloc_usable_size`). Block allocations still return
   the exact requested size. See §5.7.
-- **`_HeapFree` / `_HeapReAlloc`.** Recognize and handle cells transparently; a cell
-  freed to the wrong heap is reported as `HEAP_ERROR_HANDLE_BLOCK_MISMATCH`, and a
-  repeat free as `HEAP_ERROR_DOUBLE_FREE`.
+- **`_HeapFree` / `_HeapReAlloc`.** Recognize and handle cells transparently; a
+  recognized cell freed to the wrong heap reports `HEAP_ERROR_HANDLE_BLOCK_MISMATCH`.
+  A repeat free is detected as `HEAP_ERROR_DOUBLE_FREE` while the slab remains
+  live. After its last cell is freed, the slab magic is invalidated and a stale
+  pointer need not produce that same error.
 - **Debugging.** `_HeapValidate` deep-checks the SOA; `_HeapCompact` releases any empty
-  slabs/arenas. The internal `__HeapSoaWalk` enumerates live cells for tooling.
+  slabs/arenas. The SCB itself remains allocated until the owning heap is
+  destroyed. The internal `__HeapSoaWalk` enumerates live cells for tooling;
+  public `_HeapWalk` and single-block `_HeapValidate` remain regular-block APIs.
 
 ---
 
@@ -272,7 +316,12 @@ Flags are stored in the low word of `hhFlags` in the heap header. Each flag is a
 | 9 | `FLG_HEAP_TRAP_ON_ERROR` | `HEAP_TRAP_ON_ERROR` | Reserved. Intended to issue a `TRAP` instruction on detecting heap corruption instead of returning an error code. |
 | 10 | `FLG_HEAP_DISABLE_SMALL_POOL` | `HEAP_DISABLE_SMALL_POOL` | Opt out of the Small Object Allocator (§2.7). When set on a heap, all requests use the block allocator regardless of size. May also be passed at call time to `_HeapAlloc` to force a single allocation onto the block path. |
 
-Flags passed to `_HeapAlloc`, `_HeapReAlloc`, etc. at call time override the corresponding heap-level flags for that call only. The heap-level flags persist across calls.
+Per-call flags **enable** the supported option for that call; passing zero
+does not disable a heap-level option. `_HeapAlloc` honours `HEAP_ZERO_MEMORY`
+and `HEAP_DISABLE_SMALL_POOL`; `_HeapReAlloc` honours `HEAP_ZERO_MEMORY` and
+`HEAP_REALLOC_IN_PLACE_ONLY`, and forwards flags when it allocates a replacement.
+Debug fill and tail checking are selected from the heap flags, not enabled by
+passing their masks to an individual allocation. Heap-level flags persist.
 
 ---
 
@@ -317,7 +366,9 @@ Error codes are stored in `__HeapError` and retrieved via `_HeapGetError`. Most 
 PROTO  , lOptions:DWORD, lStart:DWORD, lSize:DWORD
 ```
 
-**Purpose**: Creates the machine (system) heap in a caller-supplied block of memory. Must be called exactly once before any other heap API.
+**Purpose**: Creates the machine heap in caller-supplied memory, once before
+allocation or private-heap management. Status/handle queries can report
+the not-initialized state before this call.
 
 **Parameters**:
 
@@ -325,11 +376,19 @@ PROTO  , lOptions:DWORD, lStart:DWORD, lSize:DWORD
 |-----------|-------------|
 | `lOptions` | Heap flags (see §3). May be 0 or any combination of flag mask constants. |
 | `lStart` | Address of the first byte available for the heap. The implementation rounds this up to the next `BLK_HDR_SIZE` boundary internally. |
-| `lSize` | Requested heap size in bytes. |
+| `lSize` | Requested initial **free data capacity**, not the total backing-region size. |
 
 **Return value**: D0 = heap handle on success, NULL on failure. Call `_HeapGetError` on failure.
 
 **Errors**: `HEAP_ERROR_INITIALIZED` if called a second time.
+
+**Backing storage precondition**: the function rounds `lStart` **up** to 32 bytes
+and uses `round_up(lSize,32) + HEAP_HDR_SIZE + BLK_HDR_SIZE + HEAP_END_SIZE`
+bytes from that aligned address: `round_up(lSize,32) + 128` in this build.
+The caller must provide that entire writable range, including up to 31 bytes
+lost before the aligned start. There are no general bounds/overflow checks
+here. Align the start first and round the available data capacity **down**
+after subtracting 128 bytes and any stack reservation; see §7.1.
 
 **Design notes**: The function aligns `lStart` up to a `BLK_HDR_SIZE` boundary, then lays out: heap header → one large free block → end-of-heap marker. The free block is placed into the appropriate size bucket. If `FLG_HEAP_ENABLE_DEBUG_FILL` is set, the entire data area of the initial free block is filled with `$BAADF00D`. The new heap receives the current `__HeapId` value in the high word of its flags; `__HeapId` is then incremented. The handle is stored in `__MachineHeapHandle`.
 
@@ -341,7 +400,10 @@ PROTO  , lOptions:DWORD, lStart:DWORD, lSize:DWORD
 PROTO  , lOptions:DWORD, lSize:DWORD
 ```
 
-**Purpose**: Creates a private heap by allocating a block from the machine heap large enough to hold `lSize` bytes plus heap and block header overhead, then initializing it as an independent heap.
+**Purpose**: Creates a private heap by allocating
+`round_up(lSize,32) + 128` bytes from the machine heap and initializing that
+storage as an independent heap. `lSize = 0` is accepted; it does not promise a
+useful nonzero allocation capacity.
 
 **Parameters**:
 
@@ -354,7 +416,13 @@ PROTO  , lOptions:DWORD, lSize:DWORD
 
 **Errors**: `HEAP_ERROR_NOT_INITIALIZED` if the machine heap has not been created. `HEAP_ERROR_OUT_OF_MEMORY` if the machine heap cannot satisfy the allocation. The machine heap's configured validation flags are applied before allocating.
 
-**Design notes**: The private heap is entirely contained in a single block allocated from the machine heap. Its internal layout (header, free block, end marker) is identical to the machine heap. Because the private heap is just a machine-heap block, destroying it (`_HeapDestroy`) is equivalent to freeing that block. Private heaps receive their own unique heap ID and their own set of configuration flags.
+**Design notes**: The private heap's layout is identical to the machine heap.
+Its parent allocation normally is a regular block, but `_HeapCreate` does
+not force the machine heap's SOA off: with that pool enabled, requests of
+`lSize ≤ 128` can fit a 128–256-byte cell instead. Destruction frees the parent
+allocation through `_HeapFree` in either case. Private heaps receive their own
+ID and flags. Tiny SOA-backed private heaps are not found by the regular-block
+scan in `_GetMachineHeaps` (§5.13).
 
 ---
 
@@ -374,9 +442,16 @@ PROTO  , hHeap:DWORD
 
 **Return value**: D0 = non-zero (TRUE) on success, zero (FALSE) on failure.
 
-**Errors**: `HEAP_ERROR_NOT_INITIALIZED` if the machine heap does not exist. `HEAP_ERROR_INVALID_HANDLE` if `hHeap` is NULL or is the machine heap handle. `HEAP_ERROR_INVALID_BLOCK` if `_HeapFree` fails internally.
+**Errors**: `HEAP_ERROR_NOT_INITIALIZED` if the machine heap does not exist;
+`HEAP_ERROR_INVALID_HANDLE` if `hHeap` is NULL or is the machine heap handle.
+Configured validation failures and the error from the parent `_HeapFree`
+are propagated.
 
-**Design notes**: Before freeing the block, the heap header is zeroed longword-by-longword to invalidate any stale handles held by the caller. All outstanding allocations within the private heap are implicitly discarded — there is no drain or destructor mechanism. It is not possible to destroy the machine heap.
+**Design notes**: Before returning the parent allocation, the function
+invalidates the private heap's slab/arena magics and zeroes its heap header.
+All outstanding allocations are discarded with the containing storage; there
+is no drain or destructor mechanism and their pointers become invalid. It is
+not possible to destroy the machine heap.
 
 ---
 
@@ -393,12 +468,14 @@ PROTO  , hHeap:DWORD, lFlags:DWORD, lBytes:DWORD
 | Parameter | Description |
 |-----------|-------------|
 | `hHeap` | Heap to allocate from. |
-| `lFlags` | Per-call flags. Currently only `HEAP_ZERO_MEMORY` is honoured (overrides heap-level zero flag). |
-| `lBytes` | Number of bytes to allocate. |
+| `lFlags` | `HEAP_ZERO_MEMORY` enables zeroing unless heap debug fill takes precedence; `HEAP_DISABLE_SMALL_POOL` forces this request onto the regular path. |
+| `lBytes` | Requested bytes. Zero bypasses the SOA and creates a zero-length regular allocation on success; it must still be freed. |
 
 **Return value**: D0 = pointer to the allocated data area on success, NULL on failure.
 
-**Errors**: `HEAP_ERROR_OUT_OF_MEMORY` if no sufficiently large free block exists.
+**Errors**: configured validation errors, `HEAP_ERROR_OUT_OF_MEMORY` if no
+sufficiently large free block exists, or `HEAP_ERROR_BLOCK_NOT_FREE` if the
+allocation scan finds a non-free entry in a free chain.
 
 **Small Object Allocator**: When routing conditions are met (`1 ≤ lBytes ≤ 256`, small
 pool not disabled on the heap or the call, tail checking off), the request is served by
@@ -407,7 +484,7 @@ of the parent heap, allocation falls back to the block algorithm below.
 
 **Allocation algorithm** (block path):
 
-1. Run `__HeapAutoValidateFlagCheck` per the heap's flags.
+1. Run `__HeapAutoValidateFlagCheck` before either SOA or regular allocation.
 2. Round `lBytes` up to the next `BLK_HDR_SIZE` boundary; add `BLK_HDR_SIZE` for the header. If tail checking is enabled, also add `HEAP_TAIL_SIZE` (32 bytes) before alignment.
 3. Call `__HeapGetBucketOffset` on the minimum required data size to find the starting bucket.
 4. Walk buckets from the starting bucket upward until a non-empty bucket is found.
@@ -438,13 +515,21 @@ PROTO  , hHeap:DWORD, pMem:DWORD
 | Parameter | Description |
 |-----------|-------------|
 | `hHeap` | Heap the block was allocated from. |
-| `pMem` | Pointer returned by `_HeapAlloc` or `_HeapReAlloc`. NULL is silently ignored (returns success). |
+| `pMem` | Live pointer returned by `_HeapAlloc` or `_HeapReAlloc`. NULL is a no-op **after** heap validation succeeds. |
 
 **Return value**: D0 = non-zero (TRUE) on success, zero (FALSE) on failure.
 
 **Errors**: `HEAP_ERROR_INVALID_BLOCK` if the pointer is not a valid, allocated heap block. `HEAP_ERROR_HANDLE_BLOCK_MISMATCH` if the block's heap ID does not match `hHeap`. `HEAP_ERROR_TAIL_VALIDATION_FAILED` if tail guard bytes are corrupt.
 
-**Free algorithm**:
+**SOA path**: after automatic heap validation, a non-NULL pointer is probed
+with `__HeapSlabFromPtr`. A recognized cell's heap ID is checked, then
+`__HeapSoaFree` returns it to its slab. The free tag plus a bounded free-list
+membership check detects double-free without mistaking matching live user
+data for a free cell. Full slabs become partial; empty slabs and their
+otherwise-empty arenas are released eagerly. Debug poison precedes rewriting
+the first four bytes as free-list control. The SCB remains.
+
+**Regular-block free algorithm** (when the SOA probe did not recognize a cell):
 
 1. Run `__HeapAutoValidateFlagCheck` with `fFree = -1` (triggers `FLG_HEAP_ENABLE_FREE_CHECK` path).
 2. Subtract `BLK_HDR_SIZE` from `pMem` to get the block header.
@@ -469,20 +554,34 @@ PROTO  , hHeap:DWORD, lFlags:DWORD, pMem:DWORD, lBytes:DWORD
 | Parameter | Description |
 |-----------|-------------|
 | `hHeap` | Heap the block was allocated from. |
-| `lFlags` | `HEAP_ZERO_MEMORY` (zero newly added bytes on growth), `HEAP_REALLOC_IN_PLACE_ONLY` (fail rather than move). Per-call overrides of heap flags. |
+| `lFlags` | `HEAP_ZERO_MEMORY` enables zeroing on growth, subject to debug-fill precedence and the SOA exceptions below. `HEAP_REALLOC_IN_PLACE_ONLY` forbids a required move; a heap-level in-place-only flag cannot be turned off by passing zero. |
 | `pMem` | Existing allocation pointer. Must not be NULL. |
-| `lBytes` | New requested size in bytes. |
+| `lBytes` | New requested size. Zero means a minimal, still-live zero-length regular allocation on success, **not** free. |
 
 **Return value**: D0 = pointer to the (possibly relocated) data area on success, NULL on failure. On failure, the original block is untouched and valid.
 
 **Errors**: `HEAP_ERROR_INVALID_BLOCK` if `pMem` is invalid. `HEAP_ERROR_HANDLE_BLOCK_MISMATCH` if the block is not owned by `hHeap`. `HEAP_ERROR_OUT_OF_MEMORY` if in-place growth failed and `HEAP_REALLOC_IN_PLACE_ONLY` was specified, or if `_HeapAlloc` failed on relocation.
 
-**Realloc algorithm**:
+**SOA-origin reallocation**:
+- A nonzero request in the same class returns the existing cell unchanged.
+  No original request size is stored, so same-class grow/shrink does not
+  zero or debug-fill a newly exposed/surrendered subrange.
+- A different small class allocates another cell with `__HeapSoaAlloc`,
+  copies `min(new request, old class size)` bytes, and frees the old cell.
+  Unlike public `_HeapAlloc`, this direct cell-to-cell path has no regular
+  fallback on SOA exhaustion.
+- A zero or greater-than-256-byte request uses `_HeapAlloc` for the
+  replacement, with the same bounded copy followed by cell release.
+- In-place-only permits the same-class case and rejects every required move.
+  Newly allocated space is filled by its allocator; on a grow, initialization
+  beyond the old **class size** applies, not beyond an unrecorded old request.
+
+**Regular-block realloc algorithm**:
 
 1. Validate `pMem` (alignment, magic, not free, heap ID).
 2. Compute required total block size `D1` (same rounding as `_HeapAlloc`).
 3. Compare `D1` to current `bhSize`:
-   - **Equal**: update `bhRequestSize` only (tail guard is rewritten if tail-checking is enabled).
+   - **Equal**: retain the block, update `bhRequestSize`, initialize growth bytes if requested, and rewrite the tail guard when enabled.
    - **Grow** (`D1 > bhSize`):
      - Check if `bhNext` is free and large enough.
        - If so and splitting is worthwhile: take only what is needed from the free block, insert the remainder as a new free block, invalidate the old free block header.
@@ -490,11 +589,23 @@ PROTO  , hHeap:DWORD, lFlags:DWORD, pMem:DWORD, lBytes:DWORD
      - If in-place growth is impossible: check `HEAP_REALLOC_IN_PLACE_ONLY`; if set, fail. Otherwise allocate new block, copy `bhRequestSize` bytes, free original.
      - On in-place growth, fill newly added bytes with debug pattern or zero as configured.
    - **Shrink** (`D1 < bhSize`):
-     - If leftover ≥ `BLK_HDR_SIZE`: split a new free block from the tail, insert it into the correct bucket, optionally coalesce with successor.
-     - If leftover < `BLK_HDR_SIZE`: keep the block at its current size (internal fragmentation).
+     - If leftover > `BLK_HDR_SIZE`: split a new free block from the tail, insert it into the correct bucket, optionally coalesce with successor.
+     - If leftover ≤ `BLK_HDR_SIZE`: keep the block at its current size (internal fragmentation).
      - Debug-fill surrendered bytes if enabled.
    - In all cases, rewrite tail guard at the new position if tail-checking is enabled.
 4. Return pointer to data area.
+
+Shrinking a regular block below `SOA_MAX` does **not** convert it to a cell,
+even with the SOA enabled. It stays on the regular path and can shrink in
+place with `HEAP_REALLOC_IN_PLACE_ONLY`. A later moving regular realloc calls
+`_HeapAlloc`, whose routing applies to that replacement.
+
+**Current debug-shrink limitation**: on retained regular blocks,
+`HEAP_ENABLE_DEBUG_FILL` rounds the surrendered range **down** to a longword
+boundary. A shrink to a non-multiple of four can overwrite up to three bytes
+that are still inside the new request (for example 36 → 33 overwrites byte 32).
+Do not rely on complete prefix preservation for that case; this is an
+implementation limitation, not an intended realloc guarantee.
 
 **On relocation**: The original block's requested size is used as the copy length, guaranteeing that no uninitialized data is propagated. If `_HeapFree` fails after a successful copy (a degenerate internal consistency failure), the error is cleared so the caller receives the valid new pointer.
 
@@ -506,7 +617,8 @@ PROTO  , hHeap:DWORD, lFlags:DWORD, pMem:DWORD, lBytes:DWORD
 PROTO  , hHeap:DWORD, pMem:DWORD
 ```
 
-**Purpose**: Returns the originally requested size of a heap allocation.
+**Purpose**: Returns the latest requested size of a regular allocation, or the
+usable class size of an SOA cell.
 
 **Parameters**:
 
@@ -535,7 +647,9 @@ assume `_HeapSize` echoes the exact request for small allocations.
 PROTO  , hHeap:DWORD
 ```
 
-**Purpose**: Returns the size of the largest contiguous free block in the heap. If `FLG_HEAP_DISABLE_COALESCING` is set, also coalesces all adjacent free blocks before scanning.
+**Purpose**: Sweeps fully empty SOA slabs/arenas, then returns the data size of
+the largest regular free block. If `FLG_HEAP_DISABLE_COALESCING` is set, it
+also coalesces adjacent regular free blocks before scanning.
 
 **Parameters**:
 
@@ -546,6 +660,11 @@ PROTO  , hHeap:DWORD
 **Return value**: D0 = data-area size (bytes) of the largest free block, or zero if the heap is fully allocated (in which case `_HeapGetError` returns `HEAP_ERROR_SUCCESS`). Zero is also returned on validation failure.
 
 **Design notes**: When coalescing is normally enabled, free blocks are already coalesced on every `_HeapFree`, so this call only performs the scan. When `FLG_HEAP_DISABLE_COALESCING` is set, the function first walks all ten buckets and calls `__HeapCoalesce` on each free block; it restarts each bucket's walk after any successful coalesce (because the block may have moved to a larger bucket). The returned size excludes the `BLK_HDR_SIZE` overhead.
+
+The SOA normally releases empty slabs/arenas on the last free, so its compact
+sweep is often a no-op. It neither moves live cells nor frees the retained
+SCB. The result is not total free space, free-cell capacity, or a guaranteed
+maximum request when tail-guard overhead is enabled.
 
 ---
 
@@ -562,9 +681,12 @@ PROTO  , hHeap:DWORD, pBlock:DWORD
 | Parameter | Description |
 |-----------|-------------|
 | `hHeap` | Heap to validate. |
-| `pBlock` | If NULL, validate the entire heap. If non-NULL, validate only this block (a data-area pointer). |
+| `pBlock` | NULL validates the entire heap, including its SOA. A non-NULL value must be a **regular-block data pointer**, not an SOA cell. |
 
-**Return value**: D0 = zero (Z flag set) on success, non-zero error code on failure. `__HeapError` is updated in both cases.
+**Result**: CCR.Z = 1 on success, 0 on failure; **D0 is preserved**, not a
+returned status. Branch on Z immediately after the call and stack cleanup
+(`ADDA` preserves CCR). `__HeapError` is set to success or the detected error;
+use `_HeapGetError` when an error code is needed.
 
 **Single-block validation**:
 - Alignment and magic check.
@@ -576,9 +698,17 @@ PROTO  , hHeap:DWORD, pBlock:DWORD
 
 **Full-heap validation**:
 1. Walk the physical block chain from `hhHeapHead`. For each block: alignment, magic, back-link, and computed forward-link (address + `bhSize` must equal `bhNext`).
-2. At chain end: verify end-of-heap magic and that the computed address matches.
+2. At chain end: verify the first end-marker longword and that the computed address matches.
 3. Walk all ten free-list buckets. For each block in a bucket: free-chain back-link consistency, and that the block has `FLG_FREE` set.
 4. If no free blocks were found in any bucket (heap fully allocated): walk the physical chain and confirm no block has `FLG_FREE` set and no stale `bhFreePrev`/`bhFreeNext` pointers.
+5. Call `__HeapSoaValidate` to check the SCB, owned arena descriptor/backing
+   blocks, tile accounting, live slab headers and free lists, and the forward
+   partial/full class lists.
+
+This is not exhaustive memory-safety validation: for example, the SOA check
+does not prove that every live tile occurs exactly once in the class lists or
+recompute every running SCB counter. Arbitrary invalid pointers can still
+fault when dereferenced.
 
 ---
 
@@ -596,7 +726,9 @@ PROTO  , hHeap:DWORD
 |-----------|-------------|
 | `hHeap` | Handle to validate. |
 
-**Return value**: Z flag set on success (D0 = 0). Z flag clear (D0 = error code) on failure. `__HeapError` is updated on failure.
+**Result**: Z set on success, Z clear on failure. **All registers, including
+D0, are preserved.** `__HeapError` is updated on failure only; successful
+handle validation does not clear a previous error.
 
 **Checks performed**:
 - Handle not NULL.
@@ -605,8 +737,11 @@ PROTO  , hHeap:DWORD
 - `hhSize` is consistent with `hhRequestSize` (using the same alignment arithmetic applied during creation).
 - `hhHeapHead` points to a block with magic `'BLKH'`.
 - Every non-NULL `hhFreeHeadN` pointer points to a block with magic `'BLKH'`.
+- If `hhSmallPool` is non-NULL, its `scbMagic` must be `'SCB '`; a mismatch
+  reports `HEAP_ERROR_SLAB_CORRUPT`.
 
-All registers are preserved.
+It does not walk block/free chains or establish that arbitrary pointer fields
+refer to mapped memory.
 
 ---
 
@@ -629,8 +764,16 @@ PROTO  , hHeap:DWORD, pEntry:DWORD
 
 **Important**: `*pEntry` holds a raw **block header** pointer, not a user data pointer. To get the user-visible pointer, add `BLK_HDR_SIZE` (`$20`) to the value stored at `*pEntry`. This pointer cannot be passed directly to `_HeapFree`, `_HeapSize`, or `_HeapReAlloc`.
 
+The walk includes free blocks and the SOA's internal SCB, arena descriptors,
+and backing blocks; it does **not** enumerate individual cells. Do not free
+internal allocations just because they appear in this walk. For live cells,
+the internal companion is `__HeapSoaWalk` (§6.9). Do not mutate the heap while
+using either cursor.
+
 **Usage pattern**:
 ```asm
+    extern  _HeapGetError
+
     clr.l   HeapEntry           ; Initialize: *pEntry = 0
 walk_loop:
     move.l  #HeapEntry,-(sp)
@@ -668,18 +811,25 @@ PROTO
 PROTO  , NumHeaps:DWORD, pHeaps:DWORD
 ```
 
-**Purpose**: Returns the count of active heaps and fills a caller-supplied array with their handles.
+**Purpose**: Counts the machine heap plus private-heap candidates found by a
+regular-block scan, and fills a caller-supplied handle array.
 
 **Parameters**:
 
 | Parameter | Description |
 |-----------|-------------|
-| `NumHeaps` | Capacity of the `pHeaps` array, in handles. Pass 0 to query the count only. |
-| `pHeaps` | Pointer to a longword array to receive the handles. Pass NULL to query the count only. |
+| `NumHeaps` | Nonnegative capacity of the `pHeaps` array, in handles. Use `(0, NULL)` for a count-only query. |
+| `pHeaps` | Writable longword array of at least `NumHeaps` elements when capacity is nonzero. NULL alone is not a safe count-query form with a nonzero capacity. |
 
-**Return value**: D0 = total number of active heaps (machine heap + all private heaps). If D0 > `NumHeaps`, the supplied buffer was too small; the caller should allocate `D0 × 4` bytes and call again.
+**Return value**: D0 = number found, or zero with
+`HEAP_ERROR_NOT_INITIALIZED` before machine-heap initialization. If D0 exceeds
+`NumHeaps`, only the capacity is stored; allocate `D0 × 4` bytes and retry
+without changing the heap.
 
-**Design notes**: The function walks the machine heap block chain looking for allocated blocks whose data area begins with `'HEAP'`. This requires that private heap headers not be modified between `_HeapCreate` and enumeration. The machine heap handle is always the first entry in the output array.
+**Limitations**: this is a heuristic, not a registry. Allocated regular blocks
+whose data starts with `'HEAP'` can be misidentified as heaps. Conversely, tiny
+private heaps backed by SOA cells (§5.2) are missed. With a valid output buffer
+and nonzero capacity, the machine heap is always the first entry.
 
 ---
 
@@ -691,13 +841,19 @@ PROTO  , NumHeaps:DWORD, pHeaps:DWORD
 
 **Return value**: D0 = `__HeapError`.
 
-**Notes**: `__HeapError` is set at the start of most API functions (cleared to `HEAP_ERROR_SUCCESS`) and updated on any error path. `_HeapGetError` is a pure leaf: one `move.l __HeapError,d0` and `rts`. It does not clear the error; the next API call will clear it.
+**Notes**: `_HeapGetError` is a pure leaf: `move.l __HeapError,d0` followed by
+`rts`. It does not clear the error. Most operations reset the status at entry
+or through automatic validation, but `_HeapValidateHandle` leaves an old
+error unchanged on success. Declare `extern _HeapGetError` and call with
+`jsr`; no PROTO for it is supplied by `heap.inc`.
 
 ---
 
 ## 6. Internal Functions
 
-These functions are not part of the public API. They are used by the heap implementation itself. Their prototypes are declared in `heap.inc` with double-underscore prefix.
+These functions are not public API. Most stack-based helpers have
+double-underscore PROTO declarations in `heap.inc`; the register-based leaf
+helpers and `__HeapStats` instead require explicit external declarations.
 
 ### 6.1 `__HeapAutoValidateFlagCheck`
 
@@ -712,7 +868,10 @@ Dispatches automatic validation based on the heap's configuration flags. Called 
 - Else if `FLG_HEAP_VALIDATE_PARAMETERS`: calls `_HeapValidateHandle(hHeap)`.
 - Otherwise: does nothing (Z=1 = success).
 
-Returns with Z=1 on success (no validation or validation passed) and Z=0 on failure. All registers are preserved by the `PROC USES d0/a0` frame; the Z flag from the final `MOVEM.L (SP)+` is preserved.
+Clears `__HeapError` at entry and rejects NULL handles even if validation
+flags are disabled. Returns with Z=1 on success and Z=0 on failure, preserving
+all registers. The final `MOVEM` restore does not change the CCR established
+by the validation/test instructions.
 
 ### 6.2 `__HeapCoalesce`
 
@@ -753,10 +912,12 @@ Not a `PROC` (leaf function). Public symbol, no frame.
 
 ```
 ; Input:  D0.l = data area size (bytes)
-; Output: D0.l = byte offset of hhFreeHeadN within the heap header
+; Output: D0.l = byte offset relative to hhFreeHead0 / HEAP_FREE_BUCKET_BASE
 ```
 
-Maps a data-area size to the byte offset of the correct `hhFreeHeadN` field using a sequence of `cmpi.l` / `ble.s` branches. Returns offsets 0, 4, 8, 12, 16, 20, 24, 28, 32, or 36 for buckets 0–9. Trashes CCR only.
+Returns 0, 4, …, 36 for buckets 0–9 using `cmpi.l` / `ble.s` branches.
+Use the result as `HEAP_FREE_BUCKET_BASE(a0,d0.l)`, not as an absolute
+heap-header offset. Apart from D0's return value, only CCR is changed.
 
 ### 6.6 `__HeapDebugFillOnFree`
 
@@ -772,7 +933,45 @@ Fills the data area of a block with `$BAADF00D`. Called by `_HeapFree` and `__He
 PROTO  , hHeap:DWORD, pBlock:DWORD
 ```
 
-Zeroes the header of a block that has been absorbed by coalescing, preventing use of a stale pointer to the now-defunct block from appearing valid (magic number check would fail). Used after `__HeapUnlinkFromBlockChain` in all coalescing and consume-next-block paths.
+Fills an absorbed block header with zero, or `$BAADF00D` when heap debug fill
+is enabled, so its old magic is no longer valid. Used after unlinking absorbed
+headers in coalescing and consume-next-block paths.
+
+### 6.8 `__HeapStats`
+
+`__HeapStats(hHeap, pStats)` fills the `HEAP_STATS_SIZE` (`$48`, 72-byte)
+structure defined in `heap.inc`. Declare `extern __HeapStats` and push the
+two arguments right-to-left. D0 is nonzero on success, zero on failure.
+
+It walks **regular physical blocks** and records block/allocated/free counts,
+requested and committed bytes, free bytes, committed-minus-requested
+overhead, largest free data area, and a ten-bin **request-size** histogram.
+Committed/free totals include their block headers but exclude the heap
+header and end marker. The histogram boundaries differ from the free buckets.
+
+With the SOA active, these totals count its SCB, descriptors, and tile-backing
+requests, not individual caller cells. Use `scbLiveCells` and
+`scbLiveCellBytes` for live-cell count and usable class bytes; exact original
+cell requests must be tracked by the caller. This is not a workload
+requested-byte or cell-density benchmark by itself.
+
+### 6.9 SOA Helpers
+
+The implementation modules and contracts are detailed in
+[the SOA design](HEAP_SMALL_ALLOC_DESIGN.md). Key internal entry points include:
+
+| Helper | Contract |
+|--------|----------|
+| `__HeapSoaSizeToClass` | Register leaf: D0 = request 0–256, returns class index 0–15; zero maps to class 0, although public zero allocation uses the regular path. |
+| `__HeapScbGetOrCreate` | Returns the heap's lazily allocated, explicitly zero-initialized SCB. |
+| `__HeapAllocAligned` | Checked regular allocation with power-of-two data alignment ≥32 and optional retained-padding output; see §2.7. |
+| `__HeapArenaCreate` / `__HeapArenaRelease` | Own separate regular descriptor/backing allocations; requests are clamped to 1–32 tiles and failed multi-tile backing retries one tile. |
+| `__HeapSlabCreate` / `__HeapSlabRelease` | Claim/release a tile; creation does not itself link the slab into a class list. |
+| `__HeapSlabFromPtr` | Returns a recognized slab or zero; checks structure, tile membership, class bounds, nonzero cell size, and cell offset/index. Ownership is checked separately by the public caller. |
+| `__HeapSoaAlloc` / `__HeapSoaFree` / `__HeapSoaReAlloc` | Cell operations with internal caller preconditions; they do not supply all public validation/routing checks themselves. |
+| `__HeapSoaValidate` | Returns D0 = zero or a heap error code; unlike public `_HeapValidate`, this helper does not preserve D0. |
+| `__HeapSoaCompact` | Sweeps empty slabs/arenas; retains the SCB and does not move live allocations. |
+| `__HeapSoaWalk` | Uses a zero-initialized 12-byte `{swArena, swTile, swCell}` cursor; returns the next live cell or zero with `HEAP_ERROR_NO_MORE_ITEMS`. |
 
 ---
 
@@ -780,15 +979,21 @@ Zeroes the header of a block that has been absorbed by coalescing, preventing us
 
 ### 7.1 Initialization Sequence
 
-The machine heap must be initialized before any other heap API is called. The typical sequence in a 68K CPM or bare-metal environment:
+Initialize the machine heap before allocating or creating private heaps.
+A typical sequence in a 68K CP/M or bare-metal environment is:
 
 ```asm
     ; Compute heap start and size from the base page or system state
     move.l  bsstart(a0),d2      ; End of BSS
     add.l   bslen(a0),d2        ; D2 = first byte after BSS
+    addi.l  #BLK_HDR_SIZE-1,d2
+    andi.l  #NOT(BLK_HDR_SIZE-1),d2 ; Align start before measuring capacity
     move.l  hightpa(a0),d1      ; Top of TPA
     sub.l   d2,d1               ; D1 = available bytes
     subi.l  #STKSIZE,d1         ; Reserve space for stack
+    subi.l  #HEAP_HDR_SIZE+BLK_HDR_SIZE+HEAP_END_SIZE,d1
+    ble     init_failed        ; Not enough room for heap overhead
+    andi.l  #NOT(BLK_HDR_SIZE-1),d1 ; Round usable capacity DOWN
 
     ; Initialize the machine heap
     move.l  d1,-(sp)            ; lSize
@@ -823,7 +1028,9 @@ Private heaps isolate separate subsystems from each other and from the system po
     INVOKE  _HeapDestroy, hMyHeap    ; Release all memory at once
 ```
 
-All allocations within a private heap are freed atomically when the heap is destroyed, with no need to free individual blocks first.
+All storage within a private heap is reclaimed when it is destroyed, with no
+need to free individual allocations first. This is not synchronization:
+callers must prevent concurrent access and discard all old handles/pointers.
 
 ### 7.3 Allocating and Freeing Memory
 
@@ -849,7 +1056,8 @@ All allocations within a private heap are freed atomically when the heap is dest
 
 **Ownership**: always free a block to the same heap it was allocated from. Passing a block from heap A to `_HeapFree` with heap B's handle will be detected (heap ID mismatch) and result in `HEAP_ERROR_HANDLE_BLOCK_MISMATCH`.
 
-**NULL free**: `_HeapFree` silently returns success if `pMem` is NULL.
+**NULL free**: `_HeapFree` returns success for NULL only after the supplied
+heap passes its configured validation.
 
 ### 7.4 Heap Enumeration
 
@@ -868,7 +1076,7 @@ walk_loop:
     bra.s   walk_loop
 
 walk_done:
-    INVOKE  _HeapGetError
+    jsr     _HeapGetError       ; Declare extern _HeapGetError in this source
     cmpi.l  #HEAP_ERROR_NO_MORE_ITEMS,d0
     bne     handle_walk_error
 ```
@@ -888,7 +1096,9 @@ DEBUG_FLAGS equ (HEAP_ENABLE_DEBUG_FILL or HEAP_TAIL_CHECKING_ENABLED or HEAP_VA
 
 ### 7.6 Using INVOKE with the Heap API
 
-`heap.inc` declares PROTO entries for all public API functions. Any source file that includes `heap.inc` can use `INVOKE` for type-checked calls without writing explicit stack setup:
+`heap.inc` declares PROTO entries for the 13 stack-parameter public APIs.
+Sources including it can use `INVOKE` to check argument counts and generate
+stack setup. `_HeapGetError` is the exception: declare it `extern` and use `jsr`.
 
 ```asm
     include heap.inc
@@ -904,19 +1114,35 @@ Parameters are pushed right-to-left. The assembler validates the parameter count
 
 ## 8. Design Notes
 
-**Why segregated free lists?** A single free list requires O(n) allocation time as the heap fills. Segregated free lists bring common-case allocation close to O(1): the correct bucket is computed in constant time by `__HeapGetBucketOffset`, and within a bucket the first block is almost always a match. Bucket 9 (oversized blocks) retains O(k) behaviour where k is the number of blocks in that bucket.
+**Why segregated free lists?** Bucket selection avoids scanning irrelevant
+smaller free blocks. Finding a fit is still a first-fit linear search within
+the selected and larger buckets; no constant-time or best-fit guarantee is
+made for regular allocations.
 
 **Why ten buckets with these thresholds?** The thresholds (64, 128, 256, 512, 1024, 4096, 16384, 65536, 262144 bytes) cover the typical allocation size distribution in embedded applications. Smaller allocations cluster tightly in buckets 0–4; large I/O or filesystem buffers fall in 5–8; heap creation blocks fall in 9.
 
 **LIFO insertion**: new free blocks are inserted at the head of their bucket chain. This improves cache locality (recently freed blocks are reused first) at the cost of not being a strict best-fit allocator within a bucket.
 
-**Block size alignment to `BLK_HDR_SIZE`**: with a minimum block granularity of 32 bytes, there is never a free block too small to hold a block header. The split threshold (`leftover > BLK_HDR_SIZE`) ensures that splitting never creates a header-only block with no data area.
+**Block size alignment to `BLK_HDR_SIZE`**: regular blocks use 32-byte
+granularity. Allocation and shrink splits require leftover >32 bytes; the
+in-place realloc-grow split accepts a 32-byte header-only remainder. A
+zero-length request can also produce a header-only allocated block. Neither
+case grants writable bytes through a zero-length data pointer.
 
-**Heap IDs**: the 16-bit heap ID in the high word of `hhFlags`/`bhFlags` is assigned monotonically from `__HeapId` at heap creation time. Cross-heap block ownership is detected at O(1) with a simple mask-and-compare. The ID is never reused within a session; if `__HeapId` wraps (after 65 535 heaps), an old heap could theoretically receive the same ID as a new one — this is not guarded against.
+**Heap IDs**: the 16-bit counter is incremented at each heap creation,
+including machine-heap initialization. Ownership comparison is constant-time.
+IDs wrap after 65,536 creations; reuse is not detected or prevented.
 
-**Private heap as machine-heap block**: nesting private heaps inside the machine heap means that destroying a private heap is a single `_HeapFree` call. The downside is that the machine heap must be large enough to accommodate all private heaps simultaneously as contiguous blocks, which limits the total number and aggregate size of private heaps.
+**Private heap as parent allocation**: destroying a private heap returns its
+containing machine-heap allocation with one `_HeapFree` call, after
+invalidating its metadata. Each private heap needs contiguous parent storage;
+very small ones may be SOA-backed as described in §5.2.
 
-**Register conventions**: all `PROC` functions use `USES` to save and restore only the registers they modify. D0 is always the return value register and is never listed in `USES`. The stack frame is generated by `PROC`/`ENDP`; parameters are accessed by name using `LINK`-relative addressing.
+**Register conventions**: D0/D1/A0/A1 are caller-saved; D2–D7/A2–A6 are
+callee-saved. Many public routines preserve additional registers through
+`USES`. D0 is a return register for most APIs, but is deliberately in the
+`USES` lists of both public validators and the automatic-validation helper.
+`PROC`/`ENDP` generate stack frames and preserve CCR across register restore.
 
 ---
 
@@ -926,9 +1152,12 @@ Parameters are pushed right-to-left. The assembler validates the parameter count
 
 2. **Fixed-size heaps**: neither the machine heap nor any private heap can grow beyond its initial size. There is no mechanism to extend a heap, merge multiple heaps, or request additional memory from an OS when the heap is exhausted. The only recourse on `HEAP_ERROR_OUT_OF_MEMORY` is to compact (which may reveal previously fragmented free space) or to fail.
 
-3. **No large-block best-fit**: within bucket 9 (blocks > 256 KB) the allocator uses first-fit rather than best-fit, which can increase fragmentation when many oversized blocks are in use simultaneously.
+3. **First-fit, not best-fit**: all regular free buckets use first-fit scans,
+   which can increase fragmentation for some allocation patterns.
 
-4. **Heap ID wrap-around**: `__HeapId` is a 16-bit counter with no overflow detection. After 65 535 heaps have been created across the lifetime of the process, the ID will wrap and a new heap could share an ID with an older one that was destroyed. This allows a freed block from the old heap to pass the ownership check against the new heap.
+4. **Heap ID wrap-around**: `__HeapId` is a 16-bit counter with no overflow
+   detection. It wraps after 65,536 creations, allowing an ID to be reused.
+   The ID comparison is not protection against arbitrary stale or forged pointers.
 
 5. **`_HeapWalk` pointer type**: the `pEntry` parameter to `_HeapWalk` stores raw block header addresses, not data pointers. Callers must add `BLK_HDR_SIZE` to get a user pointer. This is unintuitive and differs from the Windows `HeapWalk` convention, where `PROCESS_HEAP_ENTRY` carries both.
 
@@ -940,11 +1169,29 @@ Parameters are pushed right-to-left. The assembler validates the parameter count
 
 9. **`HEAP_TRAP_ON_ERROR` not implemented**: the flag bit is defined and documented but the implementation does not currently issue a `TRAP` instruction on detecting corruption. It is reserved for a future enhancement.
 
-10. **`HEAP_ENABLE_TAGGING` not implemented**: similarly defined but not implemented. No tags are assigned to allocations.
+10. **Tagging not implemented**: `FLG_HEAP_ENABLE_TAGGING` and its mask
+    `HEAP_ALLOCATION_TAGGING_ENABLED` are defined but assign no allocation tags.
 
 11. **`ar.exe` wildcard limitation on Windows**: `cmd.exe` and PowerShell do not expand wildcards for native executables, so archive commands must supply an explicit object-file list. Both makefiles supply that list when building `libheap.a`.
 
-12. **`GetMachineHeaps` heuristic detection**: `_GetMachineHeaps` detects private heaps by scanning the machine heap block chain for allocated blocks whose first four bytes are `'HEAP'`. If application data happens to begin with those bytes, it will be misidentified as a heap handle.
+12. **`GetMachineHeaps` heuristic detection**: matching regular user data can
+    produce false positives, and tiny SOA-backed private heaps are missed.
+    For count-only queries use `(0, NULL)`, not NULL with nonzero capacity (§5.13).
+
+13. **Caller-owned memory and pointer validity**: initialization requires
+    rounded usable bytes **plus 128 bytes of metadata** and any leading
+    alignment loss. It does not bounds-check the supplied region. Handle,
+    block, and SOA recognition checks are not safe reads of arbitrary memory.
+
+14. **SOA introspection is not the regular-block API**: `_HeapWalk` does not
+    enumerate cells; `_HeapValidate(hHeap, cell)` is unsupported; `_HeapSize`
+    does not establish that a recognized cell is still allocated. Use live
+    pointers and whole-heap validation, and use internal tooling helpers only
+    with their preconditions satisfied.
+
+15. **Debug shrink can damage retained bytes**: shrinking a regular block to
+    a non-longword size with debug fill enabled can poison bytes still inside
+    the new request (§5.6). This remains an implementation limitation.
 
 ---
 
@@ -954,11 +1201,15 @@ Parameters are pushed right-to-left. The assembler validates the parameter count
 
 2. **Best-fit within bucket 9**: replace the first-fit scan of the overflow bucket with a sorted insert (by size) so that the closest-fit block is always returned for large requests, reducing internal fragmentation.
 
-3. **Thread safety**: add an optional critical-section mechanism. The heap could hold a pointer to a lock word and a caller-supplied lock/unlock pair. Alternatively, interrupt-disable wrappers could be injected at a compile-time flag, since 68K hardware makes this straightforward with `AND #$F8FF,SR` / `OR #$0700,SR`.
+3. **Thread safety**: add caller-supplied critical-section hooks. A
+   supervisor-mode interrupt-masking wrapper would need to save and restore
+   the original SR; interrupt masking alone is not a general multitasking lock.
 
 4. **`HEAP_TRAP_ON_ERROR` implementation**: on corruption detect, push a diagnostic longword (error code) and execute `TRAP #15` (or a configurable trap vector) so that a debugger or monitor can catch the violation with full register context intact.
 
-5. **Allocation tagging** (`HEAP_ENABLE_TAGGING`): embed a caller-supplied 16-bit tag in the high word of `bhFlags` (reusing or extending the ID field). Tag-based allocation statistics would allow identification of which subsystem is consuming memory.
+5. **Allocation tagging** (`HEAP_ALLOCATION_TAGGING_ENABLED`): define
+   separate tag storage without overwriting the ownership ID. Tag-based
+   statistics could then identify which subsystem consumes memory.
 
 6. **`_HeapWalk` data pointer**: return a struct (or two pointers) from `_HeapWalk` — one for the raw header (internal use) and one for the user data area — to match the ergonomics of the Windows `HeapWalk` / `PROCESS_HEAP_ENTRY` convention and eliminate the need for callers to add `BLK_HDR_SIZE` manually.
 
@@ -966,13 +1217,16 @@ Parameters are pushed right-to-left. The assembler validates the parameter count
 
 8. **`_MachineHeapDestroy`**: a counterpart to `_MachineHeapInitialize` that zeroes `__MachineHeapHandle` and optionally scrubs the heap memory. This would allow unit-test harnesses to re-initialize the heap between test cases without restarting the process.
 
-9. **Free-block ordering within buckets**: change bucket insertion from LIFO to address-ordered (ascending), enabling simple address-based coalescing without needing to walk the physical chain — the predecessor and successor in the free chain would always be adjacent in memory. This trades insertion cost (O(n) scan within bucket) for potentially simpler coalescing paths.
+9. **Free-block ordering within buckets**: evaluate size/address ordering
+   against insertion cost and fragmentation. Adjacent nodes in one size
+   bucket are not necessarily physically adjacent; the existing physical
+   chain remains necessary for reliable coalescing.
 
 10. **`_HeapCompact` return value for data area**: currently `_HeapCompact` returns the largest free block's *total* size minus `BLK_HDR_SIZE`. Returning both the total and the usable size (accounting for tail-guard space) would give callers a more accurate picture of the maximum allocation they can make.
 
 11. **Heap serialization / snapshot**: an API to dump the complete heap state (header, all block headers, free lists) to a linear buffer, suitable for crash dump analysis or heap state transfer across a reset.
 
-> **Implemented:** *Per-allocation size classes with no internal fragmentation for
-> small sizes* — served by the Small Object Allocator (§2.7), which uses dedicated
-> slab pools of equal-size cells (8–256 bytes) with no per-cell header, eliminating the
-> 32-byte block overhead and split fragmentation for small allocations.
+> **Implemented:** small-object size classes (§2.7) eliminate per-cell block
+> headers and regular block splitting. Request-to-class rounding, partially
+> occupied slabs, and shared metadata still consume space; there is no universal
+> footprint-reduction factor for every small workload.

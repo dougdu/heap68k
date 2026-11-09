@@ -1,6 +1,8 @@
 # Heap Small-Allocation Efficiency — Architecture & Design Spec
 
-**Status:** Draft v1.2 (round-2 review applied) · **Phases 0–6 complete — SOA default-on**  ·  **Target:** `libheap.a` (m68k)  ·  **Owner:** _unassigned_
+**Status:** Implemented, SOA default-on; source-audited 2026-11-09.
+**Target:** `out/lib/libheap.a` (m68k ELF). The original Draft v1.2 decisions
+and completed phase history are retained below.
 **Related docs:** [HEAP_API.md](HEAP_API.md), [heap.inc](../src/heap.inc)
 
 **NM1 backing update (2026-10-05):** The aligned regular allocator and separately
@@ -33,18 +35,20 @@ layout; the original phase history below remains historical.
 
 ## 1. Purpose & Scope
 
-The current heap manager allocates every request as an independent block with a **32-byte
+The regular block path allocates each request as an independent block with a **32-byte
 block header** (`BLK_HDR_SIZE`) and rounds every data area up to a **32-byte granule**. For
 large allocations this overhead is negligible, but for the small allocations that dominate
 most workloads (list nodes, string fragments, small structs, handles) the overhead is
 catastrophic: a 1–32 byte request consumes **64 bytes** of heap, and a 33–64 byte request
 consumes **96 bytes**.
 
-This document specifies an **architecture and phased implementation plan** to add an
-efficient small-allocation path to the heap while preserving the existing public API,
-calling conventions, debug instrumentation, and per-heap isolation model. The plan is
-incremental: each phase is independently buildable, testable, and reversible, and the
-[Progress Tracker](#15-phased-implementation-plan--progress-tracker) records status.
+The implemented SOA serves qualifying small requests without a per-cell block
+header. This document describes the current architecture and algorithms and
+retains the original options and
+[phase history](#15-phased-implementation-plan--progress-tracker).
+Public signatures and calling conventions are unchanged; alignment, size
+queries, and same-class realloc initialization have the documented differences
+in §7 and §13.
 
 Scope **includes**: allocation, free, realloc, size query, validation, walk, compaction,
 and debug-fill behavior for small allocations; new internal data structures; new tuning
@@ -66,7 +70,7 @@ Two independent sources of waste compound for small requests:
 2. **Alignment rounding** — the data area is rounded up to a 32-byte granule
    (`BLK_HDR_SIZE`), so the minimum data area is 32 bytes even for a 1-byte request.
 
-### 2.1 Current footprint (no debug flags)
+### 2.1 Regular-block footprint (SOA disabled, no debug flags)
 
 Footprint = `roundup(request, 32) + 32` (header). Tail-checking adds a further 32 bytes.
 
@@ -82,15 +86,16 @@ Footprint = `roundup(request, 32) + 32` (header). Tail-checking adds a further 3
 | 64  | 64  | 32 | **96**  | 32 | 33.3% |
 | 128 | 128 | 32 | **160** | 32 | 20.0% |
 
-**Takeaway:** for requests ≤ 64 bytes the heap wastes **1×–16× the requested size**. A
-workload dominated by 16-byte nodes achieves only ~25% memory utilization.
+**Takeaway:** header/granule waste is especially high for small requests
+(a 1-byte request occupies 64 bytes). A regular-block workload dominated by
+16-byte nodes uses only ~25% of that committed block space for requested data.
 
-### 2.2 Target footprint (with SOA, illustrative)
+### 2.2 Dense-slab footprint (illustrative, not a whole-heap guarantee)
 
 With a slab of `SLAB_SIZE = 4096`, a 32-byte slab header, and no per-cell header, the
 metadata cost is `slab_header / cells_per_slab` per allocation, plus request→class rounding.
 
-| Request | Class | Cell size | Amortized meta* | **Effective total** | vs. current |
+| Request | Class | Cell size | Amortized meta* | **Effective total** | vs. regular block |
 |--------:|------:|----------:|----------------:|--------------------:|------------:|
 | 1   | 8   | 8   | ~0.06 | **~8**   | 64 → 8   (8.0×) |
 | 8   | 8   | 8   | ~0.06 | **~8**   | 64 → 8   (8.0×) |
@@ -99,11 +104,14 @@ metadata cost is `slab_header / cells_per_slab` per allocation, plus request→c
 | 48  | 48  | 48  | ~0.38 | **~48**  | 96 → 48  (2.0×) |
 | 64  | 64  | 64  | ~0.50 | **~64**  | 96 → 64  (1.5×) |
 
-*Amortized meta = `32 / (⌊(4096−32)/cell⌋)`. Real per-allocation overhead is dominated by
-request→class rounding, which the class table bounds to **< 25%** (see §6.2).
+*Amortized meta = `32 / (⌊(4096−32)/cell⌋)`. This table excludes slab-end
+remainder, unused cells, the SCB, and arena descriptor/backing overhead.
+Request-to-class rounding is bounded in **bytes** by the tier spacing (§6.2),
+not by a universal percentage: 1 → 8 rounds up by 700% of the request.
 
-**Target outcome:** small-allocation footprint reduced **~2×–8×**, with the largest gains at
-the smallest, most common sizes.
+**Interpretation:** dense 8/16/32/64-byte cells replace 64/64/64/96-byte
+regular blocks before shared costs are counted: approximately 8×/4×/2×/1.5×,
+respectively. First-use cost and low occupancy can outweigh those savings.
 
 ---
 
@@ -111,13 +119,18 @@ the smallest, most common sizes.
 
 ### Goals
 
-- **G1** Reduce memory footprint of allocations ≤ 256 bytes by ≥ 2× (≥ 4× for ≤ 32 bytes).
+- **G1** Reduce repeated small-allocation overhead by amortizing metadata.
+  Measure whole-workload commitment; no fixed reduction factor is guaranteed
+  for every request size or occupancy level (§2.2).
 - **G2** Preserve the entire public API surface and calling convention unchanged
-  ([HEAP_API.md §5](HEAP_API.md)). Existing callers require **no source changes**.
+  ([HEAP_API.md §5](HEAP_API.md)). Callers relying on exact small-request size
+  reporting or 32-byte alignment must opt out or adapt (§13).
 - **G3** Preserve `_HeapFree(hHeap, pMem)` semantics — free must work from the returned
   pointer **alone**, with no size argument and no caller-side bookkeeping.
 - **G4** Preserve cross-heap ownership detection (heap-ID check) and per-heap flag isolation.
-- **G5** Keep allocation and free at **O(1)** amortized for the small path.
+- **G5** Keep the cell pop/push and class-list transitions constant-time.
+  Arena searches/creation/release, validation, and the tag-triggered bounded
+  free-list membership check are not constant-time guarantees.
 - **G6** Preserve debug instrumentation intent (zero-fill, debug-fill, validation) for the
   small path; document any deliberate exceptions (e.g., tail-check — see §10).
 - **G7** Make the feature **default-safe**: a per-heap flag can disable the SOA and fall back
@@ -143,11 +156,11 @@ not violate them.
 | C1 | Free receives only `(hHeap, pMem)`. The allocator kind and size class must be **recoverable from `pMem` alone**. | [HeapFree.a68](../src/HeapFree.a68) |
 | C2 | The **upper byte of every valid address is zero**; a non-zero upper byte signals corruption. Pointer masking must preserve this. | [HeapFree.a68](../src/HeapFree.a68), [HEAP_API.md §2.1](HEAP_API.md) |
 | C3 | Heap identity lives in the **high word of the flags longword** (`HEAP_ID_MASK = $FFFF0000`); ownership is a mask-and-compare. | [heap.inc](../src/heap.inc) |
-| C4 | The heap header is fixed at `$40` bytes; only `hhReserved` (`$3C`) is free for new state. | [heap.inc](../src/heap.inc) |
-| C5 | Per-call flags (`HEAP_ZERO_MEMORY`) override per-heap flags for that call. | [HeapAlloc.a68](../src/HeapAlloc.a68) |
+| C4 | The heap header remains `$40` bytes; the former `hhReserved` (`$3C`) is now `hhSmallPool`. | [heap.inc](../src/heap.inc) |
+| C5 | Per-call `HEAP_ZERO_MEMORY` enables zeroing; zero flags do not disable heap-level zeroing, and heap debug fill takes precedence. | [HeapAlloc.a68](../src/HeapAlloc.a68) |
 | C6 | Build is **case-sensitive** (`/Cx`); labels differing only in case are distinct. | [makefile](../makefile) |
 | C7 | 68K ABI in this codebase: **D0/D1/A0/A1 = caller-saved** (scratch); **D2–D7/A2–A6 = callee-saved**. `PROC`/`ENDP` `USES` lists enforce this. | [HEAP_API.md §8](HEAP_API.md) |
-| C8 | Every allocation returned today is 32-byte aligned. Callers **must not** assume this continues for small allocations (SOA cells are guaranteed only **≥ 8-byte (longword)** aligned — enough for 68K word/long access — **not** class-size aligned). | new |
+| C8 | Regular pointers are 32-byte aligned; SOA cells guarantee only **8-byte** alignment, enough for 68K word/long access, not class-size alignment. | [heap.inc](../src/heap.inc), [HeapSlab.a68](../src/HeapSlab.a68) |
 
 **Design invariant added by this spec:**
 
@@ -157,8 +170,9 @@ not violate them.
   **The implication is one-way:** a real cell always masks to a real slab header, but arenas
   share the parent heap's address space with ordinary blocks, so this does **not** by itself
   prove that an arbitrary pointer masking to a `'SLAB'`-looking header is a cell. That
-  direction is established by the load-bearing checks in §6.7 (magic + `slArena`→`'AREN'`
-  back-pointer + arena-range + cell modulus/range + heap-ID), **not** by address separation.
+  direction is screened by the structural checks in §6.7, **not** by address
+  separation. They are not an authenticity or arbitrary-pointer safety
+  guarantee: callers must still pass valid, live allocation pointers.
 
 ---
 
@@ -174,7 +188,7 @@ radius), and complicates `bhSize` arithmetic that the entire validator depends o
 Route small requests to per-size-class **slabs** subdivided into fixed-size **cells** with no
 per-cell header. One block header is amortized across hundreds of cells, and cells are sized
 to the class so rounding waste is bounded. **Verdict: chosen.** Attacks both waste sources,
-keeps O(1), and is additive (the large path is untouched).
+keeps constant-time cell-list operations, and is additive to the regular path.
 
 ### Option C — Free-path discrimination sub-options
 How does `_HeapFree` recover the allocator kind from `pMem` alone (constraint C1)?
@@ -204,7 +218,7 @@ Heap header ($40)                         (unchanged size; hhReserved repurposed
                      ├─ arena list head
                      └─ statistics counters
 
-Arena  (SLAB_SIZE-aligned, multiple of SLAB_SIZE)   [a regular heap block, aligned]
+Arena descriptor (separate regular block) -> aligned regular backing block:
   ┌─────────── SLAB_SIZE ───────────┬─────────── SLAB_SIZE ───────────┬─ ...
   │ Slab header │ cell │ cell │ ...  │ Slab header │ cell │ cell │ ...  │
   └──────────────────────────────────┴──────────────────────────────────┘
@@ -213,7 +227,9 @@ Arena  (SLAB_SIZE-aligned, multiple of SLAB_SIZE)   [a regular heap block, align
 Free path:  P & ~(SLAB_SIZE-1) ──► slab header ('SLAB', class, heapId, free list)
 ```
 
-- Requests with `size ≤ SOA_MAX` **and** the heap's SOA enabled are served by the SOA.
+- Requests with `1 ≤ size ≤ SOA_MAX`, SOA enabled on the heap and call, and
+  heap tail checking off attempt the SOA. `_HeapAlloc` falls back to regular
+  allocation if that attempt fails; zero-byte requests bypass the SOA.
 - All other requests use the existing segregated-bucket block allocator, **unchanged**.
 - A **slab** serves exactly one size class. Cells have **no header**; a *free* cell stores
   its free-list link (and a free tag) in its own body, reused as user data when allocated.
@@ -222,8 +238,9 @@ Free path:  P & ~(SLAB_SIZE-1) ──► slab header ('SLAB', class, heapId, fre
 
 ### 6.2 Size Classes
 
-`SOA_MAX = 256`. Classes are all multiples of 8 (≥ 8-byte cell alignment on 68K) with
-spacing tightened at the low end to bound request→class rounding waste to **< 25%**.
+`SOA_MAX = 256`. Classes are multiples of 8. Tier spacing limits added
+rounding to 0–7 bytes for requests 1–64, 0–15 for 65–128, and 0–31 for
+129–256. The relative percentage can be much larger than 25% for tiny requests.
 
 | Idx | Class | Idx | Class | Idx | Class | Idx | Class |
 |----:|------:|----:|------:|----:|------:|----:|------:|
@@ -234,8 +251,9 @@ spacing tightened at the low end to bound request→class rounding waste to **< 
 
 - Tier 1 (idx 0–7): 8-byte spacing.  Tier 2 (idx 8–11): 16-byte spacing.
   Tier 3 (idx 12–15): 32-byte spacing.
-- **16 classes.** `size → class` is a small branch ladder or a shift-indexed lookup table
-  (see §9.1). Worst-case rounding: e.g. request 129 → class 160 = 24%.
+- **16 classes.** `__HeapSoaSizeToClass` implements the shift formulas in
+  §9.1 and is cross-checked against the class table. For example, 129 → 160
+  adds 31 bytes (~24%); 1 → 8 adds 7 bytes (700%).
 - The table is emitted once in [HeapData.a68](../src/HeapData.a68) as `__HeapSoaClassTbl` (with
   `SOA_NUM_CLASSES` in [heap.inc](../src/heap.inc)) so allocation, validation, and tests share a
   single source of truth.
@@ -244,7 +262,7 @@ spacing tightened at the low end to bound request→class rounding waste to **< 
 
 Pointed to by `hhReserved` (renamed `hhSmallPool`). Allocated **lazily** from the owning
 heap's regular block allocator the first time a small request arrives (so heaps that never
-make small allocations pay nothing). Suggested layout (subject to Phase 1 finalization):
+make small allocations pay nothing). The current layout is:
 
 | Offset | Field | Size | Description |
 |-------:|-------|-----:|-------------|
@@ -262,6 +280,12 @@ make small allocations pay nothing). Suggested layout (subject to Phase 1 finali
 > The full/partial split lets allocation find a slab with a free cell in O(1) (head of the
 > partial list) and lets free promote a slab from full→partial in O(1).
 
+`SCB_HDR_SIZE = $A0` (160 bytes), normally 192 committed bytes including
+its regular block header. The SCB is explicitly zeroed after allocation,
+regardless of debug-fill precedence, and remains allocated after all cells,
+slabs, and arenas have been released. Destruction of its owning private heap
+reclaims it with the containing storage.
+
 ### 6.4 Arenas
 
 An **arena** provides `SLAB_SIZE`-aligned backing storage for slabs.
@@ -269,12 +293,12 @@ An **arena** provides `SLAB_SIZE`-aligned backing storage for slabs.
 - An arena owns a **regular backing block** and a separate compact descriptor.
   The backing request is an exact multiple of `SLAB_SIZE`.
   **Arena size is adaptive, not a fixed 64 KB:** it starts small
-  (default `ARENA_SLABS_DFLT` tiles — e.g. 4 — adaptive down to a single-slab arena) and may scale up for
-  larger heaps. A fixed `16 × SLAB_SIZE` = 64 KB arena would make the *first* small allocation
+  (`ARENA_SLABS_DFLT = 4` tiles), and if that backing request fails retries
+  **one** tile, not a 4→2→1 search. Normal slab creation does not automatically
+  scale arena requests upward on larger heaps. A fixed 64 KB arena would make the *first* small allocation
   fail on any private heap smaller than ~68 KB (arena + alignment slack), silently dropping to
   the block path and losing the density win exactly where G1 promised it (review S4).
-  `slab_create` requests the smallest arena that yields at least one tile, bounded by the
-  parent heap's free space.
+  The internal arena helper accepts explicit tile counts clamped to 1–32.
 - **Alignment:** `__HeapAllocAligned` returns a regular-block data pointer
   aligned to `SLAB_SIZE`. It searches before mutating, returns legal
   prefix/suffix fragments to the existing buckets, and reports any retained
@@ -291,8 +315,11 @@ An **arena** provides `SLAB_SIZE`-aligned backing storage for slabs.
   | `$14` | `arTileMap` | long | Live-tile bitmap; drives claiming and reclamation |
   | `$18` | `arPadding` | long | Retained unusable backing suffix, zero through 32 bytes |
 
-- Arenas are created on demand when every partial/empty slab for a class is exhausted, and
-  released back to the block allocator by `_HeapCompact`/`_HeapDestroy` when fully empty.
+- A new slab is needed when its class has no partial slab. Existing arenas
+  are searched for a free tile before creating another arena. The last cell
+  free releases its slab eagerly, and an arena is released when its last live
+  tile goes; `_HeapCompact` also sweeps empty slabs. `_HeapDestroy` invalidates
+  metadata and reclaims the entire containing private heap.
 - **Tile allocation & reclamation** are driven by `arTileMap`: `slab_create` claims the first
   clear bit (formatting that tile as a slab); releasing a fully-empty slab clears its bit and
   decrements `arSlabUse`; when it reaches zero, release captures the next/backing
@@ -300,7 +327,9 @@ An **arena** provides `SLAB_SIZE`-aligned backing storage for slabs.
   descriptor. A bare count could neither locate a free tile nor enumerate live tiles.
 - Requests are clamped to the bitmap's 32-tile capacity. Four-tile creation still
   retries one tile; final failure frees the unpublished descriptor and preserves
-  the heap's physical/free-chain state and out-of-memory diagnostic.
+  the out-of-memory diagnostic. If the SCB already existed, descriptor/backing
+  rollback restores physical-block accounting; an SCB created during the attempt
+  remains allocated. The aligned allocator itself does not mutate chains on failure.
 
 ### 6.5 Slabs & Slab Header
 
@@ -335,21 +364,29 @@ word/long access requires. Cells begin at `slab + SLAB_HDR_SIZE`; cell *i* =
 - **Free cell:** the first 4 bytes hold `[nextIndex:word][freeTag:word]`:
   - `nextIndex` = index of the next free cell (`$FFFF` = end).
   - `freeTag` = `SOA_FREE_TAG` (e.g. `$F2EE`), a cheap **double-free** guard: freeing a cell
-    whose body already shows `freeTag` at a valid free position is reported as
+    whose body shows `freeTag` **and whose index is on the free list** is reported as
     `HEAP_ERROR_DOUBLE_FREE` (§8; already free).
 - Every class is ≥ 8 bytes, so the 4-byte free control always fits.
-- Allocation pops `slFreeHd`; free pushes onto `slFreeHd`. Both O(1).
+- Allocation pops `slFreeHd`; free pushes onto `slFreeHd`. Those updates are
+  O(1), but a matching tag triggers a membership walk bounded by `slTotal`.
+  This avoids treating matching live user data as a double-free. Once an
+  empty slab is released, its magic is invalidated and a stale pointer need
+  not produce `HEAP_ERROR_DOUBLE_FREE`.
 
 ### 6.7 Pointer → Slab Discrimination (the free discriminator)
 
 `_HeapFree(hHeap, pMem)` resolves the allocator kind as follows (see §9.4 for full pseudocode):
 
-1. `pMem == NULL` → success (unchanged).
+1. Perform configured heap validation; after success, `pMem == NULL` is a no-op.
 2. **SOA recognition** (is `pMem` a cell at all?): `slab = pMem & ~(SLAB_SIZE−1)`. `pMem` is a
-   cell **iff** every one of:
+   recognized candidate when all of these checks pass:
    - `slab->slMagic == 'SLAB'`
    - `slab->slArena->arMagic == 'AREN'`
+   - `arBlock == arBase`, `1 ≤ arSlabs ≤ ARENA_MAX_SLABS`
    - `arBase ≤ slab < arBase + arSlabs×SLAB_SIZE`
+   - the slab's tile bit in `arTileMap` is live
+   - `slClass < SOA_NUM_CLASSES` and `slCellSz != 0` before division
+   - `pMem ≥ firstCell`
    - `(pMem − firstCell) mod slCellSz == 0`
    - `cellIndex < slTotal`
 3. **If recognized as a cell, check ownership *separately*:** if `slab->slId == hHeap->hhId`
@@ -357,8 +394,8 @@ word/long access requires. Cells begin at `slab + SLAB_HDR_SIZE`; cell *i* =
    cell owned by another heap — mirrors the block path's `_hfInvalidHeap`). Ownership is **not**
    part of recognition: folding `slId` into step 2 would misreport a cross-heap cell as
    `HEAP_ERROR_INVALID_BLOCK`.
-4. **Else (not a cell) — block probe:** `hdr = pMem − BLK_HDR_SIZE`. If `hdr->bhMagic == 'BLKH'`
-   → existing block free path (unchanged).
+4. **Else — regular path:** validate `pMem − BLK_HDR_SIZE` for alignment,
+   block magic, allocated state, and heap-ID ownership.
 5. Otherwise → `HEAP_ERROR_INVALID_BLOCK`.
 
 Recognition is tried **first**. A genuine cell pointer always masks to a live slab header
@@ -366,7 +403,8 @@ Recognition is tried **first**. A genuine cell pointer always masks to a live sl
 **not** rest on address separation — it rests on the recognition chain: a false positive would
 require a forged `'SLAB'` header **and** a consistent `slArena` back-pointer to a forged
 `'AREN'` descriptor whose range contains the slab, **and** exact cell modulus / range
-agreement — effectively unforgeable by stray data. Ownership is then a **separate** step, so a
+agreement. These are consistency checks, not a guarantee against forged or
+unmapped addresses. Ownership is a **separate** step, so a
 valid cell of another heap is reported as `HEAP_ERROR_HANDLE_BLOCK_MISMATCH` (preserving G4),
 not silently rejected as an invalid block.
 
@@ -375,13 +413,13 @@ not silently rejected as an invalid block.
 - `hhReserved` (`$3C`) → **`hhSmallPool`**: pointer to the SCB, or `0` if no small alloc has
   occurred. Header size unchanged (C4 satisfied). `_HeapCreate`/`_MachineHeapInitialize`
   already zero this field, so existing heaps start with the SOA dormant.
-- New flag bit (low word of `hhFlags`, bits 0–9 currently used; 10–15 free):
+- SOA flag bit in the low word of `hhFlags` (bits 0–10 are defined; 11–15 remain free):
   - **`FLG_HEAP_DISABLE_SMALL_POOL` = 10**, mask `HEAP_DISABLE_SMALL_POOL = 1 shl 10`.
   - When set, `_HeapAlloc` skips the SOA entirely — exact legacy behavior. Used for A/B
     measurement and as a safety valve.
 - The SOA is **on by default** (opt-out), so existing builds benefit without code changes.
-  During Phases 1–5 it is gated **off by default** (opt-in) and flipped to opt-out in Phase 6
-  once validated (see the tracker).
+  `SOA_ROUTE = 1` is current. Phases 1–5 historically used zero while primitives
+  were tested; Phase 6 enabled public routing.
 
 ---
 
@@ -389,22 +427,22 @@ not silently rejected as an invalid block.
 
 | API | Change | Notes |
 |-----|--------|-------|
-| `_HeapAlloc` | If `lBytes ≤ SOA_MAX`, SOA enabled, and tail-check **not** requested → `soa_alloc`. | Zero/debug-fill honored (§10). Falls back to block path on SOA exhaustion of the parent heap. |
+| `_HeapAlloc` | If `1 ≤ lBytes ≤ SOA_MAX`, pool enabled on heap/call, and heap tail checking off → attempt `__HeapSoaAlloc`. | Zero/debug-fill honoured (§10); regular fallback on SOA failure. Zero-byte requests are regular allocations. |
 | `_HeapFree` | Discriminate cell vs. block (§6.7); route to `soa_free` or existing path. | NULL still succeeds. Cross-heap still detected. |
-| `_HeapReAlloc` | Handle 4 transitions: small→small, small→large, large→small, large→large. | `HEAP_REALLOC_IN_PLACE_ONLY`: only same-class small→small and shrinking large→large can succeed in place; else fail. Same-class small **grow does not honor `ZERO_MEMORY`** (no per-cell size; §9.6/S3). See §9.6. |
+| `_HeapReAlloc` | Cell origin: same-class keep, cross-class cell move, or zero/large replacement. Regular origin: existing regular grow/shrink path, even below 256 bytes. | In-place-only allows any successful regular in-place resize and same-class cell reuse; it rejects a required move. Same-class cells do not initialize a changed request subrange (§9.6). |
 | `_HeapSize` | For a cell, return the **class (usable) size**, not the original request. | Documented semantic (like `malloc_usable_size`). Callers relying on exact request for small allocs must not; API already returns "requested" only for blocks. See §16 Q3. |
-| `_HeapValidate` | Extend to walk arenas → slabs → free lists; verify counts, magics, alignment, no double-free. | §10. |
+| `_HeapValidate` | Whole-heap checks include SOA arena/slab/free-list checks. A non-NULL `pBlock` remains regular-only. | Public validators return status in CCR.Z and preserve D0; the internal SOA validator returns an error code in D0. §10. |
 | `_HeapValidateHandle` | Also sanity-check `hhSmallPool` (if non-NULL, `scbMagic == 'SCB '`). | Cheap. |
-| `_HeapWalk` | Coarse mode: report each arena block once (Phases ≤ 5). Extended mode: descend into slabs to enumerate cells. | Extended mode is Phase 5. |
+| `_HeapWalk` | Unchanged regular-block walk: includes SCB, separate descriptors, backing blocks, and free blocks. | It does not enumerate cells. `__HeapSoaWalk` is the implemented internal companion. |
 | `_HeapCompact` | Additionally release fully-empty slabs and fully-empty arenas back to the block allocator. | Improves post-burst footprint. |
-| `_HeapDestroy` | Unchanged in spirit — freeing the heap's blocks reclaims arenas automatically. | SCB and arenas are regular blocks of the parent heap. |
-| `_GetMachineHeaps` | Unaffected: it scans for `'HEAP'` handles, which arenas/SCBs do not carry. | Verify no false positives against `'AREN'`/`'SCB '`/`'SLAB'`. |
+| `_HeapDestroy` | Invalidates the private heap's slab/arena magics, clears its header, and frees the containing machine-heap allocation. | SCB/descriptors/backing inside that private heap are reclaimed with it; no per-allocation destructor is called. |
+| `_GetMachineHeaps` | Still scans regular machine-heap allocations for data starting with `'HEAP'`. | Not a registry: matching user data can be a false positive, and tiny SOA-backed private heaps are missed. |
 
 ---
 
 ## 8. Data Structures & New Constants
 
-To be added to [heap.inc](../src/heap.inc) (names final in Phase 1):
+Defined in [heap.inc](../src/heap.inc):
 
 ```asm
 ; --- Small Object Allocator tunables ---
@@ -433,11 +471,14 @@ hhSmallPool        equ  hhReserved    ; $3C : pointer to SCB or 0
 ; --- SCB / Arena / Slab offsets (see §6.3–6.5) ---
 ;   scb*  ...  ar*  ...  sl* ...
 SLAB_HDR_SIZE      equ  $20           ; 32 bytes: 30-byte slab header rounded up to a multiple of 8
-;   SCB_HDR_SIZE, AREN_HDR_SIZE (AREN includes arTileMap) finalized in Phase 1.
+SCB_HDR_SIZE       equ  $A0           ; 160 bytes
+AREN_HDR_SIZE      equ  $1C           ; 28-byte separate descriptor, including arPadding
+SOA_WALK_CURSOR_SIZE equ $0C          ; swArena, swTile, swCell
+SOA_ROUTE          equ  1             ; public SOA routing enabled
 
 ; --- New error codes (append; do not renumber existing) ---
 HEAP_ERROR_SLAB_CORRUPT       equ  $15   ; Slab header/free-list inconsistent
-HEAP_ERROR_DOUBLE_FREE        equ  $16   ; Cell already free (freeTag seen)
+HEAP_ERROR_DOUBLE_FREE        equ  $16   ; Tagged cell found on its slab free list
 HEAP_ERROR_SOA_ARENA_CORRUPT  equ  $17   ; Arena descriptor inconsistent
 ```
 
@@ -450,15 +491,23 @@ The class table is emitted once (data, not in the shared include) in
 __HeapSoaClassTbl:  dc.w  8,16,24,32,40,48,56,64,80,96,112,128,160,192,224,256
 ```
 
-New source files (mirroring the one-function-per-file convention):
+SOA implementation modules (several contain multiple helpers):
 
 | File | Contents |
 |------|----------|
-| `HeapSmallAlloc.a68`  | `__HeapSoaAlloc`, size→class, slab cell pop |
+| `HeapSmallAlloc.a68`  | `__HeapSoaAlloc`, cell pop, fill, and live-cell counters |
 | `HeapSmallFree.a68`   | `__HeapSoaFree`, cell push, slab full↔partial↔empty |
 | `HeapSlab.a68`        | `__HeapSlabCreate`, `__HeapSlabFromPtr`, `__HeapSlabRelease` |
 | `HeapArena.a68`       | `__HeapArenaCreate`, `__HeapArenaRelease` |
-| `HeapSmallCtl.a68`    | `__HeapScbGetOrCreate`, class list helpers, SOA stats |
+| `HeapSmallCtl.a68`    | `__HeapScbGetOrCreate`, class list helpers, `__HeapSoaSizeToClass` |
+| `HeapSmallReAlloc.a68` | `__HeapSoaReAlloc` |
+| `HeapSmallValidate.a68` | `__HeapSoaValidate` |
+| `HeapSmallCompact.a68` | `__HeapSoaCompact` |
+| `HeapSmallWalk.a68` | `__HeapSoaWalk` |
+
+`HeapAlloc.a68` also supplies the internal `__HeapAllocAligned` backing
+allocator. `HeapStats.a68` supplies regular-block accounting, not cell-request
+statistics.
 
 Each is added to the Windows `HEAP_ELF_OBJS` and macOS `HEAP_OBJS` lists in the
 ELF makefiles, with the same `src/heap.inc` dependency line as existing objects.
@@ -495,6 +544,8 @@ return scb
 
 ```
 soa_alloc(hHeap, flags, n):
+    scb = scb_get_or_create(hHeap)
+    if scb == 0: return 0
     cls   = soa_size_to_class(n)
     slab  = scb->scbPartial[cls]
     if slab == 0:
@@ -506,8 +557,8 @@ soa_alloc(hHeap, flags, n):
     slab->slFreeHd = nextIndex(cell)
     slab->slFree  -= 1
     if slab->slFree == 0: move slab Partial->Full
-    fill_or_zero(cell, n, flags)                  ; §10
-    stats: live_cells++, live_req_bytes += n
+    fill_or_zero(cell, slab->slCellSz, flags)      ; whole class size, §10
+    stats: scbLiveCells++, scbLiveCellBytes += slab->slCellSz
     return cell
 ```
 
@@ -515,6 +566,7 @@ soa_alloc(hHeap, flags, n):
 
 ```
 heap_free(hHeap, pMem):
+    if automatic_heap_validation_fails: return FALSE
     if pMem == 0: return TRUE
     slab = pMem & ~SLAB_SIZE_MASK
     ; --- recognition: is pMem a slab cell? (load-bearing chain, S2/§6.7) ---
@@ -524,6 +576,8 @@ heap_free(hHeap, pMem):
        and 1 <= slab->slArena->arSlabs <= 32
        and slab->slArena->arBase <= slab < slab->slArena->arBase + slab->slArena->arSlabs*SLAB_SIZE
        and the corresponding arTileMap bit is live
+       and slab->slClass < SOA_NUM_CLASSES and slab->slCellSz != 0
+       and pMem >= firstCell(slab)
        and (pMem - firstCell(slab)) mod slab->slCellSz == 0
        and cellIndex < slab->slTotal:
         ; --- recognized: check ownership SEPARATELY (D1) ---
@@ -535,6 +589,7 @@ heap_free(hHeap, pMem):
     return INVALID_BLOCK
 
 soa_free(hHeap, slab, cell):
+    cellBytes = slab->slCellSz                    ; capture before a possible release
     i = (cell - firstCell(slab)) / slab->slCellSz
     if freeTag(cell) == SOA_FREE_TAG and on_free_list(slab, i): return DOUBLE_FREE
     if debug_fill: fill(cell, BAADFOOD)          ; then write control word (§10)
@@ -543,7 +598,7 @@ soa_free(hHeap, slab, cell):
     was_full = (slab->slFree == 1)
     if was_full: move slab Full->Partial
     if slab->slFree == slab->slTotal: slab_maybe_release(hHeap, slab)   ; empty
-    stats: live_cells--
+    stats: scbLiveCells--, scbLiveCellBytes -= cellBytes
     return TRUE
 ```
 
@@ -562,11 +617,29 @@ slab_create(hHeap, cls):
         build free list 0..slTotal-1; slFreeHd=0; slFree=slTotal; slArena=ar
     return tile
 
+arena_create(hHeap, requestedTiles):
+    scb = scb_get_or_create(hHeap)
+    if scb == 0: return 0
+    tiles = clamp(requestedTiles, 1, ARENA_MAX_SLABS)
+    descriptor = heap_alloc(hHeap, HEAP_DISABLE_SMALL_POOL, AREN_HDR_SIZE)
+    if descriptor == 0: return 0
+    backing = aligned_regular_alloc(tiles*SLAB_SIZE, SLAB_SIZE, &padding)
+    if backing == 0 and tiles != 1:
+        tiles = 1
+        backing = aligned_regular_alloc(SLAB_SIZE, SLAB_SIZE, &padding)
+    if backing == 0:
+        free descriptor; set OUT_OF_MEMORY; return 0
+    format descriptor: arBlock=arBase=backing; arPadding=padding
+    link descriptor into scbArenaHead; scbArenaCount++
+    return descriptor
+
 slab_maybe_release(hHeap, slab):                 ; when a slab becomes fully empty (§9.4)
     ar = slab->slArena
     unlink slab from its class partial list
+    slab->slMagic = 0
     t  = (slab - ar->arBase) / SLAB_SIZE
     clear bit t in ar->arTileMap; ar->arSlabUse--
+    scbSlabCount--
     if ar->arSlabUse == 0: arena_release(hHeap, ar)   ; backing + descriptor back to parent
 ```
 
@@ -574,21 +647,27 @@ slab_maybe_release(hHeap, slab):                 ; when a slab becomes fully emp
 
 ```
 heap_realloc(hHeap, flags, pMem, n):
-    kind, cur = classify(pMem)                    ; SOA cell (class size) or block (bhSize)
-    newSmall  = (n <= SOA_MAX) and soa_enabled and not tail_check
-    case (kind==SOA, newSmall):
-      (SOA, small):
-          if class(n) == cur.class: update nothing (same cell); return pMem
-          if IN_PLACE_ONLY: return 0
-          q = soa_alloc(...); copy min(n,cur.classSize); soa_free(pMem); return q
-      (SOA, large):
-          if IN_PLACE_ONLY: return 0
-          q = block_alloc(n); copy min(n,cur.classSize); soa_free(pMem); return q
-      (block, small):
-          if IN_PLACE_ONLY: return 0              ; block→cell is always a move
-          q = soa_alloc(n); copy n; block_free(pMem); return q
-      (block, large):
-          existing _HeapReAlloc grow/shrink logic, unchanged
+    perform automatic heap validation
+    if pMem == 0: return INVALID_BLOCK
+    kind, cur = classify_and_check_ownership(pMem)
+    if kind == SOA:
+        if 1 <= n <= SOA_MAX and class(n) == cur.class: return pMem
+        if IN_PLACE_ONLY on heap or call: return OUT_OF_MEMORY
+        if 1 <= n <= SOA_MAX:
+            q = soa_alloc(hHeap, flags, n)       ; no regular fallback here
+        else:
+            q = heap_alloc(hHeap, flags, n)      ; zero or large -> regular
+        if q == 0: return 0                     ; original remains live
+        copy min(n, cur.classSize) bytes to q
+        soa_free(pMem)
+        return q
+    else:
+        run regular in-place grow/shrink logic, even for n <= SOA_MAX
+        if a move is required:
+            if IN_PLACE_ONLY on heap or call: return OUT_OF_MEMORY
+            q = heap_alloc(hHeap, flags, n)     ; replacement uses public routing
+            if q == 0: return 0
+            copy old requested bytes; free old regular block; return q
 ```
 
 > **Same-class grow does not honor `HEAP_ZERO_MEMORY` / debug-fill (accepted divergence).**
@@ -598,6 +677,13 @@ heap_realloc(hHeap, flags, pMem, n):
 > This is an explicit, documented divergence from the block path; callers needing zeroed
 > growth on a small allocation should allocate at the final size up front (review S3).
 
+On a moving cell grow, the preserved range is the old **class** size, not
+the unrecorded original request. Initialization therefore applies beyond the
+old class, not necessarily every byte beyond the old request.
+Regular-to-small shrink stays regular. Zero-size realloc is a minimal live
+regular allocation on success, not free. The current regular debug-shrink
+partial-longword limitation is documented in [HEAP_API.md §5.6](HEAP_API.md#56-_heaprealloc).
+
 ---
 
 ## 10. Debug, Fill & Validation Semantics
@@ -605,14 +691,15 @@ heap_realloc(hHeap, flags, pMem, n):
 - **Zero / debug fill on alloc:** honored per cell exactly as [`__FillBlock`](../src/HeapAlloc.a68)
   does for blocks — `HEAP_ENABLE_DEBUG_FILL` → `$CDCDCDCD` over the class size;
   else `HEAP_ZERO_MEMORY` (per-call or per-heap) → zero. Fill spans the whole **cell** (class
-  size), which is ≥ request, so no uninitialized bytes are exposed.
+  size), which is ≥ request, when a fill option is enabled. With neither
+  option, cell contents are unspecified, including old free-list control bytes.
 - **Debug fill on free:** fill the cell with `$BAADF00D`, **then** overwrite the first 4 bytes
   with the free-list control word (`nextIndex`,`freeTag`). Ordering matters: the control word
   must survive the fill.
 - **Tail checking:** `HEAP_TAIL_CHECKING_ENABLED` adds a 32-byte guard, which would obliterate
   small-cell density. **Rule:** when tail-check is enabled for a heap, small requests are
   served by the **block path** (not the SOA), preserving overrun detection. Documented in
-  [HEAP_API.md](HEAP_API.md) §3/§5.4 update. This is a deliberate, explicit exception to G6.
+  [HEAP_API.md](HEAP_API.md) §3/§5.4. This is a deliberate exception to G6.
 - **Validation (`_HeapValidate`) additions:**
   1. If `hhSmallPool != 0`: `scbMagic == 'SCB '`, `scbHeap == hHeap`.
   2. Walk `scbArenaHead`: each `arMagic == 'AREN'`; `arBase` is `SLAB_SIZE`-aligned;
@@ -624,8 +711,14 @@ heap_realloc(hHeap, flags, pMem, n):
   4. Walk the slab free list: exactly `slFree` nodes, all indices `< slTotal`, no cycles
      (bounded by `slTotal`), each free cell shows `freeTag` — this is the **double-free /
      corruption** detector.
-  5. Cross-check: each slab appears on exactly one of its class's partial/full lists,
-     consistent with `slFree` (`0` → full, else partial).
+  5. Walk each class's partial/full **forward** list: slab magic/class match,
+     partial slabs have `0 < slFree ≤ slTotal`, full slabs have `slFree == 0`,
+     and each walk is bounded by `scbSlabCount`.
+
+The current validator does not prove one-to-one live-tile/class-list
+membership, validate all reverse links, or recompute all SCB running counters.
+Whole-heap `_HeapValidate` invokes it; single-block validation does not accept
+cells. Both public validators preserve D0 and return status in CCR.Z.
 
 ---
 
@@ -658,58 +751,67 @@ helpers calling each other and juggling live pointers across calls):
 
 ## 12. Testing & Measurement Strategy
 
-### 12.1 Measurement harness (Phase 0)
-Add an internal `__HeapStats(hHeap, pStruct)` (or extend `_HeapWalk`) that reports, without
-changing behavior: total committed bytes, total requested bytes, per-size-bucket allocation
-counts, and (once the SOA exists) live cells / slabs / arenas. This lets us **quantify the
-before/after** on a real workload and drives class-table tuning (§16). The
-[HeapTest.a68](../test/HeapTest.a68) driver gains a scripted allocation mix.
+### 12.1 Measurement helpers
+The implemented internal [`__HeapStats`](../src/HeapStats.a68) reports regular
+physical-block accounting and a request-size histogram in `HEAP_STATS`.
+It counts the SOA's internal allocations, not caller cell requests.
+`scbLiveCells` / `scbLiveCellBytes` separately track live cell count / usable
+class bytes; exact requested bytes require workload-side bookkeeping.
+
+[HeapTest.a68](../test/HeapTest.a68) retains its scripted mix and snapshot but
+requires a CP/M base page. The headless
+[aligned suite](../test/test_aligned.a68) uses `__HeapStats` to check allocation
+and failure rollback. Neither is a measured universal SOA density benchmark.
 
 ### 12.2 Correctness tests
-- **Unit:** `soa_size_to_class` vs. `__HeapSoaClassTbl` for all `n` in `1..256`; slab format
-  math (`slTotal`, first-cell alignment) for every class; `__HeapSlabFromPtr` for the first,
+- **Unit:** `soa_size_to_class` vs. `__HeapSoaClassTbl` for all `n` in `1..256`;
+  detailed slab checks for 8/16/256-byte classes plus an allocation sweep over
+  all 16 classes; `__HeapSlabFromPtr` for the first,
   middle, last cell of a slab and for **near-miss** pointers (interior, off-by-one, foreign).
 - **Round-trip:** alloc→write pattern→free→re-alloc; verify no aliasing across cells; verify
-  a freed cell fails re-free with `HEAP_ERROR_DOUBLE_FREE`.
-- **Cross-heap:** free a cell of heap A to heap B → `HEAP_ERROR_HANDLE_BLOCK_MISMATCH`.
-- **Realloc matrix:** all four transitions × {grow, shrink, `IN_PLACE_ONLY`, `ZERO_MEMORY`}.
+  a repeat free with a same-slab anchor reports `HEAP_ERROR_DOUBLE_FREE`.
+- **Ownership:** regular-block cross-heap API checks and the SOA slab-ID
+  ownership proxy; see the [coverage gaps](HEAP_TEST_SUITE_DESIGN.md#911-known-coverage-gaps)
+  for missing focused public cell-path regressions.
+- **Realloc:** same-class reuse, cross-class and cell-to-large moves,
+  in-place-only rejection/reuse, regular shrink/grow, and selected zero-fill
+  checks; the suite is not every transition × flag combination.
 - **Fill/validate:** debug-fill patterns present; `_HeapValidate` passes on healthy heaps and
   **fails** on deliberately corrupted slab headers/free lists/counts.
-- **Fallback:** with `HEAP_DISABLE_SMALL_POOL`, behavior is byte-for-byte legacy.
+- **Regular path:** per-heap opt-out preserves regular size/alignment semantics;
+  internal control allocations exercise the per-call disable flag.
 
 ### 12.3 Stress / soak
-Randomized alloc/free/realloc across sizes 1..4096 with mixed heaps, interleaved
-`_HeapValidate`, run to arena creation and full release; assert invariants and that
-`live_cells == 0` ⇒ all slabs empty and releasable. Compare committed-byte high-water mark
-vs. the legacy allocator on the same seed.
+[`test_stress.a68`](../test/test_stress.a68) runs 3,000 fixed-seed xorshift-32
+iterations across 64 slots, machine/SOA and private/regular heaps, with sizes
+1..4096 and validation every 256 iterations. Drain checks verify zero live
+cells/slabs/arenas while the SCB remains. A 12 KB heap verifies the four-to-one
+arena retry. Its goldens are **live requested bytes/count**, not committed
+memory or an SOA-versus-regular comparison.
 
 ### 12.4 Build/CI
 ELF is the only supported object format; the COFF build has been retired.
 The Windows `makefile` and macOS `makefile.macos` carry the same library objects.
 `nmake test` builds and runs the automated ELF suite using the bundled Windows tools.
+The macOS makefile has no `tests`/`test` targets; its toolchain is external and
+native macOS build/run validation remains outstanding.
 **Rebuild everything** when touching `src/heap.inc` (a shared header change invalidates
 all objects).
 
 ### 12.5 Observability — sid68k `!heap -p`
-The `!heap -p [handle]` command ([`HeapDebugExt.cpp`](../../../sid68k/sid68k/HeapDebugExt.cpp))
-dumps the live SOA state: the SCB header (`scbLiveCells`, `scbLiveCellBytes`, `scbSlabCount`,
-`scbArenaCount`), the arena table (base, block, tiles-used, `arTileMap`), and a per-class
-table built by **walking** the `scbPartial[c]`/`scbFull[c]` lists.
+The historical sid68k integration provided `!heap -p` pool views. sid68k is
+external, is not bundled or built here, and is not part of this repository's
+validated test workflow. An external extension must understand the current
+separate NM1 descriptors, `arBlock` data-pointer meaning, and `arPadding`;
+an older descriptor/block-aliasing implementation is not compatible.
 
-**Counters vs. walked totals.** The SCB fields are *running counters* bumped by the low-level
-primitives (`__HeapSlabCreate` → `scbSlabCount`; `__HeapSlabAlloc` → `scbLiveCells`), whereas
-the per-class table only sees slabs **linked** onto a class list. The normal `_HeapSmallAlloc`
-path always links the slab it fills, so on a pure `_HeapSmallAlloc`/`_HeapSmallFree` workload
-the counters and the walk match exactly. But a caller that drives the primitives **directly**
-— as the Phase 1–5 primitive unit tests do — creates slabs that are counted by the SCB yet
-never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walked totals.
-`-p` prints a `Note:` quantifying any such gap. A gap therefore signals direct primitive use
-(e.g. `heapsmalltest`), **not** a leak or class-list corruption.
-
-> Example (`heapsmalltest` machine heap): SCB reports 17 slabs / 39 live cells, while the
-> per-class walk sums to 14 slabs / 32 used. The 3-slab, 7-cell gap is the classes-0/1/15
-> slabs the Phase 3–5 tests build with `__HeapSlabCreate`/`__HeapSlabAlloc` directly (never
-> linked, `slNext = slPrev = 0`), whose popped cells still bump the SCB counters.
+**Counters vs. walked totals.** `__HeapSlabCreate` increments `scbSlabCount`
+without linking the slab; `__HeapSoaAlloc` / `__HeapSoaFree` update live-cell
+count and class bytes and maintain the class lists. Primitive tests can create
+unlinked slabs, so running slab counters can legitimately exceed class-list
+walk totals. On normal public workloads a discrepancy warrants investigation;
+it must not automatically be dismissed as either harmless or a proven leak.
+The current automated runner uses GDB and integrity reports (§12.4).
 
 ---
 
@@ -719,14 +821,15 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
   reserved slot changes, and it is already zero-initialized on every existing heap.
 - **API/ABI:** no prototype changes; no new required parameters. `heap.inc` only **adds**
   symbols and appends error codes (existing codes keep their values).
-- **Behavioral:** with the SOA disabled (Phases 1–5 default, or via flag) behavior is
-  identical to today. When the SOA is **on** there are two deliberate changes for small
+- **Behavioral:** disabling the SOA restores regular-path size and alignment
+  semantics. When the SOA is **on** there are deliberate changes for small
   allocations: (a) `_HeapSize` returns class (usable) size (§7, §16 Q3); and (b) pointers are
   only **≥ 8-byte** aligned, not 32-byte aligned (C8). Change (b) breaks any caller that
-  **tags the low 5 bits** of a heap pointer (a common 68K idiom); the Phase 6 audit (R10) must
-  therefore cover pointer-alignment assumptions, not just `_HeapSize` callers.
-- **Rollout:** opt-in during development; flip to opt-out (default-on) only after Phase 5
-  validation passes and stats confirm the win (Phase 6).
+  **tags the low 5 bits** of a heap pointer; consumer audits must cover
+  pointer-alignment assumptions, not just `_HeapSize` callers.
+  Same-class realloc does not initialize a changed request subrange (§9.6).
+- **Rollout:** Phases 1–5 used `SOA_ROUTE=0`; Phase 6 enabled routing. The
+  current default is 1, with per-heap/per-allocation opt-out.
 
 ---
 
@@ -735,13 +838,13 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 | # | Risk | Impact | Mitigation |
 |---|------|--------|-----------|
 | R1 | Free misclassifies a block as a cell (or vice-versa) | Corruption / crash | Load-bearing discriminator chain (slab magic → `slArena`→`'AREN'` back-pointer + arena-range containment → cell modulus/range → heap-ID) — **not** address separation (arenas share the parent heap); extensive near-miss tests (§12.2). |
-| R2 | Arena alignment slack (< `SLAB_SIZE`, once per arena) wastes memory — proportionally **worse** under the adaptive small-arena policy (R9), where a single-slab arena pays up to `SLAB_SIZE` slack for one tile | Reduced net win | The slack holds the arena descriptor (not pure waste); the `__HeapAllocAligned` block primitive (Q4) removes it entirely and matters most under R9; larger arenas amortize it where the heap can afford them. |
+| R2 | Alignment placement and low arena occupancy increase commitment/fragmentation | Reduced net win | NM1 uses exact aligned backing plus a separate descriptor; legal prefix/suffix blocks remain reusable and only a ≤32-byte suffix is retained. Alignment can still make a particular free block unsuitable. |
 | R3 | Double-free of a cell silently reused | Data corruption | `freeTag` guard + free-list membership check on free; `_HeapValidate` free-list walk. |
 | R4 | `_HeapSize` semantic change breaks a caller | Latent bug | Document loudly; provide `HEAP_DISABLE_SMALL_POOL`; audit in-tree callers. |
 | R5 | Register-clobber / duplicate-label asm bugs | Heisenbugs | §11 guidelines; unique labels; strict `USES`; unit-test helpers in isolation. |
 | R6 | Tail-check users lose overrun detection on small allocs | Reduced debug coverage | By design small+tail-check routes to the block path (§10); documented. |
 | R7 | SCB/arena allocation fails under pressure | Small alloc fails | `soa_alloc` returns 0 → `_HeapAlloc` falls back to the block path transparently. |
-| R8 | Fragmentation: many half-empty slabs pin arenas | Footprint regression | Full/partial lists favor filling existing slabs; `_HeapCompact` releases empty slabs/arenas; per-class slab caps (tuning, §16). |
+| R8 | Fragmentation: many half-empty slabs pin arenas | Footprint regression | Partial lists favour existing slabs; free/compact release empties but cannot relocate live cells. Slab caps and empty-slab caching are not implemented. |
 | R9 | First small alloc needs a whole arena; a fixed 64 KB arena fails on small private heaps (< ~68 KB) → silent fallback to the block path, no density win | Missed G1 on small heaps | Adaptive/small default arena size — single-slab arenas allowed (§6.4); tuning knob (§16 Q7); `soa_alloc` still falls back safely (R7). |
 | R10 | Default-on changes small-alloc **alignment** (cells ≥ 8-byte vs blocks 32-byte); callers tagging the low 5 bits of a heap pointer break | Latent bug / corruption | Broaden the Phase 6 audit and §13 migration notes to pointer-alignment assumptions (not just `_HeapSize`); `HEAP_DISABLE_SMALL_POOL` restores 32-byte-aligned blocks. |
 
@@ -749,18 +852,23 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 
 ## 15. Phased Implementation Plan & Progress Tracker
 
+This is the historical implementation record, not a list of unfinished
+features or current manual debugger addresses. Current behaviour is in
+§6–§10; Windows build/run commands are in the [test guide](HEAP_TEST_SUITE_DESIGN.md#104-running-the-suite-quick-start).
+The original density targets were overclaimed; see the corrected analysis in §2.2.
+
 **Status legend:** ⬜ Not started · 🟨 In progress · ✅ Done · ⛔ Blocked
 
 | Phase | Title | Status | Exit criteria |
 |------:|-------|:------:|---------------|
 | A | Analysis & this spec | ✅ | Spec reviewed & accepted |
-| 0 | Measurement baseline & constants | ✅ | Constants/flag/errors + `__HeapStats` in `heap.inc`; ELF builds green & `heaptest.elf` links; macOS not host-buildable |
+| 0 | Measurement baseline & constants | ✅ | Constants/flag/errors + `HEAP_STATS` layout in `heap.inc`, `__HeapStats` implementation; ELF builds green & `heaptest.elf` links; macOS not host-buildable |
 | 1 | SOA data structures & primitives | ✅ | SCB/arena/slab create + `__HeapSlabFromPtr` unit-tested (`heapsmalltest.elf` passes under sim68k); no API routing yet |
 | 2 | Allocation path | ✅ | `_HeapAlloc` routes small (gated `SOA_ROUTE`, off in P2-5); fill/zero correct; falls back on failure; `heapsmalltest.elf` Phase 6 passes |
 | 3 | Free path | ✅ | `_HeapFree` discriminates & frees cells; double-free & cross-heap detected; `heapsmalltest.elf` Phase 7 passes |
 | 4 | ReAlloc & Size | ✅ | All four realloc transitions pass; `_HeapSize` returns class size for cells; `heapsmalltest.elf` Phase 8 passes |
 | 5 | Validation, Walk, Compact | ✅ | `_HeapValidate` covers SOA; `__HeapSoaWalk` enumerates cells; `_HeapCompact` releases empties; `heapsmalltest.elf` Phase 9 passes |
-| 6 | Default-on, docs, tooling, tuning | ✅ | Opt-out default; `HEAP_API.md` updated; sid68k `!heap` SOA-aware; stats confirm ≥ 2× (≥ 4× ≤32B) win |
+| 6 | Default-on, docs, tooling, tuning | ✅ | Opt-out default and API docs; historical external sid68k integration. Density estimates are illustrative, not universal measured guarantees. |
 
 ### Phase 0 — Measurement baseline & constants  ✅ (ELF; macOS deferred)
 - [x] Add SOA constants, magics, `FLG_HEAP_DISABLE_SMALL_POOL`, `__HeapSoaClassTbl`, and appended
@@ -779,13 +887,16 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 
 ### Phase 1 — SOA data structures & primitives  ✅ (2026-07-21)
 - [x] Create `HeapSmallCtl.a68`: `__HeapScbGetOrCreate`, class list head helpers (`__HeapClassListPush`/`__HeapClassListUnlink`).
-- [x] Create `HeapArena.a68`: `__HeapArenaCreate` (over-allocate + align, adaptive shrink), `__HeapArenaRelease`.
+- [x] Create `HeapArena.a68`: adaptive arena creation/release. The original
+      over-allocation backing was superseded by NM1's separate descriptor and
+      checked aligned allocation (§6.4).
 - [x] Create `HeapSlab.a68`: `__HeapSlabCreate`, `__HeapSlabFromPtr`, `__HeapSlabRelease`.
 - [x] Implement `__HeapSoaSizeToClass` (table reference + shift optimization, cross-checked against `__HeapSoaClassTbl`).
 - [x] Unit-test primitives via `HeapSmallTest.a68` (no public-API routing): size→class (n=1..256), SCB create,
       arena create, slab create + free-list walk, and `__HeapSlabFromPtr` recognition (valid / mid-cell / out-of-range /
-      foreign) all pass (`tResult=0`) under sim68k `--gdb` + sid68k. **Run:** `sim68k --gdb` then
-      `G 500,A58,A4C` in `sid68k out\bin\heapsmalltest.elf` from the repository root (start addr **required**; A58=`_tdone`, A4C=`_tfail`).
+      foreign) passed (`tResult=0`). Historical sid68k addresses are not stable
+      run instructions. Current standalone check: build with `nmake`, then
+      `pwsh -File test\run-heap-tests.ps1 -NoBuild -Modules heapsmalltest`.
 - [x] Add new objects to both ELF makefiles (Windows ELF green; macOS carries the same Phase 0 caveat).
 
 ### Phase 2 — Allocation path  ✅ (2026-07-21)
@@ -816,7 +927,8 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
       cross-heap (`slId` vs `hhId`) detection.
 - [x] Debug-fill-on-free ordering: fill the **whole cell** with `BAADF00D` **then** write the control
       word (`nextIdx`/`freeTag`), so the free-list linkage survives the poison fill (§10).
-- [x] Decrement only `scbLiveCells` on free (per-cell request size is not stored, Q3/§9.4).
+- [x] Decrement `scbLiveCells` and subtract the captured class size from
+      `scbLiveCellBytes` on free; exact per-cell request size is not stored.
 - [x] Tests: `HeapSmallTest.a68` Phase 7 — round-trip alloc/free/re-alloc-reuse, double-free rejection,
       debug-fill-on-free (control word survives, body poisoned; anchor cell keeps the slab alive so the
       free does not release+refill the arena), full→partial + empty-slab release on a private heap, and a
@@ -876,67 +988,63 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
       by (a) allocating the SCB with `HEAP_DISABLE_SMALL_POOL` as `lFlags` in
       [HeapSmallCtl.a68](../src/HeapSmallCtl.a68), and (b) honoring the per-**call** disable flag in the
       [HeapAlloc.a68](../src/HeapAlloc.a68) gate. `heapsmalltest.elf` passes all 9 phases at `SOA_ROUTE=1`
-      (`tResult=0`, `G 500,1780,1774` + `DL 3948`). (`heaptest.elf` is a CP/M base-page harness and
-      cannot run under a bare sim68k `G 500` — it faults at PC=0x520 **before** any heap call,
+      (`tResult=0`). (`heaptest.elf` is a CP/M base-page harness and
+      cannot run under a bare simulator launch — its base-page access fails before a heap call,
       identically at `SOA_ROUTE=0`; not a regression. `heapsmalltest` is the authoritative test.)
-- [x] Audited in-tree callers for exact-`_HeapSize`-request and pointer-alignment (low-5-bit
-      tagging) assumptions (R4, R10): **zero** consumers use `_HeapSize`; no heap-pointer low-bit
-      tagging exists — every low-bit mask found (asm68K encoder, BCD, hex) is register-field/nibble/
-      char extraction, not pointer tagging. Flip is safe for asm68k, bas68k, tbasic, cpm68k.
+- [x] The original rollout recorded a caller audit of sibling projects for
+      `_HeapSize` and pointer-tagging assumptions. That historical result is
+      not a guarantee about current external consumers; this repository's
+      tests now explicitly exercise `_HeapSize`. Integrators must audit their
+      own alignment/size assumptions or use the opt-out flag.
 - [x] Updated [HEAP_API.md](HEAP_API.md): `HEAP_DISABLE_SMALL_POOL` flag (bit 10, per-heap and
       per-call), error codes `$15`-`$17`, `hhReserved`→`hhSmallPool`, `_HeapAlloc` SOA routing note,
       `_HeapSize` class-size semantics, new §2.7 *Small Object Allocator (SOA)* section, TOC entry, and
       moved the implemented "per-allocation size classes" item out of §10 Future Enhancements.
-- [x] Made the sid68k `!heap` extension ([`HeapDebugExt.cpp`](../../../sid68k/sid68k/HeapDebugExt.cpp))
-      SOA-aware: added `SCB`/`AREN`/`SLAB` struct defs (byte-packed so `offsetof` matches the on-target
-      layout) + constants + magics, `hhReserved`→`hhSmallPool`, flag bit 10, error codes `$15`-`$17`, and
-      a new `-p` subcommand (`OnHeapPool`) that dumps the SCB summary, the arena list, and per-class
-      slab/cell (total/used/free + used-bytes) occupancy. **Rebuilt and validated:** `cmake --build
-      builds/win64 --target sid68k --config Release` compiles `HeapDebugExt.cpp` clean and relinks
-      `sid68k.exe` (MSVC). The extension is the normal, fully-defined `!heap` command handler set — it is
-      **not** a WIP.
+- [x] The original rollout recorded an external sid68k `!heap -p` integration.
+      That external build is not reproduced here and is not a current
+      compatibility guarantee for NM1's later descriptor layout (§12.5).
 - [x] Tuning: kept `SOA_MAX=256`, `SLAB_SIZE=4096`, `ARENA_SLABS_DFLT=4`, and the 16-class table.
       Rationale — 4096-byte slabs bound alignment slack while giving 500+ cells/slab at the small end
-      (per-cell metadata share < 0.1 B); 16 geometric-ish classes bound worst-case rounding to < 25%.
-      No workload histogram indicated a 12/20-byte class is needed. Constants left as-is; revisit only
-      on measured demand (Q1/Q2/Q6).
-- [x] Efficiency (G1/G5) confirmed by design analysis (footprint per live small allocation):
-      `1 B → 8 B` cell vs `64 B` block = **8×**; `16 B → 16 B` vs `64 B` = **4×**; `32 B → 32 B` vs
-      `64 B` = **2×**; `64 B → 64 B` vs `96 B` = **1.5×**; `≤32 B` requests meet the ≥ 4× goal and the
-      whole `≤256 B` range meets ≥ 2× except the very top class (224/256 B), where block rounding is
-      already tight. Alloc/free stay O(1) amortized (pop/push a slab free-list cell; class list is a
-      per-class head). (Runtime `__HeapStats` snapshot deferred — `heaptest`'s stats harness needs the
-      CP/M base page and cannot run under sim68k; the win is structural, not workload-dependent.)
+      (slab-header share < 0.1 B at the 8-byte class). Tier spacings bound
+      rounding in bytes, not a universal <25% percentage. Constants remain
+      unchanged; tuning needs measured workloads (Q1/Q2/Q6).
+- [x] Structural density analysis: 8/16/32/64-byte cells replace
+      64/64/64/96-byte regular blocks before shared costs, yielding approximate
+      8×/4×/2×/1.5× ratios. The original ≥4× for all ≤32-byte and ≥2× for
+      nearly all ≤256-byte claims were not supported. Whole-workload commitment
+      depends on metadata, occupancy, and release behaviour; no universal
+      runtime density benchmark is implemented (§12.1).
 
 ---
 
 ## 16. Open Questions & Tuning Parameters
 
-> **Lock before Phase 1** (each changes the on-wire SCB/arena/slab structures): **Q3**
-> (per-cell request size — confirmed *not* stored), **Q8** (free-tile tracking — bitmap), and
-> **Q7** (arena sizing — adaptive/small). Q1/Q2/Q4/Q5/Q6 are Phase 6 tuning.
+These record the chosen implementation and remaining tuning opportunities,
+not pending Phase 1 prerequisites.
 
 - **Q1 `SLAB_SIZE`.** 4096 balances cells-per-slab against alignment slack. Smaller slabs
-  reduce slack waste but raise per-cell metadata share and slab churn. *Tune in Phase 6.*
-- **Q2 `SOA_MAX` / class table.** 256 with 16 classes bounds rounding to < 25%. A workload
-  histogram (Phase 0) may justify shifting boundaries or adding classes (e.g. a 12- or
-  20-byte class if those dominate). *Data-driven in Phase 6.*
+  raise per-cell metadata share and slab churn. The current value is 4096.
+- **Q2 `SOA_MAX` / class table.** Current maximum 256, with 16 classes and
+  byte-rounding bounds in §6.2. Workload measurements may justify other
+  boundaries or classes (for example 12 or 20 bytes).
 - **Q3 Per-cell request size & `_HeapSize` semantics.** **Decision (lock before Phase 1): the
   per-cell request size is *not* stored** (storing it costs per-cell bytes, defeating density).
   Two accepted consequences: `_HeapSize` returns **class (usable) size**, and same-class
   realloc-grow cannot honor `ZERO_MEMORY`/debug-fill (S3/§9.6). Revisit only if a real caller
   needs the exact request size for small allocations.
-- **Q4 Arena alignment.** Over-allocate-and-align (portable, small slack) vs. a new
-  `__HeapAllocAligned` block primitive (no slack, more code). Start portable; optimize later.
+- **Q4 Arena alignment.** Resolved by NM1: `__HeapAllocAligned` is implemented
+  and used with separate descriptors, reusable legal fragments, and ≤32
+  retained suffix bytes (§6.4).
 - **Q5 Double-free strength.** `freeTag` + free-list membership (chosen) vs. a per-slab
   in-use bitmap (stronger, costs slab-header space). Add a bitmap only if soak testing shows
   the tag insufficient.
-- **Q6 Per-class slab cap / empty-slab retention.** Keep one empty slab per class cached to
-  avoid create/release thrash, or release eagerly for minimum footprint. *Tune in Phase 6.*
+- **Q6 Per-class slab cap / empty-slab retention.** Current policy releases
+  empty slabs eagerly; there is no slab cap or empty-slab cache. The SCB is
+  retained. Caching is a possible future measured trade-off.
 - **Q7 Arena sizing policy (lock before Phase 1).** Fixed 64 KB vs. adaptive/small (single-slab
-  arenas allowed). **Chosen: adaptive**, defaulting small and sized against the parent heap's
-  free space, so small private heaps still get the density win (review S4). *Confirm default in
-  Phase 1; tune in Phase 6.*
+  arenas allowed). **Chosen: four tiles, retry one on failure.** This improves
+  availability on small heaps but cannot guarantee a density win when only
+  a few cells are live.
 - **Q8 Free-tile tracking (lock before Phase 1).** Per-arena used/free **bitmap** (**chosen** —
   `arTileMap`, §6.4) vs. a bump-allocate-only policy with whole-arena release only. The bitmap
   is required for `slab_create` free-tile lookup, individual empty-slab reclamation, and the
@@ -954,5 +1062,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 | 2026-07-20 | Review v1.2 | Round-2 fixes: **D1** — §6.7 separates cell *recognition* from *ownership* (a cross-heap cell now reports `HEAP_ERROR_HANDLE_BLOCK_MISMATCH`, not `INVALID_BLOCK`); **D2** — §9.4 pseudocode carries the S2 arena-chain (`slArena`→`'AREN'` + arena-range) checks; unified `__HeapSoaClassTbl` name (§10/§12.2/Phase 0/6); pinned `SLAB_HDR_SIZE = $20` (§8/§6.5); split the arena constant into `ARENA_MAX_SLABS`/`ARENA_SLABS_DFLT` and reconciled §6.4/R2 with the adaptive policy. |
 | 2026-07-20 | Phase 0 sync | Synced `heap.inc` to the revised constants: `ARENA_SLABS` → `ARENA_MAX_SLABS` (32) + `ARENA_SLABS_DFLT` (4); added `SLAB_HDR_SIZE = $20`. No behavior change; ELF rebuild clean. Also documented `SOA_MIN_CLASS = 8` in §8 to match `heap.inc`. |
 | 2026-07-21 | Phases 1–5 | SOA implemented & validated under sim68k (`heapsmalltest.elf`, gated `SOA_ROUTE=0`): data structures/primitives (P1), allocation (P2), free + double-free/cross-heap (P3), realloc + `_HeapSize` class-size (P4), validate/walk/compact (P5). See the per-phase checklists above. |
-| 2026-07-21 | Phase 6 | **Default-on:** `SOA_ROUTE=1` (opt-out). Fixed the SCB-alloc recursion (`SCB_HDR_SIZE ≤ SOA_MAX`) via `HEAP_DISABLE_SMALL_POOL` on the SCB alloc + a per-call disable check in the `_HeapAlloc` gate. Caller audit clean (no `_HeapSize`/pointer-tagging consumers). Updated `HEAP_API.md` (flag, errors `$15`-`$17`, `hhSmallPool`, `_HeapSize` semantics, new §2.7). Made sid68k `HeapDebugExt.cpp` SOA-aware (structs + `-p` dump; `sid68k.exe` rebuilt clean via CMake/MSVC). Constants kept; efficiency ≥2× (≥4× ≤32B) confirmed by analysis. `heapsmalltest.elf` all 9 phases pass at `SOA_ROUTE=1`. |
+| 2026-07-21 | Phase 6 | **Default-on:** `SOA_ROUTE=1` with SCB recursion fixed by per-call opt-out. Updated API docs and recorded an external caller/debugger audit. Constants retained; `heapsmalltest.elf` passed its nine phases. Original universal density claims were estimates and are corrected in §2.2 and the 2026-11-09 audit. |
 | 2026-07-21 | Review fixes | Code-review F1–F3: **F1** — `scbLiveReqBytes` (add-on-alloc only, monotonic) reworked into a symmetric **live** gauge and **renamed `scbLiveCellBytes`** — alloc adds `slCellSz`, free subtracts it (captured before any slab/arena release); `-p` label → "Live cell bytes". Validated: 39 live cells → 5880 = Σ(class size × live cells). **F2** — `__HeapSlabFromPtr` now rejects `slClass ≥ SOA_NUM_CLASSES` or `slCellSz == 0` **before** the `divu`, closing a ÷0-trap path in the "reject arbitrary pointers" gate. **F3** — `__HeapSlabCreate` first-clear-bit tile scan is now **bounded by `arSlabs`** (no bit-index wrap on a map/count desync). No regression (`heapsmalltest.elf` 9 phases pass). |
+| 2026-10-05 | NM1 | Separate 28-byte arena descriptors, checked aligned regular backing, retained-padding accounting, and aligned regression module. |
+| 2026-11-09 | Source audit | Synchronized actual realloc/routing, CCR returns, structures/counters, arena fallback and rollback, retained SCB, validation limits, test coverage, Windows/macOS status, and density/complexity claims; kept earlier design/review events explicitly historical. |

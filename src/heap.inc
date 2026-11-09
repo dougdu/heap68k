@@ -79,7 +79,7 @@ HEAP_FREE_BKT8_MAX      equ     262144  	; Bucket 8: data size <=256 KB
 *	block is freed. This flag adds a short pattern to the end of
 *	each allocation. The heap manager detects the pattern when
 *	the block is freed and, if the pattern was modified, the heap
-*	manager will return an error or TRAP into the debugger.
+*	manager will return a tail-validation error.
 *
 *    FLG_HEAP_ENABLE_FREE_CHECK : Enable heap free checking.  Validates
 *	the heap when a block is freed.
@@ -94,20 +94,17 @@ HEAP_FREE_BKT8_MAX      equ     262144  	; Bucket 8: data size <=256 KB
 *	However, this flag is useful for detecting random corruption
 *	in a pool.
 *
-*    FLG_HEAP_ENABLE_TAGGING : Enable heap tagging. Assigns unique tags
-*	to heap allocations. You can display the tag by using the !heap
-*	debugger extension with the -t parameter.
+*    FLG_HEAP_ENABLE_TAGGING : Reserved; tagging is not implemented.
 *
 *    FLG_HEAP_DISABLE_COALESCING : Leaves adjacent blocks of heap memory
 *	separate when they are freed. By default, the system combines
 *	("coalesces") newly freed adjacent blocks into a single block.
 *	Combining the blocks takes time, but reduces fragmentation that
-*	might force the heap to allocate additional memory when it can't
-*	find contiguous memory. This flag is used to test optimizing
+*	could otherwise make a contiguous request fail despite enough
+*	total free memory. This flag is used to test optimizing
 *	strategies. It is not used for debugging.
 *
-*    FLG_HEAP_TRAP_ON_ERROR : If a heap validation error occurs TRAP
-*	rather than return an error code.
+*    FLG_HEAP_TRAP_ON_ERROR : Reserved; no trap-on-error is implemented.
 *
 ************************************************************************
 FLG_HEAP_ZERO_MEMORY 		equ 	0	; The allocated memory will be initialized to zero.
@@ -117,9 +114,9 @@ FLG_HEAP_ENABLE_TAIL_CHECK	equ	3	; Enable heap tail checking.
 FLG_HEAP_ENABLE_FREE_CHECK	equ 	4	; Enable full heap validation on HeapFree only.
 FLG_HEAP_VALIDATE_PARAMETERS	equ	5	; Enable limited heap validation on all API calls.
 FLG_HEAP_VALIDATE_ALL		equ 	6	; Enable full heap validation on all API calls.
-FLG_HEAP_ENABLE_TAGGING		equ 	7	; Enable heap tagging.
+FLG_HEAP_ENABLE_TAGGING		equ 	7	; Reserved; tagging is not implemented.
 FLG_HEAP_DISABLE_COALESCING	equ 	8	; Disable heap coalesce on free.
-FLG_HEAP_TRAP_ON_ERROR		equ 	9 	; TRAP rather than return error code on corruption.
+FLG_HEAP_TRAP_ON_ERROR		equ 	9 	; Reserved; trap-on-error is not implemented.
 
 HEAP_ZERO_MEMORY 		equ 	1 shl FLG_HEAP_ZERO_MEMORY
 HEAP_REALLOC_IN_PLACE_ONLY 	equ 	1 shl FLG_HEAP_REALLOC_IN_PLACE_ONLY
@@ -153,7 +150,7 @@ BLK_HDR_SIZE    equ     $20             	; Size of the block header in bytes
 FLG_FREE_BIT    equ     0               	; Bit # of free flag
 FLG_GARBAGE_BIT equ     1               	; Bit # of garbage bit
 FLG_FREE        equ     1 shl FLG_FREE_BIT      ; Set if the block is free
-FLG_GARBAGE     equ     1 shl FLG_GARBAGE_BIT	; Set during garbage collection
+FLG_GARBAGE     equ     1 shl FLG_GARBAGE_BIT	; Reserved; current paths only clear it
 
 ************************************************************************
 * Heap End Marker structure definition
@@ -163,7 +160,7 @@ HEAP_END_SIZE   equ     BLK_HDR_SIZE    	; Size of the heap end marker in bytes.
 
 ************************************************************************
 * Small Object Allocator (SOA) definitions - see ../docs/HEAP_SMALL_ALLOC_DESIGN.md
-* Phase 0: definitions only (no behavior yet).
+* Public routing is enabled by SOA_ROUTE below; regular blocks remain available.
 ************************************************************************
 SOA_MAX         equ     256             	; Max request (bytes) routed to the SOA
 SOA_NUM_CLASSES equ     16              	; Number of small size classes

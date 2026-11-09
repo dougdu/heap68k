@@ -3,7 +3,7 @@
 ************************************************************************
 *
 *  Small Object Allocator (SOA) control-block and helper primitives.
-*  Phase 1: data-structure primitives only (no public-API routing).
+*  Primitives introduced in Phase 1, now used by the default-on SOA route.
 *
 *    __HeapScbGetOrCreate - lazily create/return a heap's SCB
 *    __HeapClassListPush  - insert a slab at the head of a class list

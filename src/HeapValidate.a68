@@ -22,8 +22,10 @@
 *  RETURN VALUE
 ************************************************************************
 *
-*  If the specified heap or memory block is valid, the return
-*  value is zero with Z flag set or an error code on failure.
+*  Z is set on success and clear on failure. All registers, including
+*  D0, are preserved; retrieve the error with _HeapGetError.
+*  A non-NULL pBlock must be a regular-block data pointer, not an SOA
+*  cell. A whole-heap check also validates the SOA.
 *
 ************************************************************************
 
