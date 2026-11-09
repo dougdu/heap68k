@@ -192,8 +192,8 @@ triage (`!heap`, `!heap -p`), but with no argv + piped stdin it does **not** exi
 (it hangs the pipe), and an argv-loaded ELF skips the DDT symbol table. `m68k-elf-gdb
 --batch` is fully scriptable, symbol-aware from the ELF, and exits cleanly — and sim68k's
 own banner endorses `m68k-elf-gdb` + `target remote localhost:1234` as a first-class
-client. (`m68k-elf-gdb` confirmed present at `C:\SysGCC\m68k-elf\bin` and
-`C:\git\worm68k\tools\elf`.) `sid68k` remains documented as the **debug** path (§10.3).
+client. The runner defaults to `toolchain\windows\m68k-elf-gdb.exe` in this
+repository. `sid68k` remains documented as the **debug** path (§10.3).
 
 ---
 
@@ -420,7 +420,7 @@ hang). `-nx` skips `~/.gdbinit`; the pointer cast reads the value because the EL
 carry no C type. **Validated in Phase 0.**
 
 ### 10.2 `run-heap-tests.ps1` (driver)
-1. **Build** the test ELFs (`nmake /f makefile-elf tests`) from the repository root,
+1. **Build** the test ELFs (`nmake tests`) from the repository root,
    then run the module ELFs from `test/`.
 2. For each module ELF:
    a. verify the selected RSP port is free; never stop unrelated processes;
@@ -447,9 +447,9 @@ Run these commands from the repository root. The standalone runner also works
 from another directory when invoked with an absolute script path.
 The NMake `test` target uses PowerShell 7 (`pwsh`), matching the standalone examples.
 
-- **`nmake /f makefile-elf test`** — canonical one-step: build the module ELFs, run every
+- **`nmake test`** — canonical one-step: build the module ELFs, run every
   module, print the summary, and exit `0` iff all pass. This is the CI entry point.
-- `nmake /f makefile-elf tests` — build the module ELFs only.
+- `nmake tests` — build the module ELFs only.
 - `pwsh -File test\run-heap-tests.ps1` — build + run the default modules.
 - `pwsh -File test\run-heap-tests.ps1 -NoBuild -Modules test_stress` — run one module, no rebuild.
 - `pwsh -File test\run-heap-tests.ps1 -Port 4321 -TimeoutSec 40` — override the RSP port / watchdog.
@@ -458,8 +458,9 @@ The NMake `test` target uses PowerShell 7 (`pwsh`), matching the standalone exam
   source/tool/archive/ELF hashes and preserves GDB logs.
   Relative report paths resolve from `test/`.
 
+The makefile and runner use the tools in `toolchain\windows` by default.
 The legacy harness build targets are `test\heaptest.elf` and
-`test\heapsmalltest.elf` (for example, `nmake /f makefile-elf test\heapsmalltest.elf`).
+`test\heapsmalltest.elf` (for example, `nmake test\heapsmalltest.elf`).
 
 **Reading the summary.** A `PASS` row is `RESULT=00000000`. A `FAIL` row's `Note` decodes
 `RESULT=$0000PPCC` as `phase P, check 0xCC`, and `DETAIL` is the failing value / error code —
@@ -468,8 +469,9 @@ storm/hang), `NOSIM` (RSP port never opened), `NORESULT` (gdb emitted no `RESULT
 hint), `NOBUILD` (ELF missing). The process **exit code = number of non-passing modules**.
 
 **Prereqs** (the runner checks all three and aborts with exit `255` if any is missing):
-`sim68k.exe` (…`builds\win64\bin\Release`), `m68k-elf-gdb.exe` (`C:\SysGCC\m68k-elf\bin`), and
-`heaptest.gdb` beside the runner. Teardown is wrapped in `try/finally` and targets
+`toolchain\windows\sim68k.exe`, `toolchain\windows\m68k-elf-gdb.exe`, and
+`heaptest.gdb` beside the runner. Retain the bundled DLLs and Python runtime alongside
+the tools. Teardown is wrapped in `try/finally` and targets
 only owned process IDs, including watchdog failure. A temporary GDB script
 uses the selected port; an occupied port is an error, not permission to kill
 the process using it. The default per-module watchdog remains 20 seconds.
@@ -478,7 +480,7 @@ the process using it. The default per-module watchdog remains 20 seconds.
 
 ## 11. Build Integration
 
-- Add a **`tests`** target to [makefile-elf](../makefile-elf) building the module ELFs
+- Add a **`tests`** target to [makefile](../makefile) building the module ELFs
   (`test\test_create.elf`, `test\test_block.elf`, `test\test_soa.elf`, `test\test_debug.elf`,
   `test\test_stress.elf`), each linked like the existing `test\heapsmalltest.elf`
   (`$(LD) -T $(LDSCRIPT) -Ttext 500 test\<obj>.o -L $(LIBDIR) -lheap -o $@`).
@@ -503,7 +505,7 @@ heap68k/
 │  ├─ heap.inc                 ; library types + API prototypes
 │  ├─ HeapAlloc.a68            ; allocation implementation
 │  └─ ...                      ; remaining library assembly sources
-├─ makefile-elf                ; library + test build/run targets
+├─ makefile                    ; library + test build/run targets
 └─ test/
    ├─ heaptestkit.inc          ; macros + result convention (§8)
    ├─ heaptest.gdb             ; GDB batch command file (§10.1)
@@ -559,8 +561,8 @@ heap68k/
 - [x] Exit-code mechanism decided: **PowerShell parses `RESULT=`** — this `m68k-elf-gdb`
       build has **no Python** (its `.gdbinit` Python hook errors), so a gdb-python hook is
       not viable (§15 Q2).
-- [x] [makefile-elf](../makefile-elf) `tests`/`test` targets build `stub.elf` and run the
-      runner; `nmake /f makefile-elf test` is green under Windows PowerShell 5.1.
+- [x] [makefile](../makefile) `tests`/`test` targets build `stub.elf` and run the
+      runner; `nmake test` is green using PowerShell 7.
 
 ### Phase 1 — Kit & result convention  ✅ (2026-07-21)
 - [x] [`heaptestkit.inc`](../test/heaptestkit.inc): `TEST_INIT` / `PHASE` / `TEST_PASS` /
@@ -655,7 +657,7 @@ heap68k/
       recognition was fooled.
 
 ### Phase 7 — Runner polish & CI  ✅ (2026-07-21)
-- [x] One-step `nmake /f makefile-elf test` (the `test` target depends on `tests`, so make
+- [x] One-step `nmake test` (the `test` target depends on `tests`, so make
       builds the ELFs then runs the driver `-NoBuild`); prints the summary table and propagates
       the driver's **exit code = number of non-passing modules** (0 = all green) for CI.
 - [x] **Decoded** summary: any non-zero `RESULT` is decoded generically as `phase P, check 0xCC`

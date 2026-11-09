@@ -74,7 +74,7 @@ The spec's claims about the existing implementation were checked against source 
 | Heap header fixed at `$40`; only `hhReserved` free | `heap.inc` | ✅ |
 | Flag bits 0–9 used; 10–15 free | `heap.inc` (`FLG_HEAP_TRAP_ON_ERROR=9` highest) | ✅ |
 | Error codes end at `$14`; new codes append cleanly | `heap.inc` | ✅ |
-| Build is `/Cx` (case-sensitive) | `makefile-elf` (`ELF_FLAGS=/Cx …`) | ✅ |
+| Build is `/Cx` (case-sensitive) | `makefile` (`ELF_FLAGS=/Cx …`) | ✅ |
 | `andi.b #NOT(BLK_HDR_SIZE-1)` byte-mask idiom (so `SLAB_SIZE-1=$FFF` needs `andi.l`) | `HeapAlloc.a68`, `HeapCreate.a68`, `HeapInitialize.a68` | ✅ (the §11 warning is a genuine, valuable catch) |
 | Block path zeroes/`CD`-fills grown region on realloc using stored `bhRequestSize` | `HeapReAlloc.a68` | ✅ (drives issue **S3** below) |
 
@@ -136,7 +136,7 @@ R4 and §13 flag the `_HeapSize` semantic change, but the **alignment** change i
 - **N3 — slab header flags/ID layout (§6.5):** `slFlags` and `slId` both listed as "word" at `$04` is ambiguous. Mirror the existing `hhFlags`/`hhId` convention exactly (a long at `$04` with the heap **ID in the high word**, compared with `HEAP_ID_MASK`) so the cross-heap check is bit-identical to the block path. Putting the ID in the wrong half would break G4 (cross-heap detection) silently.
 - **N4 — `SLAB_HDR_SIZE` fixed vs. per-class:** §6.5 says "rounded up to the class alignment" (implying per-class) but §8 lists it as a single constant. Clarify. Simplest: one fixed constant that is a multiple of 8 → cells stay 8-aligned (also resolves N2).
 - **N5 — double-free error code inconsistency:** §6.6 says a double-free is reported as `HEAP_ERROR_INVALID_BLOCK`, but §8 / §9.4 / §10 define and use a dedicated `HEAP_ERROR_DOUBLE_FREE = $16`. Pick one (the dedicated code is better) and fix §6.6.
-- **N6 — makefile casing (informational):** `makefile-elf` does `copy Heap.inc` while sources `include heap.inc`. Harmless on Windows (case-insensitive filesystem); `/Cx` affects label case, not filenames. No action.
+- **N6 — historical makefile casing (informational):** the Windows makefile formerly used `copy Heap.inc` while sources used `include heap.inc`. Harmless on Windows (case-insensitive filesystem); `/Cx` affects label case, not filenames. The current `makefile` copies `src\heap.inc`, so no action remains.
 
 ---
 

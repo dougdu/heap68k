@@ -10,7 +10,7 @@
     Exit code = number of non-passing modules (0 = all pass), for CI.
 
     Usage:
-      nmake /f makefile-elf test                    # canonical one-step: build + run + verdict (CI)
+      nmake test                                  # canonical one-step: build + run + verdict (CI)
       pwsh -File test\run-heap-tests.ps1                 # build + run the default modules
       pwsh -File test\run-heap-tests.ps1 -Modules stub   # a single module
       pwsh -File test\run-heap-tests.ps1 -NoBuild        # skip the nmake build step
@@ -25,8 +25,8 @@ param(
     [int]      $TimeoutSec = 20,        # per-module watchdog (storm/hang cutoff)
     [int]      $Port       = 1234,
     [switch]   $NoBuild,
-    [string]   $Sim = 'C:\git\worm68k\68kTools\builds\win64\bin\Release\sim68k.exe',
-    [string]   $Gdb = 'C:\SysGCC\m68k-elf\bin\m68k-elf-gdb.exe',
+    [string]   $Sim = (Join-Path (Split-Path -Parent $PSScriptRoot) 'toolchain\windows\sim68k.exe'),
+    [string]   $Gdb = (Join-Path (Split-Path -Parent $PSScriptRoot) 'toolchain\windows\m68k-elf-gdb.exe'),
     [string]   $ReportPath = ''
 )
 
@@ -101,9 +101,9 @@ function Record([string]$path) {
 }
 
 if (-not $NoBuild) {
-    Write-Host "Building test ELFs (nmake /f makefile-elf tests)..."
+    Write-Host "Building test ELFs (nmake tests)..."
     Push-Location -LiteralPath $RepoRoot
-    try { $buildLog = & nmake /f makefile-elf tests 2>&1 }
+    try { $buildLog = & nmake tests 2>&1 }
     finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) {
         $buildLog | Select-Object -Last 25 | ForEach-Object { Write-Host $_ }

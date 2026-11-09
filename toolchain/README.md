@@ -8,7 +8,7 @@ Only ELF-targeting GNU tools are included.
 |------|---------|--------|
 | `asm68K.exe` | 1.0.1088.0 | asm68k Release build |
 | `sim68k.exe` | Release binary updated November 6, 2026 | sim68k Release build |
-| `m68k-elf-ar.exe`, `m68k-elf-ld.exe`, `m68k-elf-ranlib.exe` | Binutils 2.44 | worm68k tools/elf |
+| `m68k-elf-ar.exe`, `m68k-elf-ld.exe` | Binutils 2.44 | worm68k tools/elf |
 | `m68k-elf-objdump.exe` | Binutils 2.44 | worm68k tools/elf |
 | `m68k-elf-gdb.exe` | GDB 15.2 | worm68k tools/elf |
 
@@ -33,26 +33,23 @@ repositories.
 
 ## Using the collected tools
 
-This collection does not change the existing makefile or runner defaults.
-From the repository root, build using the bundle:
+The Windows [makefile](../makefile) and [test runner](../test/run-heap-tests.ps1)
+use this bundle by default. From the repository root:
 
 ```powershell
-nmake /f makefile-elf tests `
-  "ASM=toolchain\windows\asm68K.exe" `
-  "ELF_FLAGS=/Cx /elf /Fl /Zi /nologo" `
-  "LD=toolchain\windows\m68k-elf-ld.exe" `
-  "AR=toolchain\windows\m68k-elf-ar.exe" `
-  "RANLIB=toolchain\windows\m68k-elf-ranlib.exe" `
-  "LDSCRIPT=toolchain\windows\cpm68k.ld"
-
-pwsh -File test\run-heap-tests.ps1 -NoBuild `
-  -Sim (Resolve-Path toolchain\windows\sim68k.exe).Path `
-  -Gdb (Resolve-Path toolchain\windows\m68k-elf-gdb.exe).Path
+nmake
+nmake test
+pwsh -File test\run-heap-tests.ps1
 ```
 
 Use NMake's `/A` option when switching tool versions to rebuild cached objects.
-The current assembler rejects the old makefile's `/Fm` map option with `/c`;
-the example supplies assembly-only flags instead.
+The makefile supplies assembly-only flags: `/Cx /elf /Fl /Zi /nologo`.
+The assembler rejects the linker-only `/Fm` map option with `/c`.
+
+The existing `LIBDIR`, `INCDIR`, and `BINDIR` export destinations are unchanged.
+Override them on the NMake command line if a different installation location is
+needed. `TOOLCHAIN_DIR` selects another build-tool directory; the runner's `-Sim`
+and `-Gdb` options select alternate test tools.
 
 ## Notices
 

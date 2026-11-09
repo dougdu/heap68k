@@ -170,15 +170,6 @@
       "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.1590905Z"
     },
     {
-      "path": "m68k-elf-ranlib.exe",
-      "bytes": 944640,
-      "sha256": "92E0038CEBDC93FFE37BB576A94C5731BCBFAD9BF1F63DA0F889603E34C034FD",
-      "sourceRepository": "worm68k",
-      "sourcePath": "tools\\elf\\m68k-elf-ranlib.exe",
-      "version": "2.44",
-      "sourceLastWriteTimeUtc": "2026-06-18T04:08:16.1652041Z"
-    },
-    {
       "path": "sim68k.exe",
       "bytes": 257024,
       "sha256": "F03439DBA71093D2429497C3837C3973B0790501599306A8AC79BDC5BEFBB506",

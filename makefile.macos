@@ -15,7 +15,6 @@ AINC      =-Isrc
 LD        = $(REPOROOT)/tools/ld
 LDSCRIPT  = $(REPOROOT)/tools/cpm68k.ld
 AR        = $(REPOROOT)/tools/ar
-RANLIB    = $(REPOROOT)/tools/ranlib
 SIM68KDIR = $(REPOROOT)/68kTools/sim68k
 LIBDIR    = $(REPOROOT)/lib
 INCDIR    = $(REPOROOT)/include

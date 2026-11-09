@@ -145,7 +145,7 @@ not violate them.
 | C3 | Heap identity lives in the **high word of the flags longword** (`HEAP_ID_MASK = $FFFF0000`); ownership is a mask-and-compare. | [heap.inc](../src/heap.inc) |
 | C4 | The heap header is fixed at `$40` bytes; only `hhReserved` (`$3C`) is free for new state. | [heap.inc](../src/heap.inc) |
 | C5 | Per-call flags (`HEAP_ZERO_MEMORY`) override per-heap flags for that call. | [HeapAlloc.a68](../src/HeapAlloc.a68) |
-| C6 | Build is **case-sensitive** (`/Cx`); labels differing only in case are distinct. | [makefile-elf](../makefile-elf) |
+| C6 | Build is **case-sensitive** (`/Cx`); labels differing only in case are distinct. | [makefile](../makefile) |
 | C7 | 68K ABI in this codebase: **D0/D1/A0/A1 = caller-saved** (scratch); **D2–D7/A2–A6 = callee-saved**. `PROC`/`ENDP` `USES` lists enforce this. | [HEAP_API.md §8](HEAP_API.md) |
 | C8 | Every allocation returned today is 32-byte aligned. Callers **must not** assume this continues for small allocations (SOA cells are guaranteed only **≥ 8-byte (longword)** aligned — enough for 68K word/long access — **not** class-size aligned). | new |
 
@@ -685,8 +685,8 @@ vs. the legacy allocator on the same seed.
 
 ### 12.4 Build/CI
 ELF is the only supported object format; the COFF build has been retired.
-The Windows `makefile-elf` and macOS `makefile.macos` carry the same library objects.
-`nmake /f makefile-elf test` builds and runs the automated ELF suite.
+The Windows `makefile` and macOS `makefile.macos` carry the same library objects.
+`nmake test` builds and runs the automated ELF suite using the bundled Windows tools.
 **Rebuild everything** when touching `src/heap.inc` (a shared header change invalidates
 all objects).
 
@@ -770,7 +770,7 @@ never linked, so `scbSlabCount`/`scbLiveCells` legitimately **exceed** the walke
 - [x] Implement [`__HeapStats`](../src/HeapStats.a68): block-chain walk → committed vs. requested bytes,
       free/overhead totals, largest free block, and a request-size histogram (`HEAP_STATS`).
 - [x] Extend [HeapTest.a68](../test/HeapTest.a68) with a scripted small-allocation mix + `__HeapStats` snapshot.
-- [x] `makefile-elf` builds clean; `libheap.a` + `heaptest.elf` produced (nmake).
+- [x] `makefile` builds clean; `libheap.a` + `heaptest.elf` produced (nmake).
 - [~] `makefile.macos`: corrected `-Cu` → `-Cx`; not buildable on the Windows host (macOS toolchain).
 
 > Historical note: the retired COFF backend assembled its objects, but
